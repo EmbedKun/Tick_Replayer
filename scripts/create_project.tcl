@@ -32,11 +32,9 @@ if {[llength $sv_files] > 0} {
 set_property top traffic_replay_top_stub [current_fileset]
 update_compile_order -fileset sources_1
 
-if {[file isdirectory [file join $repo_dir constraints]]} {
-  set xdc_files [glob -nocomplain [file join $repo_dir constraints *.xdc]]
-  if {[llength $xdc_files] > 0} {
-    add_files -fileset constrs_1 $xdc_files
-  }
+set stub_xdc [file join $repo_dir constraints traffic_replay_stub.xdc]
+if {[file exists $stub_xdc]} {
+  add_files -fileset constrs_1 $stub_xdc
 }
 
 puts "Project created at $build_dir"

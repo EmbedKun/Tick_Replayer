@@ -12,6 +12,8 @@
 - Vivado：`D:\Xilinx\Vivado\2020.2\bin\vivado.bat`
 - 目标器件：`xcu200-fsgd2104-2-e`
 - Board part：`xilinx.com:au200:part0:1.3`
+- 硬件 Vivado 生成目录：默认 `D:\tr_build\vivado_hw`
+- Vivado 临时目录：默认 `D:\tr_tmp`
 - 远程烧录 hw_server：`172.22.5.106:3121`
 
 不要把 SSH 密码、私钥、license 文件写入仓库。
@@ -24,22 +26,22 @@ sim/        XSim testbench
 scripts/    Vivado 工程、仿真、综合、硬件 BD、远程烧录脚本
 software/   pcap 转 trace 工具，以及 Linux XDMA trace loader
 docs/       架构和维护笔记
-constraints/ stub 约束
+constraints/ stub 约束，以及 U200 硬件 bitstream 约束
 ```
 
 ## 硬件 Block Design
 
-脚本 `scripts/create_hw_project.tcl` 会创建 `build/vivado_hw/traffic_replay_hw.xpr`，其中包含：
+脚本 `scripts/create_hw_project.tcl` 会创建 `D:\tr_build\vivado_hw\traffic_replay_hw.xpr`，其中包含：
 
 ```text
 PCIe x16 Gen3 XDMA
   M_AXI      -> AXI clock converter -> DDR SmartConnect -> DDR4 C0
   M_AXI_LITE -> AXI-Lite clock converter -> control SmartConnect
                                       -> replay regs
-                                      -> DDR4 control regs
+                                      -> AXI-Lite register slice -> DDR4 control regs
 
 DDR4 C0 -> replay_core M_AXI read path
-replay_core M_TX_AXIS -> AXIS clock converter -> CMAC QSFP0 TX
+replay_core M_TX_AXIS -> RTL AXIS async FIFO -> CMAC QSFP0 TX
 
 QSFP0 CMAC:
   AXIS 512-bit
@@ -50,7 +52,17 @@ QSFP0 CMAC:
 
 PCIe refclk 使用 `util_ds_buf` 的 `IBUFDSGTE`，顶层暴露 `pcie_refclk_clk_p/n`，不是未约束的单端内部时钟。
 
-当前硬件 BD 把 replay core 放在 DDR UI clock 域，并用 AXIS clock converter 跨到 CMAC TX user clock。这样便于先完成 Host -> DDR -> CMAC 的 bring-up；后续追求极限精度时，可以把 scheduler/TX 前移到 CMAC 时钟域，并给 DDR read path 加更深 FIFO。
+硬件 bitstream 使用 `constraints/traffic_replay_u200.xdc`。该文件显式记录 U200 的 PCIe x16、QSFP0 4x25G、PCIe refclk、DDR4 C0 refclk、QSFP0 sideband 和 bitstream 配置；DDR4 C0 的完整地址/数据脚由 DDR4 IP 通过 U200 board interface 生成约束。stub 综合只加载 `constraints/traffic_replay_stub.xdc`。
+
+QSFP0 sideband 当前由 BD 绑为常量：`qsfp0_resetl=1`、`qsfp0_lpmode=0`、`qsfp0_refclk_reset=0`、`qsfp0_fs=2'b10`，用于启用模块并选择 161.1328125 MHz 参考时钟。
+
+硬件工程默认生成在 D 盘短路径，避免 U200 XDMA/DDR/CMAC OOC 综合占满 C 盘，也降低 Vivado 2020.2 在 Windows 上对子 IP 临时路径长度敏感的问题。需要改工程位置时，运行前设置环境变量 `TRAFFIC_REPLAY_HW_BUILD_ROOT`；需要改临时目录时，设置 `TRAFFIC_REPLAY_VIVADO_TEMP`；需要改 Vivado 并行度时，设置 `TRAFFIC_REPLAY_VIVADO_JOBS`，默认是 `1`，用于避开本机通过 task worker 跑 XDMA/OOC 时偶发卡住的问题。
+
+Vivado 2020.2 安装目录里的 `xpm_fifo.sv` 在本机不是标准 Xilinx XPM FIFO 定义，因此硬件 BD 不依赖 Xilinx `axis_clock_converter` IP 的 XPM FIFO；`rtl/axis_async_fifo.v` 用纯 RTL 实现 DDR UI clock 到 CMAC TX clock 的 AXIS 异步 FIFO。
+
+当前 FIFO 读侧的预读判断只依赖已寄存的队列占用，不把 CMAC `tready` 同拍反馈到 BRAM enable/读指针；DDR4 AXI-Lite control 口前也插入了 `axi_register_slice`。这两处用于收敛 322MHz CMAC TX clock 和 DDR UI clock 域的关键时序路径。
+
+当前硬件 BD 把 replay core 放在 DDR UI clock 域，并用 RTL AXIS async FIFO 跨到 CMAC TX user clock。这样便于先完成 Host -> DDR -> CMAC 的 bring-up；后续追求极限精度时，可以把 scheduler/TX 前移到 CMAC 时钟域，并给 DDR read path 加更深 FIFO。
 
 ## 地址映射
 
@@ -149,10 +161,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action synth
 powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbd
 ```
 
-完整生成硬件 bitstream：
+完整生成硬件 bitstream（推荐先生成 BD，再打开已有工程构建）：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbit
+powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbd
+powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbit_existing
 ```
 
 pcap 转 trace：
@@ -182,6 +195,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action progra
 - `hwbd`：Vivado 2020.2 成功创建并 validate BD，生成 `traffic_replay_bd_wrapper.v`。
 - `sim`：XSim testbench 通过，输出 2 个包。
 - `synth`：stub 顶层综合通过，0 errors / 0 warnings。
+- `hwbit_existing`：使用 `constraints/traffic_replay_u200.xdc` 生成完整 U200 bitstream。2026-06-25 本机通过，产物为 `D:\tr_build\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit`。
+- 最终实现时序：`reports/hw_impl_timing_summary.rpt` 显示 `WNS=0.017ns`、`TNS=0.000ns`、失败端点 0，`All user specified timing constraints are met.`
+- bitgen 仍有 `Evaluation License Warning` critical warning；正式长期使用前需要确认 CMAC 等 IP license 不是限时 evaluation。
 
 ## 版本管理
 

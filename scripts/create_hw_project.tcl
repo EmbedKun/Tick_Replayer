@@ -1,6 +1,34 @@
 set script_dir [file dirname [file normalize [info script]]]
 set repo_dir [file normalize [file join $script_dir ..]]
-set build_dir [file join $repo_dir build vivado_hw]
+
+set_param general.maxThreads 1
+
+proc source_vivado_init {subdir} {
+  if {![info exists ::env(XILINX_VIVADO)] || $::env(XILINX_VIVADO) eq ""} {
+    return
+  }
+  set init_dir [file normalize [file join $::env(XILINX_VIVADO) scripts $subdir]]
+  set init_file [file join $init_dir init.tcl]
+  if {![file exists $init_file]} {
+    return
+  }
+  set old_dir [pwd]
+  cd $init_dir
+  source -notrace $init_file
+  cd $old_dir
+}
+
+source_vivado_init ipintegrator
+source_vivado_init xguifrmwork
+
+if {[info exists ::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)] && $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT) ne ""} {
+  set hw_build_root [file normalize $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)]
+} elseif {[file exists D:/]} {
+  set hw_build_root [file normalize D:/tr_build]
+} else {
+  set hw_build_root [file join $repo_dir build]
+}
+set build_dir [file join $hw_build_root vivado_hw]
 file mkdir $build_dir
 
 set project_name traffic_replay_hw
@@ -12,6 +40,14 @@ create_project -force $project_name $build_dir -part $part_name
 set_property board_part $board_part [current_project]
 set_property target_language Verilog [current_project]
 set_property simulator_language Mixed [current_project]
+set_property XPM_LIBRARIES {XPM_CDC XPM_FIFO XPM_MEMORY} [current_project]
+
+set hw_xdc [file join $repo_dir constraints traffic_replay_u200.xdc]
+if {[file exists $hw_xdc]} {
+  add_files -fileset constrs_1 $hw_xdc
+  set_property used_in_synthesis false [get_files $hw_xdc]
+  set_property used_in_implementation true [get_files $hw_xdc]
+}
 
 set rtl_files [list \
   [file join $repo_dir rtl traffic_replay_pkg.sv] \
@@ -22,6 +58,7 @@ set rtl_files [list \
   [file join $repo_dir rtl ddr_trace_reader.sv] \
   [file join $repo_dir rtl trace_replay_core.sv] \
   [file join $repo_dir rtl traffic_replay_bd_core.v] \
+  [file join $repo_dir rtl axis_async_fifo.v] \
 ]
 add_files -fileset sources_1 $rtl_files
 set sv_files [lsearch -all -inline $rtl_files *.sv]
@@ -51,6 +88,18 @@ proc connect_const {pin width value} {
   set cname [format "c%03d" $const_idx]
   incr const_idx
   connect_bd_net [add_const $cname $width $value] [get_bd_pins $pin]
+}
+
+proc create_const_port {port_name width value} {
+  if {[llength [get_bd_ports -quiet $port_name]] == 0} {
+    if {$width == 1} {
+      create_bd_port -dir O $port_name
+    } else {
+      create_bd_port -dir O -from [expr {$width - 1}] -to 0 $port_name
+    }
+  }
+  set cname ${port_name}_const
+  connect_bd_net [add_const $cname $width $value] [get_bd_ports $port_name]
 }
 
 proc try_board_intf {ip_intf board_intf} {
@@ -172,8 +221,10 @@ set_property -dict [list CONFIG.PROTOCOL {AXI4} CONFIG.DATA_WIDTH {512} CONFIG.A
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter axil_ctrl_cc
 set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.DATA_WIDTH {32}] [get_bd_cells axil_ctrl_cc]
 
-create_bd_cell -type ip -vlnv xilinx.com:ip:axis_clock_converter tx_axis_cc
-set_property -dict [list CONFIG.TDATA_NUM_BYTES {64} CONFIG.HAS_TKEEP {1} CONFIG.HAS_TLAST {1} CONFIG.TUSER_WIDTH {1}] [get_bd_cells tx_axis_cc]
+create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice ctrl_ddr_regslice
+set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.DATA_WIDTH {32}] [get_bd_cells ctrl_ddr_regslice]
+
+create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz cmac_init_clk_wiz
 set_property -dict [list \
@@ -218,6 +269,12 @@ try_board_intf ddr4_0/C0_SYS_CLK default_300mhz_clk0
 try_board_intf cmac_0/gt_serial_port qsfp0_4x
 try_board_intf cmac_0/gt_ref_clk qsfp0_161mhz
 
+create_const_port qsfp0_modsell 1 0
+create_const_port qsfp0_resetl 1 1
+create_const_port qsfp0_lpmode 1 0
+create_const_port qsfp0_refclk_reset 1 0
+create_const_port qsfp0_fs 2 2
+
 connect_bd_net [get_bd_pins pcie_refclk_buf/IBUF_DS_ODIV2] [get_bd_pins xdma_0/sys_clk]
 connect_bd_net [get_bd_pins pcie_refclk_buf/IBUF_OUT] [get_bd_pins xdma_0/sys_clk_gt]
 
@@ -227,10 +284,11 @@ connect_bd_net [get_bd_pins xdma_0/axi_aresetn] [get_bd_pins host_smc/aresetn] [
 connect_bd_net [get_bd_pins ddr4_0/c0_ddr4_ui_clk] \
   [get_bd_pins ddr_smc/aclk] \
   [get_bd_pins ctrl_smc/aclk] \
+  [get_bd_pins ctrl_ddr_regslice/aclk] \
   [get_bd_pins xdma_to_ddr_cc/m_axi_aclk] \
   [get_bd_pins axil_ctrl_cc/m_axi_aclk] \
   [get_bd_pins replay_core/clk] \
-  [get_bd_pins tx_axis_cc/s_axis_aclk] \
+  [get_bd_pins tx_axis_fifo/s_clk] \
   [get_bd_pins cmac_init_clk_wiz/clk_in1] \
   [get_bd_pins rst_ddr/slowest_sync_clk]
 
@@ -238,15 +296,16 @@ connect_bd_net [get_bd_pins ddr4_0/c0_ddr4_ui_clk_sync_rst] [get_bd_pins rst_ddr
 connect_bd_net [get_bd_pins rst_ddr/peripheral_aresetn] \
   [get_bd_pins ddr_smc/aresetn] \
   [get_bd_pins ctrl_smc/aresetn] \
+  [get_bd_pins ctrl_ddr_regslice/aresetn] \
   [get_bd_pins xdma_to_ddr_cc/m_axi_aresetn] \
   [get_bd_pins axil_ctrl_cc/m_axi_aresetn] \
   [get_bd_pins replay_core/resetn] \
-  [get_bd_pins tx_axis_cc/s_axis_aresetn] \
+  [get_bd_pins tx_axis_fifo/s_resetn] \
   [get_bd_pins ddr4_0/c0_ddr4_aresetn]
 
-connect_bd_net [get_bd_pins cmac_0/gt_txusrclk2] [get_bd_pins tx_axis_cc/m_axis_aclk]
+connect_bd_net [get_bd_pins cmac_0/gt_txusrclk2] [get_bd_pins tx_axis_fifo/m_clk]
 connect_bd_net [get_bd_pins cmac_0/usr_tx_reset] [get_bd_pins cmac_tx_resetn_inv/Op1]
-connect_bd_net [get_bd_pins cmac_tx_resetn_inv/Res] [get_bd_pins tx_axis_cc/m_axis_aresetn]
+connect_bd_net [get_bd_pins cmac_tx_resetn_inv/Res] [get_bd_pins tx_axis_fifo/m_resetn]
 connect_bd_net [get_bd_pins cmac_init_clk_wiz/clk_out1] [get_bd_pins cmac_0/init_clk] [get_bd_pins cmac_0/drp_clk] [get_bd_pins rst_cmac_init/slowest_sync_clk]
 connect_bd_net [get_bd_pins cmac_init_clk_wiz/locked] [get_bd_pins rst_cmac_init/dcm_locked]
 connect_bd_net [get_bd_pins rst_ddr/peripheral_reset] [get_bd_pins rst_cmac_init/ext_reset_in]
@@ -263,10 +322,11 @@ connect_bd_intf_net [get_bd_intf_pins ddr_smc/M00_AXI] [get_bd_intf_pins ddr4_0/
 connect_bd_intf_net [get_bd_intf_pins xdma_0/M_AXI_LITE] [get_bd_intf_pins axil_ctrl_cc/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins axil_ctrl_cc/M_AXI] [get_bd_intf_pins ctrl_smc/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M00_AXI] [get_bd_intf_pins replay_core/S_AXIL]
-connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M01_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI_CTRL]
+connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M01_AXI] [get_bd_intf_pins ctrl_ddr_regslice/S_AXI]
+connect_bd_intf_net [get_bd_intf_pins ctrl_ddr_regslice/M_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI_CTRL]
 
-connect_bd_intf_net [get_bd_intf_pins replay_core/M_TX_AXIS] [get_bd_intf_pins tx_axis_cc/S_AXIS]
-connect_bd_intf_net [get_bd_intf_pins tx_axis_cc/M_AXIS] [get_bd_intf_pins cmac_0/axis_tx]
+connect_bd_intf_net [get_bd_intf_pins replay_core/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo/S_AXIS]
+connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo/M_AXIS] [get_bd_intf_pins cmac_0/axis_tx]
 
 connect_const ddr4_0/sys_rst 1 0
 connect_const xdma_0/usr_irq_req 1 0
@@ -336,6 +396,10 @@ foreach seg $ddr_core_segs {
 
 validate_bd_design
 save_bd_design
+
+set bd_file [get_files [file join $build_dir $project_name.srcs sources_1 bd $bd_name $bd_name.bd]]
+set_property synth_checkpoint_mode None $bd_file
+set_property generate_synth_checkpoint false $bd_file
 
 make_wrapper -files [get_files [file join $build_dir $project_name.srcs sources_1 bd $bd_name $bd_name.bd]] -top
 add_files -norecurse [file join $build_dir $project_name.gen sources_1 bd $bd_name hdl ${bd_name}_wrapper.v]
