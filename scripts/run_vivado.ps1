@@ -1,6 +1,6 @@
 param(
   [Parameter(Mandatory=$true)]
-  [ValidateSet("sim", "synth", "program")]
+  [ValidateSet("sim", "synth", "hwbd", "hwbit", "program")]
   [string]$Action,
 
   [string]$Bitfile = ""
@@ -20,6 +20,13 @@ switch ($Action) {
   "synth" {
     New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot "reports") | Out-Null
     & $VivadoBat -mode batch -source (Join-Path $PSScriptRoot "synth_check.tcl")
+  }
+  "hwbd" {
+    & $VivadoBat -mode batch -source (Join-Path $PSScriptRoot "create_hw_project.tcl")
+  }
+  "hwbit" {
+    New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot "reports") | Out-Null
+    & $VivadoBat -mode batch -source (Join-Path $PSScriptRoot "build_hw_bitstream.tcl")
   }
   "program" {
     if ($Bitfile -eq "") {

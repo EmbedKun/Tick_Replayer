@@ -11,7 +11,7 @@ from pathlib import Path
 
 DESC_BYTES = 64
 DATA_BEAT_BYTES = 64
-DEFAULT_TICK_HZ = 322_265_625
+DEFAULT_TICK_HZ = 300_000_000
 
 
 def parse_args() -> argparse.Namespace:

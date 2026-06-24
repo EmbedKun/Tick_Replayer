@@ -20,11 +20,15 @@ set rtl_files [list \
   [file join $repo_dir rtl host_stream_parser.sv] \
   [file join $repo_dir rtl ddr_trace_reader.sv] \
   [file join $repo_dir rtl trace_replay_core.sv] \
+  [file join $repo_dir rtl traffic_replay_bd_core.v] \
   [file join $repo_dir rtl traffic_replay_top_stub.sv] \
 ]
 
 add_files -fileset sources_1 $rtl_files
-set_property file_type SystemVerilog [get_files $rtl_files]
+set sv_files [lsearch -all -inline $rtl_files *.sv]
+if {[llength $sv_files] > 0} {
+  set_property file_type SystemVerilog [get_files $sv_files]
+}
 set_property top traffic_replay_top_stub [current_fileset]
 update_compile_order -fileset sources_1
 

@@ -1,16 +1,14 @@
 # Traffic Replay on Xilinx Alveo U200
 
-这个仓库是 U200 单端口 100Gbps 流量回放仪的源码化工程骨架。目标是先把单端口 CMAC TX 方向跑通，并保留三种运行模式：
+这个仓库是 U200 单端口 100Gbps 流量回放仪的源码化工程。当前目标是先跑通：
 
-- `PRELOAD`：主机预先把 descriptor/data 搬到 U200 DDR，FPGA 从 DDR 按 pcap 时间间隔回放。
-- `STREAM`：主机经 PCIe/QDMA 流式推送 header + payload，FPGA 实时调度发送。
-- `LOOP`：主机预加载一段 trace 到 DDR，FPGA 在 DDR 中循环回放。
-
-当前版本包含可仿真的核心 RTL、pcap 转 trace 工具、Vivado 2020.2 批处理脚本、远程 hw_server 烧录脚本。CMAC/QDMA/DDR 的板级 block design wrapper 下一步接入。
+- Host 通过 PCIe XDMA 把 `desc.bin` / `data.bin` 写入 U200 DDR4 C0。
+- FPGA 从 DDR4 读 trace，按包间隔调度，经 512-bit AXI4-Stream 发给 QSFP0 CMAC。
+- 主机通过 XDMA AXI-Lite 控制面选择 `PRELOAD` / `LOOP`，并保留 `STREAM` RTL 路径。
 
 ## 本机环境
 
-- Windows 主机工程目录：`C:\Users\mkxue\Desktop\traffic_replay`
+- Windows 工程目录：`C:\Users\mkxue\Desktop\traffic_replay`
 - Vivado：`D:\Xilinx\Vivado\2020.2\bin\vivado.bat`
 - 目标器件：`xcu200-fsgd2104-2-e`
 - Board part：`xilinx.com:au200:part0:1.3`
@@ -21,33 +19,66 @@
 ## 目录结构
 
 ```text
-rtl/        FPGA 回放核心 RTL
-sim/        XSim 仿真 testbench
-scripts/    Vivado 创建工程、仿真、综合检查、远程烧录脚本
-software/   主机端 pcap 转 trace 工具
+rtl/        回放核心 RTL 和 BD module wrapper
+sim/        XSim testbench
+scripts/    Vivado 工程、仿真、综合、硬件 BD、远程烧录脚本
+software/   pcap 转 trace 工具，以及 Linux XDMA trace loader
 docs/       架构和维护笔记
+constraints/ stub 约束
 ```
 
-## RTL 数据路径
+## 硬件 Block Design
+
+脚本 `scripts/create_hw_project.tcl` 会创建 `build/vivado_hw/traffic_replay_hw.xpr`，其中包含：
 
 ```text
-AXI-Lite regs
-    -> mode manager
-        -> DDR trace reader      -> metadata/data mux
-        -> host stream parser    -> metadata/data mux
-    -> timestamp scheduler
-    -> packet TX engine
-    -> 512-bit AXI4-Stream to CMAC TX
+PCIe x16 Gen3 XDMA
+  M_AXI      -> AXI clock converter -> DDR SmartConnect -> DDR4 C0
+  M_AXI_LITE -> AXI-Lite clock converter -> control SmartConnect
+                                      -> replay regs
+                                      -> DDR4 control regs
+
+DDR4 C0 -> replay_core M_AXI read path
+replay_core M_TX_AXIS -> AXIS clock converter -> CMAC QSFP0 TX
+
+QSFP0 CMAC:
+  AXIS 512-bit
+  CAUI-4 4x25G
+  GT refclk 161.1328125 MHz
+  CMAC hard block from the known-good U200 CMAC setup
 ```
 
-核心接口统一使用 512-bit AXI4-Stream，对应 100G CMAC 常用 user-side 数据宽度。调度器使用 `clk` 域 64-bit tick 计数器，第一版按 `322.265625 MHz` CMAC TX user clock 估算，每 tick 约 3.1ns。
+PCIe refclk 使用 `util_ds_buf` 的 `IBUFDSGTE`，顶层暴露 `pcie_refclk_clk_p/n`，不是未约束的单端内部时钟。
+
+当前硬件 BD 把 replay core 放在 DDR UI clock 域，并用 AXIS clock converter 跨到 CMAC TX user clock。这样便于先完成 Host -> DDR -> CMAC 的 bring-up；后续追求极限精度时，可以把 scheduler/TX 前移到 CMAC 时钟域，并给 DDR read path 加更深 FIFO。
+
+## 地址映射
+
+XDMA `M_AXI`：
+
+```text
+0x0000_0000_0000_0000 - 0x0000_0003_FFFF_FFFF  DDR4 C0, 16GB
+```
+
+XDMA `M_AXI_LITE`：
+
+```text
+0x0000_0000 - 0x0000_FFFF  replay control/status regs
+0x0001_0000 - 0x0001_FFFF  DDR4 control regs
+```
+
+## 回放模式
+
+- `PRELOAD`：Host 先把 descriptor/data 写入 DDR，再写寄存器启动。当前硬件主路径。
+- `LOOP`：与 `PRELOAD` 使用同一 DDR 读路径，到尾部后回到起点。`LOOP_COUNT == 0` 表示无限循环。
+- `STREAM`：RTL 已有 host stream parser，但当前 BD 没有把 XDMA H2C stream 接到该输入。后续可在 XDMA/QDMA streaming 口稳定后接入。
 
 ## Trace 格式
 
 DDR 预加载和循环模式使用两个连续区域：
 
-- descriptor 区：每包 64B，当前只用前 16B，后续可优化成 4 个 descriptor/beat。
-- data 区：packet payload 按 64B 对齐连续存储。
+- descriptor 区：每包 64B。
+- data 区：payload 按 64B 对齐连续存储。
 
 descriptor 小端格式：
 
@@ -61,11 +92,11 @@ struct replay_desc {
 };
 ```
 
-主机流式模式中，每个包先发送 1 个 64B header beat，前 16B 与 descriptor 相同，随后发送 payload beat。
+硬件 BD 中调度 tick 使用 DDR UI clock，建议生成 trace 时先用 `--tick-hz 300000000`。如果以后把 scheduler 放到 CMAC TX user clock，再改回 CMAC TX clock 对应频率。
 
 ## 寄存器表
 
-AXI-Lite 数据宽度 32 bit，偏移如下：
+AXI-Lite 数据宽度 32 bit：
 
 ```text
 0x0000 CONTROL      bit0 start, bit1 stop, bit2 clear counters, bit3 pause
@@ -79,13 +110,13 @@ AXI-Lite 数据宽度 32 bit，偏移如下：
 0x0024 TRACE_BYTES_HI
 0x0028 PKT_COUNT_LO
 0x002c PKT_COUNT_HI
-0x0030 LOOP_COUNT_LO    0 表示无限循环
+0x0030 LOOP_COUNT_LO    0 means infinite loop
 0x0034 LOOP_COUNT_HI
 0x0038 LOOP_GAP_LO
 0x003c LOOP_GAP_HI
-0x0040 START_TIME_LO    0 表示收到首包后按首包 gap 发送
+0x0040 START_TIME_LO    0 means start after first descriptor gap
 0x0044 START_TIME_HI
-0x0048 RATE_Q16_16      保留字段；当前版本建议主机侧预缩放 gap_ticks
+0x0048 RATE_Q16_16      reserved; host should pre-scale gap_ticks for now
 0x004c WATERMARK
 0x0050 FIFO_LEVEL
 0x0060 TX_PKTS_LO
@@ -106,46 +137,59 @@ AXI-Lite 数据宽度 32 bit，偏移如下：
 powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action sim
 ```
 
-综合检查：
+stub 综合检查：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action synth
 ```
 
-远程烧录：
+生成并校验 U200 硬件 BD：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action program -Bitfile .\build\vivado\traffic_replay.runs\impl_1\traffic_replay_top_stub.bit
+powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbd
+```
+
+完整生成硬件 bitstream：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbit
 ```
 
 pcap 转 trace：
 
 ```powershell
-python .\software\pcap2trace.py .\input.pcap --out-dir .\trace_out
+python .\software\pcap2trace.py .\input.pcap --out-dir .\trace_out --tick-hz 300000000
 ```
 
-输出文件：
+在插有 U200 的 Linux 机器上，通过 XDMA driver 写 DDR 并启动：
 
-- `trace_out/desc.bin`
-- `trace_out/data.bin`
-- `trace_out/manifest.json`
+```bash
+python3 software/xdma_load_trace.py \
+  --manifest trace_out/manifest.json \
+  --desc-base 0x00000000 \
+  --data-base 0x10000000 \
+  --mode preload
+```
+
+远程烧录已有 bitstream：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action program -Bitfile .\path\to\design.bit
+```
+
+## 已验证
+
+- `hwbd`：Vivado 2020.2 成功创建并 validate BD，生成 `traffic_replay_bd_wrapper.v`。
+- `sim`：XSim testbench 通过，输出 2 个包。
+- `synth`：stub 顶层综合通过，0 errors / 0 warnings。
 
 ## 版本管理
 
-仓库采用源码化 Vivado 流程，`build/`、`.Xil/`、`.runs/`、`.cache/` 等生成物不纳入版本管理。推荐提交粒度：
+仓库保存源码、脚本、文档和软件工具。`build/`、`.Xil/`、Vivado 生成物、trace 输出不纳入版本管理。
+
+建议后续提交粒度：
 
 1. RTL 行为变更。
-2. Vivado/IP wrapper 变更。
+2. Vivado/IP/BD 脚本变更。
 3. 主机软件和寄存器协议变更。
 4. 文档和测试向量变更。
-
-## 后续接入任务
-
-- 接 CMAC US+ IP：QSFP0 RX/TX 引脚、GT refclk、CMAC TX AXIS。
-- 接 QDMA/XDMA：AXI-Lite 控制面、H2C stream、DDR 写入路径。
-- 接 DDR4/MIG 或平台 shell 暴露的 AXI memory interface。
-- 给 DDR reader 增加 descriptor prefetch FIFO 和 payload FIFO，以支撑最小包 100G 场景。
-- 增加主机端 DMA loader，负责把 `desc.bin`/`data.bin` 写入 U200 DDR 并配置寄存器启动。
-- 若确实需要运行时速率缩放，给 scheduler 增加流水化乘法；不要在 322MHz 路径上放组合 64x32 乘法。
-
-当前 `constraints/traffic_replay_stub.xdc` 只约束 stub 顶层的 `clk` 为 322.265625MHz。接入 CMAC/QDMA/DDR block design 后，需要替换为真实时钟、GT、QSFP、PCIe 和 DDR 约束。
