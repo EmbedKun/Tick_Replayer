@@ -1,0 +1,30 @@
+# Vivado generated state
+.Xil/
+*.jou
+*.log
+*.str
+*.wdb
+*.pb
+*.xpr
+*.cache/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.runs/
+*.gen/
+*.srcs/
+
+# Local build outputs
+build/
+reports/
+artifacts/
+trace_out/
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/
+.idea/
+*.swp
