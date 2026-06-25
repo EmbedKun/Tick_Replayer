@@ -389,6 +389,21 @@ DDR reader 当前在 descriptor metadata 被 scheduler 接收后才发 payload r
 73a8f21073bb64561f46a665624c0eba1becda39  Bring up XDMA DDR replay debug flow
 ```
 
+上传 GitHub 前可以先导出一份干净源码快照：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\export_github_sources.ps1 -Zip
+```
+
+导出结果：
+
+```text
+artifacts/github_source/traffic_replay/
+artifacts/traffic_replay_github_source.zip
+```
+
+标准源码文件清单见 `GITHUB_SOURCE_MANIFEST.md`。Vivado 生成物、bitstream、日志、trace 输出和远程密码不应上传。
+
 建议后续提交粒度：
 
 1. RTL 行为变更。
