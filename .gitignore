@@ -5,6 +5,7 @@
 *.str
 *.wdb
 *.pb
+usage_statistics_webtalk.*
 *.xpr
 *.cache/
 *.hw/
