@@ -25,6 +25,8 @@ rtl/replay_tx_engine.sv
 rtl/host_stream_parser.sv
 rtl/axis_async_fifo.v
 rtl/traffic_replay_bd_core.v
+rtl/rx_capture_bd_core.sv
+rtl/rx_capture_bd_core.v
 rtl/traffic_replay_top_stub.sv
 ```
 

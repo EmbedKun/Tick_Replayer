@@ -1,8 +1,8 @@
 # Tick Replayer
 
-这是一个面向 Xilinx Alveo U200 的 FPGA 流量回放原型工程。我的目标是先把单端口 100Gbps 回放链路跑通：主机把处理后的 trace 通过 PCIe XDMA 写入 FPGA DDR4，FPGA 按 descriptor 里的包间隔从 DDR4 读出数据，再经 512-bit AXI4-Stream 送到 QSFP0 CMAC TX。
+这是一个面向 Xilinx Alveo U200 的 FPGA 流量回放原型工程。第一阶段已经把单端口 100Gbps 回放链路跑通：主机把处理后的 trace 通过 PCIe XDMA 写入 FPGA DDR4，FPGA 按 descriptor 里的包间隔从 DDR4 读出数据，再经 512-bit AXI4-Stream 送到 CMAC TX。当前版本在这个基础上扩展成双端口原型：QSFP0/QSFP1 各有一套独立 TX replay core，RX 侧各有一套统计和截断包缓存入口。
 
-当前版本重点解决的是硬件主链路和可复现工程管理，不是完整商业仪器。已经验证的主路径是 `PRELOAD` DDR 预加载回放；`LOOP` DDR 循环回放 RTL 已接入；`STREAM` 的 parser RTL 已保留，但当前 BD 还没有把 XDMA/QDMA H2C streaming 接进来。
+当前版本重点解决的是硬件主链路、双端口硬件框架和可复现工程管理，不是完整商业仪器。已经验证的主路径是 `PRELOAD` DDR 预加载回放；`LOOP` DDR 循环回放 RTL 已接入；`STREAM` 的 parser RTL 已保留，但当前 BD 还没有把 XDMA/QDMA H2C streaming 接进来。
 
 ![system architecture](docs/system_architecture_overview.png)
 
@@ -16,6 +16,9 @@
 - Host 通过 `/dev/xdma0_user` 访问 replay core 的 AXI-Lite 控制寄存器。
 - FPGA 从 DDR4 读取 descriptor 和 payload，并按 `gap_ticks` 调度发包。
 - 无光纤时通过 `force_link_up` 和 `force_tx_ready` 验证 DDR reader、scheduler、TX engine 的内部通路。
+- 双端口 BD 已生成并烧录：QSFP0/QSFP1 各自连接一套 replay core、TX async FIFO、CMAC 和 RX capture core。
+- 双端口无光纤 TX smoke test 通过：TX0/TX1 分别从不同 DDR 地址装载同一 3 包 trace，均完成 `tx_packets=3`、`tx_bytes=252`。
+- RX0/RX1 的 AXI-Lite 寄存器、ring base/size/truncate 配置、enable/capture 状态读写已通过；因为暂未接光纤，RX 包计数尚未做真实链路验证。
 - XSim 仿真覆盖 host stream path 和 DDR preload path。
 - 远端 U200 JTAG 烧录、PCIe rescan、XDMA driver probe、DDR H2C/C2H 回读和 3 包 DDR preload smoke test 均通过。
 
@@ -24,9 +27,35 @@
 - XDMA/QDMA streaming H2C 直连 `STREAM` 模式的 BD 接线。
 - 接真实光纤后的 CMAC link-up、线速发包和外部网卡收包验证。
 - 大 pcap 长时间压力测试和 100Gbps 极限吞吐优化。
-- 多端口回放。
+- RX 侧真实收包统计、DDR ring 写入和 Host 读取最近包窗口验证。
 - pcapng 支持。当前 `software/pcap2trace.py` 只支持 classic pcap。
 - 更完整的 traffic_replay 风格高层 CLI，例如一条命令完成 pcap 转换、加载、启动和状态轮询。
+
+## 双端口版本说明
+
+双端口版本仍然只使用一套 XDMA endpoint 和一组 H2C/C2H char device。Host 通过 XDMA memory-mapped H2C 把每个端口要回放的 descriptor/data 写入 DDR4 的不同地址，再通过 `/dev/xdma0_user` 中的不同 AXI-Lite 地址段控制两个逻辑端口。
+
+AXI-Lite 地址空间：
+
+```text
+0x00000 - 0x0ffff  TX0 replay registers
+0x10000 - 0x1ffff  TX1 replay registers
+0x20000 - 0x2ffff  RX0 capture/stat registers
+0x30000 - 0x3ffff  RX1 capture/stat registers
+0x40000 - 0x4ffff  DDR4 controller control window
+```
+
+双端口数据路径：
+
+```text
+TX0: replay_core_0 -> tx_axis_fifo_0 -> cmac_0/axis_tx -> QSFP0
+TX1: replay_core_1 -> tx_axis_fifo_1 -> cmac_1/axis_tx -> QSFP1
+
+RX0: cmac_0/rx_axis_* -> rx_cap_0 -> DDR ring writer
+RX1: cmac_1/rx_axis_* -> rx_cap_1 -> DDR ring writer
+```
+
+RX capture 当前是“统计 + 截断保存最近数据”的原型：CMAC RX AXIS 先进入异步 FIFO，再跨到 DDR UI clock 域。启用 capture 后，每个包最多写入 `TRUNC_BYTES` 字节到 DDR ring，ring 以 64B beat 为单位前进并在 `RING_SIZE` 内回绕。这个实现用于 bring-up 和后续扩展入口，暂时不是满速抓包器。
 
 ## 仓库结构
 
@@ -257,6 +286,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action progra
 D:\tr_build_fix\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper_bscan.bit
 ```
 
+当前双端口原型验证过的构建路径是：
+
+```text
+D:\tr_build_dual\vivado_hw\traffic_replay_hw.xpr
+D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
+```
+
+这版 bitstream 已经烧录到远程 U200，PCIe rescan 后枚举为 `10ee:903f`，XDMA 设备节点恢复正常。实现日志里 bitgen 为 0 Errors；最终 timing summary 显示 user constraints met。
+
 JTAG 重配后，远端 Linux 需要重新枚举 PCIe。最稳妥是重启；本次验证中也使用过 remove/rescan：
 
 ```bash
@@ -400,3 +438,72 @@ usage_statistics_webtalk.*
 ```
 
 更多底层 bring-up 细节见 [docs/PROJECT_BRINGUP_NOTES.md](docs/PROJECT_BRINGUP_NOTES.md)。
+
+## 双端口 smoke test 记录
+
+远程 U200 烧录双端口 bitstream 后，先做 DDR H2C/C2H 回读：
+
+```text
+0x00000000 4KB      PASS
+0x00100000 64KB     PASS
+0x10000000 1MB      PASS
+0x30000000 4KB      PASS
+```
+
+TX0 无光纤回放：
+
+```bash
+sudo python3 /home/user/traffic_replay_software/xdma_load_trace.py \
+  --port 0 \
+  --manifest /home/user/trace_out/manifest.json \
+  --desc-base 0x00000000 \
+  --data-base 0x10000000 \
+  --mode preload \
+  --force-link-up \
+  --force-tx-ready
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 status
+```
+
+现象：
+
+```text
+done=yes
+tx_packets=3
+tx_bytes=252
+late_packets=0
+underrun_packets=0
+```
+
+TX1 无光纤回放：
+
+```bash
+sudo python3 /home/user/traffic_replay_software/xdma_load_trace.py \
+  --port 1 \
+  --manifest /home/user/trace_out/manifest.json \
+  --desc-base 0x01000000 \
+  --data-base 0x11000000 \
+  --mode preload \
+  --force-link-up \
+  --force-tx-ready
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 status
+```
+
+现象同 TX0：`tx_packets=3`、`tx_bytes=252`。
+
+RX0/RX1 ring 配置示例：
+
+```bash
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-config --ring-base 0x20000000 --ring-size 0x00100000 --truncate-bytes 128
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-clear
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-enable
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-capture on
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-status
+
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-config --ring-base 0x21000000 --ring-size 0x00100000 --truncate-bytes 128
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-clear
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-enable
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-capture on
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-status
+```
+
+无光纤时的预期现象是 `rx_enable=yes`、`capture_enable=yes`、`fifo_ready=yes`，但 `link_up=no`、`rx_packets=0`。接光纤后需要继续验证 CMAC link-up、RX 包计数、`captured_bytes`、`axi_writes` 和 DDR ring 内容。

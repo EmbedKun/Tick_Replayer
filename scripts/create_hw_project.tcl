@@ -58,6 +58,8 @@ set rtl_files [list \
   [file join $repo_dir rtl ddr_trace_reader.sv] \
   [file join $repo_dir rtl trace_replay_core.sv] \
   [file join $repo_dir rtl traffic_replay_bd_core.v] \
+  [file join $repo_dir rtl rx_capture_bd_core.sv] \
+  [file join $repo_dir rtl rx_capture_bd_core.v] \
   [file join $repo_dir rtl axis_async_fifo.v] \
 ]
 add_files -fileset sources_1 $rtl_files
@@ -71,7 +73,7 @@ create_bd_design $bd_name
 current_bd_design $bd_name
 
 set const_idx 0
-set enable_debug_ila 1
+set enable_debug_ila 0
 if {[info exists ::env(TRAFFIC_REPLAY_ENABLE_ILA)] && $::env(TRAFFIC_REPLAY_ENABLE_ILA) ne ""} {
   set enable_debug_ila $::env(TRAFFIC_REPLAY_ENABLE_ILA)
 }
@@ -158,7 +160,68 @@ proc try_make_pin_external {pin name} {
   connect_bd_net $port $bd_pin
 }
 
-create_bd_cell -type module -reference traffic_replay_bd_core replay_core
+proc configure_cmac_cell {cell eth_board refclk_board core_select gt_group} {
+  set_property -dict [list \
+    CONFIG.ETHERNET_BOARD_INTERFACE $eth_board \
+    CONFIG.DIFFCLK_BOARD_INTERFACE $refclk_board \
+    CONFIG.GT_TYPE {GTY} \
+    CONFIG.CMAC_CAUI4_MODE {1} \
+    CONFIG.NUM_LANES {4x25} \
+    CONFIG.CMAC_CORE_SELECT $core_select \
+    CONFIG.GT_GROUP_SELECT $gt_group \
+    CONFIG.GT_REF_CLK_FREQ {161.1328125} \
+    CONFIG.USER_INTERFACE {AXIS} \
+    CONFIG.INCLUDE_SHARED_LOGIC {2} \
+    CONFIG.INCLUDE_RS_FEC {0} \
+    CONFIG.TX_FLOW_CONTROL {0} \
+    CONFIG.RX_FLOW_CONTROL {0} \
+    CONFIG.TX_FRAME_CRC_CHECKING {Enable FCS Insertion} \
+    CONFIG.RX_FRAME_CRC_CHECKING {Enable FCS Stripping} \
+    CONFIG.TX_IPG_VALUE {12} \
+  ] [get_bd_cells $cell]
+}
+
+proc connect_cmac_const_pins {cell} {
+  connect_const $cell/gtwiz_reset_tx_datapath 1 0
+  connect_const $cell/gtwiz_reset_rx_datapath 1 0
+  connect_const $cell/gt_loopback_in 12 0
+  connect_const $cell/ctl_tx_enable 1 1
+  connect_const $cell/ctl_rx_enable 1 1
+  connect_const $cell/ctl_tx_send_idle 1 0
+  connect_const $cell/ctl_tx_send_lfi 1 0
+  connect_const $cell/ctl_tx_send_rfi 1 0
+  connect_const $cell/ctl_tx_test_pattern 1 0
+  connect_const $cell/ctl_rx_force_resync 1 0
+  connect_const $cell/ctl_rx_test_pattern 1 0
+  connect_const $cell/tx_preamblein 56 0
+  connect_const $cell/drp_addr 10 0
+  connect_const $cell/drp_di 16 0
+  connect_const $cell/drp_en 1 0
+  connect_const $cell/drp_we 1 0
+
+  foreach pin [list \
+    ctl_tx_pause_enable ctl_tx_pause_req ctl_tx_resend_pause \
+    ctl_rx_pause_ack ctl_rx_pause_enable \
+  ] {
+    connect_const $cell/$pin 9 0
+  }
+
+  foreach pin [list \
+    ctl_tx_pause_quanta0 ctl_tx_pause_quanta1 ctl_tx_pause_quanta2 \
+    ctl_tx_pause_quanta3 ctl_tx_pause_quanta4 ctl_tx_pause_quanta5 \
+    ctl_tx_pause_quanta6 ctl_tx_pause_quanta7 ctl_tx_pause_quanta8 \
+    ctl_tx_pause_refresh_timer0 ctl_tx_pause_refresh_timer1 ctl_tx_pause_refresh_timer2 \
+    ctl_tx_pause_refresh_timer3 ctl_tx_pause_refresh_timer4 ctl_tx_pause_refresh_timer5 \
+    ctl_tx_pause_refresh_timer6 ctl_tx_pause_refresh_timer7 ctl_tx_pause_refresh_timer8 \
+  ] {
+    connect_const $cell/$pin 16 0
+  }
+}
+
+create_bd_cell -type module -reference traffic_replay_bd_core replay_core_0
+create_bd_cell -type module -reference traffic_replay_bd_core replay_core_1
+create_bd_cell -type module -reference rx_capture_bd_core rx_cap_0
+create_bd_cell -type module -reference rx_capture_bd_core rx_cap_1
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:xdma xdma_0
 set_property -dict [list \
@@ -223,10 +286,10 @@ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect host_smc
 set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] [get_bd_cells host_smc]
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect ddr_smc
-set_property -dict [list CONFIG.NUM_SI {2} CONFIG.NUM_MI {1}] [get_bd_cells ddr_smc]
+set_property -dict [list CONFIG.NUM_SI {5} CONFIG.NUM_MI {1}] [get_bd_cells ddr_smc]
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect ctrl_smc
-set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {2}] [get_bd_cells ctrl_smc]
+set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {5}] [get_bd_cells ctrl_smc]
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter xdma_to_ddr_cc
 set_property -dict [list CONFIG.PROTOCOL {AXI4} CONFIG.DATA_WIDTH {512} CONFIG.ADDR_WIDTH {64} CONFIG.ID_WIDTH {4}] [get_bd_cells xdma_to_ddr_cc]
@@ -237,7 +300,8 @@ set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.DATA_WIDTH {32}] [get
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice ctrl_ddr_regslice
 set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.DATA_WIDTH {32}] [get_bd_cells ctrl_ddr_regslice]
 
-create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo
+create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo_0
+create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo_1
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz cmac_init_clk_wiz
 set_property -dict [list \
@@ -249,28 +313,16 @@ set_property -dict [list \
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_ddr
 create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_cmac_init
-create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic cmac_tx_resetn_inv
-set_property -dict [list CONFIG.C_SIZE {1} CONFIG.C_OPERATION {not}] [get_bd_cells cmac_tx_resetn_inv]
+foreach rst_cell [list cmac0_tx_resetn_inv cmac0_rx_resetn_inv cmac1_tx_resetn_inv cmac1_rx_resetn_inv] {
+  create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic $rst_cell
+  set_property -dict [list CONFIG.C_SIZE {1} CONFIG.C_OPERATION {not}] [get_bd_cells $rst_cell]
+}
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:cmac_usplus cmac_0
-set_property -dict [list \
-  CONFIG.ETHERNET_BOARD_INTERFACE {qsfp0_4x} \
-  CONFIG.DIFFCLK_BOARD_INTERFACE {qsfp0_161mhz} \
-  CONFIG.GT_TYPE {GTY} \
-  CONFIG.CMAC_CAUI4_MODE {1} \
-  CONFIG.NUM_LANES {4x25} \
-  CONFIG.CMAC_CORE_SELECT {CMACE4_X0Y6} \
-  CONFIG.GT_GROUP_SELECT {X1Y48~X1Y51} \
-  CONFIG.GT_REF_CLK_FREQ {161.1328125} \
-  CONFIG.USER_INTERFACE {AXIS} \
-  CONFIG.INCLUDE_SHARED_LOGIC {2} \
-  CONFIG.INCLUDE_RS_FEC {0} \
-  CONFIG.TX_FLOW_CONTROL {0} \
-  CONFIG.RX_FLOW_CONTROL {0} \
-  CONFIG.TX_FRAME_CRC_CHECKING {Enable FCS Insertion} \
-  CONFIG.RX_FRAME_CRC_CHECKING {Enable FCS Stripping} \
-  CONFIG.TX_IPG_VALUE {12} \
-] [get_bd_cells cmac_0]
+configure_cmac_cell cmac_0 qsfp0_4x qsfp0_161mhz CMACE4_X0Y6 X1Y48~X1Y51
+
+create_bd_cell -type ip -vlnv xilinx.com:ip:cmac_usplus cmac_1
+configure_cmac_cell cmac_1 qsfp1_4x qsfp1_161mhz CMACE4_X0Y5 X1Y44~X1Y47
 
 if {$enable_debug_ila} {
   create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice cmac_tx_ila_tdata_low
@@ -304,12 +356,19 @@ try_board_intf ddr4_0/C0_SYS_CLK default_300mhz_clk0
 
 try_board_intf cmac_0/gt_serial_port qsfp0_4x
 try_board_intf cmac_0/gt_ref_clk qsfp0_161mhz
+try_board_intf cmac_1/gt_serial_port qsfp1_4x
+try_board_intf cmac_1/gt_ref_clk qsfp1_161mhz
 
 create_const_port qsfp0_modsell 1 0
 create_const_port qsfp0_resetl 1 1
 create_const_port qsfp0_lpmode 1 0
 create_const_port qsfp0_refclk_reset 1 0
 create_const_port qsfp0_fs 2 2
+create_const_port qsfp1_modsell 1 0
+create_const_port qsfp1_resetl 1 1
+create_const_port qsfp1_lpmode 1 0
+create_const_port qsfp1_refclk_reset 1 0
+create_const_port qsfp1_fs 2 2
 
 connect_bd_net [get_bd_pins pcie_refclk_buf/IBUF_DS_ODIV2] [get_bd_pins xdma_0/sys_clk]
 connect_bd_net [get_bd_pins pcie_refclk_buf/IBUF_OUT] [get_bd_pins xdma_0/sys_clk_gt]
@@ -323,8 +382,12 @@ connect_bd_net [get_bd_pins ddr4_0/c0_ddr4_ui_clk] \
   [get_bd_pins ctrl_ddr_regslice/aclk] \
   [get_bd_pins xdma_to_ddr_cc/m_axi_aclk] \
   [get_bd_pins axil_ctrl_cc/m_axi_aclk] \
-  [get_bd_pins replay_core/clk] \
-  [get_bd_pins tx_axis_fifo/s_clk] \
+  [get_bd_pins replay_core_0/clk] \
+  [get_bd_pins replay_core_1/clk] \
+  [get_bd_pins rx_cap_0/clk] \
+  [get_bd_pins rx_cap_1/clk] \
+  [get_bd_pins tx_axis_fifo_0/s_clk] \
+  [get_bd_pins tx_axis_fifo_1/s_clk] \
   [get_bd_pins cmac_init_clk_wiz/clk_in1] \
   [get_bd_pins rst_ddr/slowest_sync_clk]
 
@@ -335,29 +398,41 @@ connect_bd_net [get_bd_pins rst_ddr/peripheral_aresetn] \
   [get_bd_pins ctrl_ddr_regslice/aresetn] \
   [get_bd_pins xdma_to_ddr_cc/m_axi_aresetn] \
   [get_bd_pins axil_ctrl_cc/m_axi_aresetn] \
-  [get_bd_pins replay_core/resetn] \
-  [get_bd_pins tx_axis_fifo/s_resetn] \
+  [get_bd_pins replay_core_0/resetn] \
+  [get_bd_pins replay_core_1/resetn] \
+  [get_bd_pins rx_cap_0/resetn] \
+  [get_bd_pins rx_cap_1/resetn] \
+  [get_bd_pins tx_axis_fifo_0/s_resetn] \
+  [get_bd_pins tx_axis_fifo_1/s_resetn] \
   [get_bd_pins ddr4_0/c0_ddr4_aresetn]
 
-connect_bd_net [get_bd_pins cmac_0/gt_txusrclk2] [get_bd_pins tx_axis_fifo/m_clk]
-connect_bd_net [get_bd_pins cmac_0/usr_tx_reset] [get_bd_pins cmac_tx_resetn_inv/Op1]
-connect_bd_net [get_bd_pins cmac_tx_resetn_inv/Res] [get_bd_pins tx_axis_fifo/m_resetn]
-connect_bd_net [get_bd_pins cmac_init_clk_wiz/clk_out1] [get_bd_pins cmac_0/init_clk] [get_bd_pins cmac_0/drp_clk] [get_bd_pins rst_cmac_init/slowest_sync_clk]
+connect_bd_net [get_bd_pins cmac_0/gt_txusrclk2] [get_bd_pins tx_axis_fifo_0/m_clk] [get_bd_pins rx_cap_0/rx_clk] [get_bd_pins cmac_0/rx_clk]
+connect_bd_net [get_bd_pins cmac_1/gt_txusrclk2] [get_bd_pins tx_axis_fifo_1/m_clk] [get_bd_pins rx_cap_1/rx_clk] [get_bd_pins cmac_1/rx_clk]
+connect_bd_net [get_bd_pins cmac_0/usr_tx_reset] [get_bd_pins cmac0_tx_resetn_inv/Op1]
+connect_bd_net [get_bd_pins cmac_0/usr_rx_reset] [get_bd_pins cmac0_rx_resetn_inv/Op1]
+connect_bd_net [get_bd_pins cmac_1/usr_tx_reset] [get_bd_pins cmac1_tx_resetn_inv/Op1]
+connect_bd_net [get_bd_pins cmac_1/usr_rx_reset] [get_bd_pins cmac1_rx_resetn_inv/Op1]
+connect_bd_net [get_bd_pins cmac0_tx_resetn_inv/Res] [get_bd_pins tx_axis_fifo_0/m_resetn]
+connect_bd_net [get_bd_pins cmac1_tx_resetn_inv/Res] [get_bd_pins tx_axis_fifo_1/m_resetn]
+connect_bd_net [get_bd_pins cmac0_rx_resetn_inv/Res] [get_bd_pins rx_cap_0/rx_resetn]
+connect_bd_net [get_bd_pins cmac1_rx_resetn_inv/Res] [get_bd_pins rx_cap_1/rx_resetn]
+connect_bd_net [get_bd_pins cmac_init_clk_wiz/clk_out1] [get_bd_pins cmac_0/init_clk] [get_bd_pins cmac_0/drp_clk] [get_bd_pins cmac_1/init_clk] [get_bd_pins cmac_1/drp_clk] [get_bd_pins rst_cmac_init/slowest_sync_clk]
 connect_bd_net [get_bd_pins cmac_init_clk_wiz/locked] [get_bd_pins rst_cmac_init/dcm_locked]
 connect_bd_net [get_bd_pins rst_ddr/peripheral_reset] [get_bd_pins rst_cmac_init/ext_reset_in]
-connect_bd_net [get_bd_pins cmac_0/gt_txusrclk2] [get_bd_pins cmac_0/rx_clk]
-connect_bd_net [get_bd_pins rst_cmac_init/peripheral_reset] [get_bd_pins cmac_0/sys_reset] [get_bd_pins cmac_0/core_tx_reset] [get_bd_pins cmac_0/core_rx_reset] [get_bd_pins cmac_0/core_drp_reset]
-connect_bd_net [get_bd_pins cmac_0/stat_rx_aligned] [get_bd_pins replay_core/link_up]
-connect_const tx_axis_fifo/m_axis_tready 1 1
+connect_bd_net [get_bd_pins rst_cmac_init/peripheral_reset] [get_bd_pins cmac_0/sys_reset] [get_bd_pins cmac_0/core_tx_reset] [get_bd_pins cmac_0/core_rx_reset] [get_bd_pins cmac_0/core_drp_reset] [get_bd_pins cmac_1/sys_reset] [get_bd_pins cmac_1/core_tx_reset] [get_bd_pins cmac_1/core_rx_reset] [get_bd_pins cmac_1/core_drp_reset]
+connect_bd_net [get_bd_pins cmac_0/stat_rx_aligned] [get_bd_pins replay_core_0/link_up] [get_bd_pins rx_cap_0/link_up]
+connect_bd_net [get_bd_pins cmac_1/stat_rx_aligned] [get_bd_pins replay_core_1/link_up] [get_bd_pins rx_cap_1/link_up]
+connect_const tx_axis_fifo_0/m_axis_tready 1 1
+connect_const tx_axis_fifo_1/m_axis_tready 1 1
 
 if {$enable_debug_ila} {
   connect_bd_net [get_bd_pins cmac_0/gt_txusrclk2] [get_bd_pins cmac_tx_ila/clk]
-  connect_bd_net [get_bd_pins tx_axis_fifo/m_axis_tvalid] [get_bd_pins cmac_tx_ila/probe0]
+  connect_bd_net [get_bd_pins tx_axis_fifo_0/m_axis_tvalid] [get_bd_pins cmac_tx_ila/probe0]
   connect_bd_net [add_const cmac_tx_ila_tready_const 32 1] [get_bd_pins cmac_tx_ila/probe1]
-  connect_bd_net [get_bd_pins tx_axis_fifo/m_axis_tlast] [get_bd_pins cmac_tx_ila/probe2]
-  connect_bd_net [get_bd_pins tx_axis_fifo/m_axis_tuser] [get_bd_pins cmac_tx_ila/probe3]
-  connect_bd_net [get_bd_pins tx_axis_fifo/m_axis_tkeep] [get_bd_pins cmac_tx_ila/probe4]
-  connect_bd_net [get_bd_pins tx_axis_fifo/m_axis_tdata] [get_bd_pins cmac_tx_ila_tdata_low/Din]
+  connect_bd_net [get_bd_pins tx_axis_fifo_0/m_axis_tlast] [get_bd_pins cmac_tx_ila/probe2]
+  connect_bd_net [get_bd_pins tx_axis_fifo_0/m_axis_tuser] [get_bd_pins cmac_tx_ila/probe3]
+  connect_bd_net [get_bd_pins tx_axis_fifo_0/m_axis_tkeep] [get_bd_pins cmac_tx_ila/probe4]
+  connect_bd_net [get_bd_pins tx_axis_fifo_0/m_axis_tdata] [get_bd_pins cmac_tx_ila_tdata_low/Din]
   connect_bd_net [get_bd_pins cmac_tx_ila_tdata_low/Dout] [get_bd_pins cmac_tx_ila/probe5]
   connect_bd_net [get_bd_pins cmac_0/stat_rx_aligned] [get_bd_pins cmac_tx_ila/probe6]
 }
@@ -365,65 +440,61 @@ if {$enable_debug_ila} {
 connect_bd_intf_net [get_bd_intf_pins xdma_0/M_AXI] [get_bd_intf_pins host_smc/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins host_smc/M00_AXI] [get_bd_intf_pins xdma_to_ddr_cc/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins xdma_to_ddr_cc/M_AXI] [get_bd_intf_pins ddr_smc/S00_AXI]
-connect_bd_intf_net [get_bd_intf_pins replay_core/M_AXI] [get_bd_intf_pins ddr_smc/S01_AXI]
+connect_bd_intf_net [get_bd_intf_pins replay_core_0/M_AXI] [get_bd_intf_pins ddr_smc/S01_AXI]
+connect_bd_intf_net [get_bd_intf_pins replay_core_1/M_AXI] [get_bd_intf_pins ddr_smc/S02_AXI]
+connect_bd_intf_net [get_bd_intf_pins rx_cap_0/M_AXI] [get_bd_intf_pins ddr_smc/S03_AXI]
+connect_bd_intf_net [get_bd_intf_pins rx_cap_1/M_AXI] [get_bd_intf_pins ddr_smc/S04_AXI]
 connect_bd_intf_net [get_bd_intf_pins ddr_smc/M00_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI]
 
 connect_bd_intf_net [get_bd_intf_pins xdma_0/M_AXI_LITE] [get_bd_intf_pins axil_ctrl_cc/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins axil_ctrl_cc/M_AXI] [get_bd_intf_pins ctrl_smc/S00_AXI]
-connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M00_AXI] [get_bd_intf_pins replay_core/S_AXIL]
-connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M01_AXI] [get_bd_intf_pins ctrl_ddr_regslice/S_AXI]
+connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M00_AXI] [get_bd_intf_pins replay_core_0/S_AXIL]
+connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M01_AXI] [get_bd_intf_pins replay_core_1/S_AXIL]
+connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M02_AXI] [get_bd_intf_pins rx_cap_0/S_AXIL]
+connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M03_AXI] [get_bd_intf_pins rx_cap_1/S_AXIL]
+connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M04_AXI] [get_bd_intf_pins ctrl_ddr_regslice/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_ddr_regslice/M_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI_CTRL]
 
-connect_bd_intf_net [get_bd_intf_pins replay_core/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo/S_AXIS]
-connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo/M_AXIS] [get_bd_intf_pins cmac_0/axis_tx]
+connect_bd_intf_net [get_bd_intf_pins replay_core_0/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo_0/S_AXIS]
+connect_bd_intf_net [get_bd_intf_pins replay_core_1/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo_1/S_AXIS]
+connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo_0/M_AXIS] [get_bd_intf_pins cmac_0/axis_tx]
+connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo_1/M_AXIS] [get_bd_intf_pins cmac_1/axis_tx]
+
+connect_bd_net [get_bd_pins cmac_0/rx_axis_tdata] [get_bd_pins rx_cap_0/s_rx_axis_tdata]
+connect_bd_net [get_bd_pins cmac_0/rx_axis_tkeep] [get_bd_pins rx_cap_0/s_rx_axis_tkeep]
+connect_bd_net [get_bd_pins cmac_0/rx_axis_tvalid] [get_bd_pins rx_cap_0/s_rx_axis_tvalid]
+connect_bd_net [get_bd_pins cmac_0/rx_axis_tlast] [get_bd_pins rx_cap_0/s_rx_axis_tlast]
+connect_bd_net [get_bd_pins cmac_0/rx_axis_tuser] [get_bd_pins rx_cap_0/s_rx_axis_tuser]
+connect_bd_net [get_bd_pins cmac_1/rx_axis_tdata] [get_bd_pins rx_cap_1/s_rx_axis_tdata]
+connect_bd_net [get_bd_pins cmac_1/rx_axis_tkeep] [get_bd_pins rx_cap_1/s_rx_axis_tkeep]
+connect_bd_net [get_bd_pins cmac_1/rx_axis_tvalid] [get_bd_pins rx_cap_1/s_rx_axis_tvalid]
+connect_bd_net [get_bd_pins cmac_1/rx_axis_tlast] [get_bd_pins rx_cap_1/s_rx_axis_tlast]
+connect_bd_net [get_bd_pins cmac_1/rx_axis_tuser] [get_bd_pins rx_cap_1/s_rx_axis_tuser]
 
 connect_const ddr4_0/sys_rst 1 0
 connect_const xdma_0/usr_irq_req 1 0
-connect_const cmac_0/gtwiz_reset_tx_datapath 1 0
-connect_const cmac_0/gtwiz_reset_rx_datapath 1 0
-connect_const cmac_0/gt_loopback_in 12 0
-connect_const cmac_0/ctl_tx_enable 1 1
-connect_const cmac_0/ctl_rx_enable 1 1
-connect_const cmac_0/ctl_tx_send_idle 1 0
-connect_const cmac_0/ctl_tx_send_lfi 1 0
-connect_const cmac_0/ctl_tx_send_rfi 1 0
-connect_const cmac_0/ctl_tx_test_pattern 1 0
-connect_const cmac_0/ctl_rx_force_resync 1 0
-connect_const cmac_0/ctl_rx_test_pattern 1 0
-connect_const cmac_0/tx_preamblein 56 0
-connect_const cmac_0/drp_addr 10 0
-connect_const cmac_0/drp_di 16 0
-connect_const cmac_0/drp_en 1 0
-connect_const cmac_0/drp_we 1 0
-
-foreach pin [list \
-  ctl_tx_pause_enable ctl_tx_pause_req ctl_tx_resend_pause \
-  ctl_rx_pause_ack ctl_rx_pause_enable \
-] {
-  connect_const cmac_0/$pin 9 0
-}
-
-foreach pin [list \
-  ctl_tx_pause_quanta0 ctl_tx_pause_quanta1 ctl_tx_pause_quanta2 \
-  ctl_tx_pause_quanta3 ctl_tx_pause_quanta4 ctl_tx_pause_quanta5 \
-  ctl_tx_pause_quanta6 ctl_tx_pause_quanta7 ctl_tx_pause_quanta8 \
-  ctl_tx_pause_refresh_timer0 ctl_tx_pause_refresh_timer1 ctl_tx_pause_refresh_timer2 \
-  ctl_tx_pause_refresh_timer3 ctl_tx_pause_refresh_timer4 ctl_tx_pause_refresh_timer5 \
-  ctl_tx_pause_refresh_timer6 ctl_tx_pause_refresh_timer7 ctl_tx_pause_refresh_timer8 \
-] {
-  connect_const cmac_0/$pin 16 0
-}
+connect_cmac_const_pins cmac_0
+connect_cmac_const_pins cmac_1
 
 assign_bd_address
 
 set ctrl_segs [get_bd_addr_segs -quiet xdma_0/M_AXI_LITE/*]
 foreach seg $ctrl_segs {
-  if {[string match *replay_core* $seg]} {
+  if {[string match *replay_core_0* $seg]} {
     set_property range 64K $seg
     set_property offset 0x00000000 $seg
-  } elseif {[string match *ddr4_0* $seg]} {
+  } elseif {[string match *replay_core_1* $seg]} {
     set_property range 64K $seg
     set_property offset 0x00010000 $seg
+  } elseif {[string match *rx_cap_0* $seg]} {
+    set_property range 64K $seg
+    set_property offset 0x00020000 $seg
+  } elseif {[string match *rx_cap_1* $seg]} {
+    set_property range 64K $seg
+    set_property offset 0x00030000 $seg
+  } elseif {[string match *ddr4_0* $seg]} {
+    set_property range 64K $seg
+    set_property offset 0x00040000 $seg
   }
 }
 
@@ -435,11 +506,13 @@ foreach seg $ddr_host_segs {
   }
 }
 
-set ddr_core_segs [get_bd_addr_segs -quiet replay_core/M_AXI/*]
-foreach seg $ddr_core_segs {
-  if {[string match *ddr4_0* $seg]} {
-    set_property offset 0x0000000000000000 $seg
-    set_property range 16G $seg
+foreach master [list replay_core_0 replay_core_1 rx_cap_0 rx_cap_1] {
+  set ddr_core_segs [get_bd_addr_segs -quiet $master/M_AXI/*]
+  foreach seg $ddr_core_segs {
+    if {[string match *ddr4_0* $seg]} {
+      set_property offset 0x0000000000000000 $seg
+      set_property range 16G $seg
+    }
   }
 }
 

@@ -692,7 +692,208 @@ D:\tr_build_fix\vivado_hw\traffic_replay_hw.xpr
 D:\tr_build_fix\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper_bscan.bit
 ```
 
-## 11. 后续开发建议
+## 11. 双端口原型增量记录
+
+这次在单端口版本上扩成了双端口原型，目标是让一块 U200 同时扮演 pcap 里的两个逻辑方向。当前没有接光纤，所以只验证到 PCIe/XDMA/DDR/双 TX 内部通路和 RX capture 控制面；真实 RX 收包要等光纤接上后继续测。
+
+### 新增模块
+
+新增文件：
+
+```text
+rtl/rx_capture_bd_core.sv  RX capture/stat SystemVerilog core
+rtl/rx_capture_bd_core.v   Vivado BD 用 Verilog wrapper
+```
+
+`rx_capture_core` 做的事情：
+
+- 接 CMAC RX AXIS：`rx_axis_tdata/tkeep/tvalid/tlast/tuser`。
+- 因为 CMAC RX 没有 `tready`，内部只能在 FIFO 满时丢弃新 beat，并通过 overflow sticky bit 暴露风险。
+- 用 `axis_async_fifo` 从 CMAC RX clock 跨到 DDR UI clock。
+- 统计 RX packets/bytes/errors。
+- 可选把每个包前 `TRUNC_BYTES` 字节写入 DDR ring buffer。
+- DDR ring 写入是单 beat AXI4 write，便于 bring-up，不是满速抓包器。
+
+RX capture 寄存器地址相对每个 RX block base：
+
+```text
+0x0000 CONTROL        bit0 enable, bit1 clear, bit2 capture_enable
+0x0004 STATUS         bit0 awvalid, bit1 wvalid, bit2 bvalid, bit3 fifo_ready,
+                      bit4 fifo_valid, bit5 link_up, bit6 overflow_seen,
+                      bit[8:7] writer_state
+0x0010 RING_BASE_LO
+0x0014 RING_BASE_HI
+0x0018 RING_SIZE
+0x001c TRUNC_BYTES
+0x0020 WRITE_PTR
+0x0030 RX_PKTS_LO
+0x0034 RX_PKTS_HI
+0x0038 RX_BYTES_LO
+0x003c RX_BYTES_HI
+0x0040 RX_ERRS_LO
+0x0044 RX_ERRS_HI
+0x0048 CAP_BYTES_LO
+0x004c CAP_BYTES_HI
+0x0050 AXI_WR_LO
+0x0054 AXI_WR_HI
+0x0058 AXI_ERR_LO
+0x005c AXI_ERR_HI
+0x0060 DEBUG
+```
+
+### BD 连接变化
+
+现在 BD 里有两套 TX replay：
+
+```text
+replay_core_0/M_TX_AXIS -> tx_axis_fifo_0 -> cmac_0/axis_tx -> QSFP0
+replay_core_1/M_TX_AXIS -> tx_axis_fifo_1 -> cmac_1/axis_tx -> QSFP1
+```
+
+两套 RX capture：
+
+```text
+cmac_0/rx_axis_* -> rx_cap_0 -> ddr_smc -> DDR4 C0
+cmac_1/rx_axis_* -> rx_cap_1 -> ddr_smc -> DDR4 C0
+```
+
+DDR SmartConnect 现在有 5 个 slave input：
+
+```text
+S00: XDMA H2C/C2H memory mapped path
+S01: replay_core_0 M_AXI read
+S02: replay_core_1 M_AXI read
+S03: rx_cap_0 M_AXI write
+S04: rx_cap_1 M_AXI write
+```
+
+Control SmartConnect 现在有 5 个 master output：
+
+```text
+M00 -> replay_core_0/S_AXIL at 0x00000
+M01 -> replay_core_1/S_AXIL at 0x10000
+M02 -> rx_cap_0/S_AXIL      at 0x20000
+M03 -> rx_cap_1/S_AXIL      at 0x30000
+M04 -> DDR4 control regs    at 0x40000
+```
+
+Host 脚本变化：
+
+- `traffic_replay_cli.py --port 0/1 ...` 控制 TX0/TX1 或 RX0/RX1。
+- `xdma_load_trace.py --port 0/1 ...` 会把寄存器写到对应 replay core。
+- 新增 `rx-status`、`rx-regs`、`rx-config`、`rx-enable`、`rx-disable`、`rx-capture`、`rx-clear`。
+
+### QSFP1/CMAC1 约束
+
+QSFP1 约束参考了本地 `build/corundum_ref/fpga/mqnic/Alveo/fpga_100g/fpga_au200.xdc`。关键映射：
+
+```text
+QSFP0: GTY X1Y48~X1Y51, CMACE4_X0Y6, refclk K11/K10
+QSFP1: GTY X1Y44~X1Y47, CMACE4_X0Y5, refclk P11/P10
+```
+
+QSFP1 高速管脚：
+
+```text
+rx0 U4/U3, tx0 U9/U8
+rx1 T2/T1, tx1 T7/T6
+rx2 R4/R3, tx2 R9/R8
+rx3 P2/P1, tx3 P7/P6
+```
+
+QSFP1 sideband：
+
+```text
+modsell AY20
+resetl  BC18
+lpmode  AV22
+refclk_reset AR21
+fs[0]   AR22
+fs[1]   AU20
+```
+
+### 构建和烧录结果
+
+双端口构建路径：
+
+```text
+D:\tr_build_dual\vivado_hw\traffic_replay_hw.xpr
+D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
+```
+
+Vivado 结果：
+
+- `validate_bd_design` 通过。
+- `synth_design` 通过。
+- `place_design` 通过，没有复现之前的 clock routing failed。
+- `route_design` 通过。
+- `write_bitstream` 通过，0 Errors。
+- 最终 `reports/hw_impl_timing_summary.rpt` 显示 user constraints met。
+- CMAC 仍有 `cmac_an_lt` design_linking license 的 critical warning，这是 CMAC IP license 相关提示，不是实现错误。
+
+远程 U200 烧录：
+
+- bitstream 已通过 JTAG/hw_server 烧录到 `172.22.5.106:3121`。
+- JTAG program 后执行 PCIe remove/rescan，XDMA driver 重新 probe 成功。
+- `lspci -nn -d 10ee:` 显示 `01:00.0 Memory controller [0580]: Xilinx Corporation Device [10ee:903f]`。
+- `/dev/xdma0_h2c_0`、`/dev/xdma0_c2h_0`、`/dev/xdma0_user` 等设备节点恢复。
+
+### 双端口 debug 现象
+
+DDR DMA 回读：
+
+```text
+0x00000000 4KB      PASS
+0x00100000 64KB     PASS
+0x10000000 1MB      PASS
+0x30000000 4KB      PASS
+```
+
+TX0 装载 `/home/user/trace_out/manifest.json`：
+
+```text
+desc_base=0x00000000
+data_base=0x10000000
+force_link_up=yes
+force_tx_ready=yes
+done=yes
+tx_packets=3
+tx_bytes=252
+late_packets=0
+underrun_packets=0
+```
+
+TX1 装载同一 trace，但用不同 DDR 地址：
+
+```text
+desc_base=0x01000000
+data_base=0x11000000
+force_link_up=yes
+force_tx_ready=yes
+done=yes
+tx_packets=3
+tx_bytes=252
+late_packets=0
+underrun_packets=0
+```
+
+RX0/RX1 控制面：
+
+```text
+RX0 ring_base=0x20000000, ring_size=0x00100000, truncate=128
+RX1 ring_base=0x21000000, ring_size=0x00100000, truncate=128
+rx_enable=yes
+capture_enable=yes
+fifo_ready=yes
+link_up=no
+rx_packets=0
+captured_bytes=0
+axi_writes=0
+```
+
+没有接光纤，所以 `link_up=no` 和 `rx_packets=0` 是预期现象。接光纤后的下一步是看 `stat_rx_aligned`、RX packet counter、DDR ring `write_ptr/captured_bytes/axi_writes` 是否递增，并用 C2H 从 ring base 读回最近包头。
+
+## 12. 后续开发建议
 
 优先级从高到低：
 
@@ -704,7 +905,7 @@ D:\tr_build_fix\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrappe
 6. 扩展 pcap 处理：IP/port/DNS/checksum 一致性修改，带宽/RTT/丢包率场景生成。
 7. 增加真实 pcap 回放自动化测试和长时间稳定性测试。
 
-## 12. 容易踩坑的点
+## 13. 容易踩坑的点
 
 - JTAG 重新烧 PCIe endpoint 后，一定要 PCIe rescan 或重启。
 - 不接光纤时不要指望 CMAC physical link-up。

@@ -117,8 +117,29 @@ set_property LOC K6 [get_ports -quiet {qsfp0_4x_gtx_n[3]}]
 set_property LOC K11 [get_ports -quiet qsfp0_161mhz_clk_p]
 set_property LOC K10 [get_ports -quiet qsfp0_161mhz_clk_n]
 
-# DDR/UI logic and CMAC TX AXIS logic cross only through tx_axis_fifo.
-set_clock_groups -asynchronous -group [get_clocks -regexp -quiet {^mmcm_clkout0$}] -group [get_clocks -regexp -quiet {^txoutclk_out\[0\]$}]
+# QSFP1 4x25G lanes and 161.1328125 MHz MGT reference clock.
+set_property LOC U4 [get_ports -quiet {qsfp1_4x_grx_p[0]}]
+set_property LOC U3 [get_ports -quiet {qsfp1_4x_grx_n[0]}]
+set_property LOC U9 [get_ports -quiet {qsfp1_4x_gtx_p[0]}]
+set_property LOC U8 [get_ports -quiet {qsfp1_4x_gtx_n[0]}]
+set_property LOC T2 [get_ports -quiet {qsfp1_4x_grx_p[1]}]
+set_property LOC T1 [get_ports -quiet {qsfp1_4x_grx_n[1]}]
+set_property LOC T7 [get_ports -quiet {qsfp1_4x_gtx_p[1]}]
+set_property LOC T6 [get_ports -quiet {qsfp1_4x_gtx_n[1]}]
+set_property LOC R4 [get_ports -quiet {qsfp1_4x_grx_p[2]}]
+set_property LOC R3 [get_ports -quiet {qsfp1_4x_grx_n[2]}]
+set_property LOC R9 [get_ports -quiet {qsfp1_4x_gtx_p[2]}]
+set_property LOC R8 [get_ports -quiet {qsfp1_4x_gtx_n[2]}]
+set_property LOC P2 [get_ports -quiet {qsfp1_4x_grx_p[3]}]
+set_property LOC P1 [get_ports -quiet {qsfp1_4x_grx_n[3]}]
+set_property LOC P7 [get_ports -quiet {qsfp1_4x_gtx_p[3]}]
+set_property LOC P6 [get_ports -quiet {qsfp1_4x_gtx_n[3]}]
+
+set_property LOC P11 [get_ports -quiet qsfp1_161mhz_clk_p]
+set_property LOC P10 [get_ports -quiet qsfp1_161mhz_clk_n]
+
+# DDR/UI logic and CMAC AXIS logic cross only through explicit async FIFOs.
+set_clock_groups -asynchronous -group [get_clocks -regexp -quiet {^mmcm_clkout0$}] -group [get_clocks -regexp -quiet {txoutclk.*}]
 
 # QSFP0 module and reference-clock sideband. The BD ties these to constants:
 # resetl=1, lpmode=0, refclk_reset=0, fs=2'b10 for 161.1328125 MHz.
@@ -147,3 +168,31 @@ set_property IOSTANDARD LVCMOS12 [get_ports -quiet {qsfp0_fs[1]}]
 set_property SLEW SLOW [get_ports -quiet {qsfp0_fs[1]}]
 set_property DRIVE 8 [get_ports -quiet {qsfp0_fs[1]}]
 set_false_path -to [get_ports -quiet {qsfp0_modsell qsfp0_resetl qsfp0_lpmode qsfp0_refclk_reset qsfp0_fs[*]}]
+
+# QSFP1 module and reference-clock sideband. The BD ties these to constants:
+# resetl=1, lpmode=0, refclk_reset=0, fs=2'b10 for 161.1328125 MHz.
+set_property LOC AY20 [get_ports -quiet qsfp1_modsell]
+set_property IOSTANDARD LVCMOS12 [get_ports -quiet qsfp1_modsell]
+set_property SLEW SLOW [get_ports -quiet qsfp1_modsell]
+set_property DRIVE 8 [get_ports -quiet qsfp1_modsell]
+set_property LOC BC18 [get_ports -quiet qsfp1_resetl]
+set_property IOSTANDARD LVCMOS12 [get_ports -quiet qsfp1_resetl]
+set_property SLEW SLOW [get_ports -quiet qsfp1_resetl]
+set_property DRIVE 8 [get_ports -quiet qsfp1_resetl]
+set_property LOC AV22 [get_ports -quiet qsfp1_lpmode]
+set_property IOSTANDARD LVCMOS12 [get_ports -quiet qsfp1_lpmode]
+set_property SLEW SLOW [get_ports -quiet qsfp1_lpmode]
+set_property DRIVE 8 [get_ports -quiet qsfp1_lpmode]
+set_property LOC AR21 [get_ports -quiet qsfp1_refclk_reset]
+set_property IOSTANDARD LVCMOS12 [get_ports -quiet qsfp1_refclk_reset]
+set_property SLEW SLOW [get_ports -quiet qsfp1_refclk_reset]
+set_property DRIVE 8 [get_ports -quiet qsfp1_refclk_reset]
+set_property LOC AR22 [get_ports -quiet {qsfp1_fs[0]}]
+set_property IOSTANDARD LVCMOS12 [get_ports -quiet {qsfp1_fs[0]}]
+set_property SLEW SLOW [get_ports -quiet {qsfp1_fs[0]}]
+set_property DRIVE 8 [get_ports -quiet {qsfp1_fs[0]}]
+set_property LOC AU20 [get_ports -quiet {qsfp1_fs[1]}]
+set_property IOSTANDARD LVCMOS12 [get_ports -quiet {qsfp1_fs[1]}]
+set_property SLEW SLOW [get_ports -quiet {qsfp1_fs[1]}]
+set_property DRIVE 8 [get_ports -quiet {qsfp1_fs[1]}]
+set_false_path -to [get_ports -quiet {qsfp1_modsell qsfp1_resetl qsfp1_lpmode qsfp1_refclk_reset qsfp1_fs[*]}]

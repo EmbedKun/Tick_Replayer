@@ -31,6 +31,8 @@ REG_START_HI = 0x0044
 REG_RATE = 0x0048
 REG_DEBUG_CTRL = 0x0054
 
+TX_PORT_BASE = {0: 0x00000, 1: 0x10000}
+
 MODE_PRELOAD = 0
 MODE_STREAM = 1
 MODE_LOOP = 2
@@ -47,6 +49,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data", type=Path, help="data.bin path")
     parser.add_argument("--h2c", default="/dev/xdma0_h2c_0")
     parser.add_argument("--user", default="/dev/xdma0_user")
+    parser.add_argument("--port", type=int, choices=[0, 1], default=0, help="logical replay TX port")
+    parser.add_argument("--reg-base", type=int_auto, help="override AXI-Lite replay register base")
     parser.add_argument("--desc-base", type=int_auto, default=0x0000_0000)
     parser.add_argument("--data-base", type=int_auto, default=0x1000_0000)
     parser.add_argument("--mode", choices=["preload", "loop"], default="preload")
@@ -110,6 +114,7 @@ def write64(fd: int, offset_lo: int, offset_hi: int, value: int) -> None:
 
 def main() -> None:
     args = parse_args()
+    reg_base = TX_PORT_BASE[args.port] if args.reg_base is None else args.reg_base
     load_manifest(args)
     desc_path = require_file(args.desc, "--desc")
     data_path = require_file(args.data, "--data")
@@ -131,18 +136,18 @@ def main() -> None:
 
     user_fd = os.open(args.user, os.O_RDWR)
     try:
-        write32(user_fd, REG_CONTROL, 0x4)
-        write32(user_fd, REG_MODE, mode_value)
-        write64(user_fd, REG_DESC_BASE_LO, REG_DESC_BASE_HI, args.desc_base)
-        write64(user_fd, REG_DATA_BASE_LO, REG_DATA_BASE_HI, args.data_base)
-        write64(user_fd, REG_TRACE_LO, REG_TRACE_HI, desc_size + data_size)
-        write64(user_fd, REG_PKT_LO, REG_PKT_HI, pkt_count)
-        write64(user_fd, REG_LOOP_LO, REG_LOOP_HI, args.loop_count)
-        write64(user_fd, REG_LOOP_GAP_LO, REG_LOOP_GAP_HI, args.loop_gap)
-        write64(user_fd, REG_START_LO, REG_START_HI, args.start_time)
-        write32(user_fd, REG_RATE, args.rate_q16_16)
+        write32(user_fd, reg_base + REG_CONTROL, 0x4)
+        write32(user_fd, reg_base + REG_MODE, mode_value)
+        write64(user_fd, reg_base + REG_DESC_BASE_LO, reg_base + REG_DESC_BASE_HI, args.desc_base)
+        write64(user_fd, reg_base + REG_DATA_BASE_LO, reg_base + REG_DATA_BASE_HI, args.data_base)
+        write64(user_fd, reg_base + REG_TRACE_LO, reg_base + REG_TRACE_HI, desc_size + data_size)
+        write64(user_fd, reg_base + REG_PKT_LO, reg_base + REG_PKT_HI, pkt_count)
+        write64(user_fd, reg_base + REG_LOOP_LO, reg_base + REG_LOOP_HI, args.loop_count)
+        write64(user_fd, reg_base + REG_LOOP_GAP_LO, reg_base + REG_LOOP_GAP_HI, args.loop_gap)
+        write64(user_fd, reg_base + REG_START_LO, reg_base + REG_START_HI, args.start_time)
+        write32(user_fd, reg_base + REG_RATE, args.rate_q16_16)
         if args.force_link_up or args.clear_force_link_up or args.force_tx_ready or args.clear_force_tx_ready:
-            debug = read32(user_fd, REG_DEBUG_CTRL)
+            debug = read32(user_fd, reg_base + REG_DEBUG_CTRL)
             if args.force_link_up:
                 debug |= 0x1
             if args.clear_force_link_up:
@@ -151,14 +156,14 @@ def main() -> None:
                 debug |= 0x2
             if args.clear_force_tx_ready:
                 debug &= ~0x2
-            write32(user_fd, REG_DEBUG_CTRL, debug)
+            write32(user_fd, reg_base + REG_DEBUG_CTRL, debug)
         if not args.no_start:
-            write32(user_fd, REG_CONTROL, 0x1)
+            write32(user_fd, reg_base + REG_CONTROL, 0x1)
     finally:
         os.close(user_fd)
 
     action = "configured" if args.no_start else "started"
-    print(f"{action}: mode={args.mode} packets={pkt_count} desc_base=0x{args.desc_base:x} data_base=0x{args.data_base:x}")
+    print(f"{action}: port={args.port} mode={args.mode} packets={pkt_count} desc_base=0x{args.desc_base:x} data_base=0x{args.data_base:x}")
 
 
 if __name__ == "__main__":

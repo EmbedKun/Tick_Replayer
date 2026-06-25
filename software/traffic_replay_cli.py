@@ -45,6 +45,30 @@ REG_DEBUG_RDATA = 0x0090
 REG_DEBUG_TICK_LO = 0x0094
 REG_DEBUG_TICK_HI = 0x0098
 
+TX_PORT_BASE = {0: 0x00000, 1: 0x10000}
+RX_PORT_BASE = {0: 0x20000, 1: 0x30000}
+
+RX_REG_CONTROL = 0x0000
+RX_REG_STATUS = 0x0004
+RX_REG_RING_BASE_LO = 0x0010
+RX_REG_RING_BASE_HI = 0x0014
+RX_REG_RING_SIZE = 0x0018
+RX_REG_TRUNC_BYTES = 0x001C
+RX_REG_WRITE_PTR = 0x0020
+RX_REG_PKTS_LO = 0x0030
+RX_REG_PKTS_HI = 0x0034
+RX_REG_BYTES_LO = 0x0038
+RX_REG_BYTES_HI = 0x003C
+RX_REG_ERRS_LO = 0x0040
+RX_REG_ERRS_HI = 0x0044
+RX_REG_CAP_BYTES_LO = 0x0048
+RX_REG_CAP_BYTES_HI = 0x004C
+RX_REG_AXI_WR_LO = 0x0050
+RX_REG_AXI_WR_HI = 0x0054
+RX_REG_AXI_ERR_LO = 0x0058
+RX_REG_AXI_ERR_HI = 0x005C
+RX_REG_DEBUG = 0x0060
+
 
 REG_NAMES = [
     ("CONTROL", REG_CONTROL),
@@ -85,6 +109,29 @@ REG_NAMES = [
     ("DEBUG_TICK_HI", REG_DEBUG_TICK_HI),
 ]
 
+RX_REG_NAMES = [
+    ("CONTROL", RX_REG_CONTROL),
+    ("STATUS", RX_REG_STATUS),
+    ("RING_BASE_LO", RX_REG_RING_BASE_LO),
+    ("RING_BASE_HI", RX_REG_RING_BASE_HI),
+    ("RING_SIZE", RX_REG_RING_SIZE),
+    ("TRUNC_BYTES", RX_REG_TRUNC_BYTES),
+    ("WRITE_PTR", RX_REG_WRITE_PTR),
+    ("RX_PKTS_LO", RX_REG_PKTS_LO),
+    ("RX_PKTS_HI", RX_REG_PKTS_HI),
+    ("RX_BYTES_LO", RX_REG_BYTES_LO),
+    ("RX_BYTES_HI", RX_REG_BYTES_HI),
+    ("RX_ERRS_LO", RX_REG_ERRS_LO),
+    ("RX_ERRS_HI", RX_REG_ERRS_HI),
+    ("CAP_BYTES_LO", RX_REG_CAP_BYTES_LO),
+    ("CAP_BYTES_HI", RX_REG_CAP_BYTES_HI),
+    ("AXI_WR_LO", RX_REG_AXI_WR_LO),
+    ("AXI_WR_HI", RX_REG_AXI_WR_HI),
+    ("AXI_ERR_LO", RX_REG_AXI_ERR_LO),
+    ("AXI_ERR_HI", RX_REG_AXI_ERR_HI),
+    ("DEBUG", RX_REG_DEBUG),
+]
+
 
 def int_auto(value: str) -> int:
     return int(value, 0)
@@ -106,10 +153,10 @@ def bool_word(value: bool) -> str:
     return "yes" if value else "no"
 
 
-def print_status(fd: int) -> None:
-    status = read32(fd, REG_STATUS)
-    mode = read32(fd, REG_MODE) & 0x3
-    debug = read32(fd, REG_DEBUG_CTRL)
+def print_status(fd: int, base: int) -> None:
+    status = read32(fd, base + REG_STATUS)
+    mode = read32(fd, base + REG_MODE) & 0x3
+    debug = read32(fd, base + REG_DEBUG_CTRL)
     mode_name = {0: "preload", 1: "stream", 2: "loop"}.get(mode, f"unknown({mode})")
 
     print(f"mode              : {mode_name}")
@@ -121,21 +168,46 @@ def print_status(fd: int) -> None:
     print(f"tx_gate_open      : {bool_word(bool(status & (1 << 5)))}")
     print(f"force_link_up     : {bool_word(bool(debug & 0x1))}")
     print(f"force_tx_ready    : {bool_word(bool(debug & 0x2))}")
-    print(f"fifo_level        : {read32(fd, REG_FIFO_LEVEL)}")
-    print(f"tx_packets        : {read64(fd, REG_TX_PKTS_LO, REG_TX_PKTS_HI)}")
-    print(f"tx_bytes          : {read64(fd, REG_TX_BYTES_LO, REG_TX_BYTES_HI)}")
-    print(f"late_packets      : {read64(fd, REG_LATE_LO, REG_LATE_HI)}")
-    print(f"underrun_packets  : {read64(fd, REG_UNDERRUN_LO, REG_UNDERRUN_HI)}")
-    print(f"debug_status      : 0x{read32(fd, REG_DEBUG_STATUS):08x}")
-    print(f"debug_axi         : 0x{read32(fd, REG_DEBUG_AXI):08x}")
-    print(f"debug_araddr      : 0x{read64(fd, REG_DEBUG_AR_LO, REG_DEBUG_AR_HI):016x}")
-    print(f"debug_rdata_low   : 0x{read32(fd, REG_DEBUG_RDATA):08x}")
-    print(f"debug_ticks       : {read64(fd, REG_DEBUG_TICK_LO, REG_DEBUG_TICK_HI)}")
+    print(f"fifo_level        : {read32(fd, base + REG_FIFO_LEVEL)}")
+    print(f"tx_packets        : {read64(fd, base + REG_TX_PKTS_LO, base + REG_TX_PKTS_HI)}")
+    print(f"tx_bytes          : {read64(fd, base + REG_TX_BYTES_LO, base + REG_TX_BYTES_HI)}")
+    print(f"late_packets      : {read64(fd, base + REG_LATE_LO, base + REG_LATE_HI)}")
+    print(f"underrun_packets  : {read64(fd, base + REG_UNDERRUN_LO, base + REG_UNDERRUN_HI)}")
+    print(f"debug_status      : 0x{read32(fd, base + REG_DEBUG_STATUS):08x}")
+    print(f"debug_axi         : 0x{read32(fd, base + REG_DEBUG_AXI):08x}")
+    print(f"debug_araddr      : 0x{read64(fd, base + REG_DEBUG_AR_LO, base + REG_DEBUG_AR_HI):016x}")
+    print(f"debug_rdata_low   : 0x{read32(fd, base + REG_DEBUG_RDATA):08x}")
+    print(f"debug_ticks       : {read64(fd, base + REG_DEBUG_TICK_LO, base + REG_DEBUG_TICK_HI)}")
+
+
+def print_rx_status(fd: int, base: int) -> None:
+    control = read32(fd, base + RX_REG_CONTROL)
+    status = read32(fd, base + RX_REG_STATUS)
+    print(f"rx_enable         : {bool_word(bool(control & 0x1))}")
+    print(f"capture_enable    : {bool_word(bool(control & 0x4))}")
+    print(f"link_up           : {bool_word(bool(status & (1 << 4)))}")
+    print(f"fifo_ready        : {bool_word(bool(status & (1 << 3)))}")
+    print(f"fifo_valid        : {bool_word(bool(status & (1 << 2)))}")
+    print(f"overflow_seen     : {bool_word(bool(status & (1 << 5)))}")
+    print(f"writer_state      : {(status >> 6) & 0x3}")
+    print(f"ring_base         : 0x{read64(fd, base + RX_REG_RING_BASE_LO, base + RX_REG_RING_BASE_HI):016x}")
+    print(f"ring_size         : {read32(fd, base + RX_REG_RING_SIZE)}")
+    print(f"truncate_bytes    : {read32(fd, base + RX_REG_TRUNC_BYTES)}")
+    print(f"write_ptr         : {read32(fd, base + RX_REG_WRITE_PTR)}")
+    print(f"rx_packets        : {read64(fd, base + RX_REG_PKTS_LO, base + RX_REG_PKTS_HI)}")
+    print(f"rx_bytes          : {read64(fd, base + RX_REG_BYTES_LO, base + RX_REG_BYTES_HI)}")
+    print(f"rx_errors         : {read64(fd, base + RX_REG_ERRS_LO, base + RX_REG_ERRS_HI)}")
+    print(f"captured_bytes    : {read64(fd, base + RX_REG_CAP_BYTES_LO, base + RX_REG_CAP_BYTES_HI)}")
+    print(f"axi_writes        : {read64(fd, base + RX_REG_AXI_WR_LO, base + RX_REG_AXI_WR_HI)}")
+    print(f"axi_errors        : {read64(fd, base + RX_REG_AXI_ERR_LO, base + RX_REG_AXI_ERR_HI)}")
+    print(f"debug             : 0x{read32(fd, base + RX_REG_DEBUG):08x}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--user", default="/dev/xdma0_user")
+    parser.add_argument("--port", type=int, choices=[0, 1], default=0, help="TX/RX logical port")
+    parser.add_argument("--base", type=int_auto, help="override AXI-Lite base address")
 
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("status")
@@ -145,6 +217,19 @@ def parse_args() -> argparse.Namespace:
     sub.add_parser("clear")
     sub.add_parser("pause")
     sub.add_parser("resume")
+    sub.add_parser("rx-status")
+    sub.add_parser("rx-regs")
+    sub.add_parser("rx-clear")
+    sub.add_parser("rx-enable")
+    sub.add_parser("rx-disable")
+
+    rx_capture = sub.add_parser("rx-capture")
+    rx_capture.add_argument("state", choices=["on", "off"])
+
+    rx_config = sub.add_parser("rx-config")
+    rx_config.add_argument("--ring-base", type=int_auto)
+    rx_config.add_argument("--ring-size", type=int_auto)
+    rx_config.add_argument("--truncate-bytes", type=int_auto)
 
     debug = sub.add_parser("debug-force-link")
     debug.add_argument("state", choices=["on", "off"])
@@ -164,36 +249,66 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    tx_base = TX_PORT_BASE[args.port] if args.base is None else args.base
+    rx_base = RX_PORT_BASE[args.port] if args.base is None else args.base
     fd = os.open(args.user, os.O_RDWR)
     try:
       if args.cmd == "status":
-          print_status(fd)
+          print_status(fd, tx_base)
       elif args.cmd == "regs":
           for name, offset in REG_NAMES:
-              print(f"0x{offset:04x} {name:<14} 0x{read32(fd, offset):08x}")
+              addr = tx_base + offset
+              print(f"0x{addr:05x} {name:<14} 0x{read32(fd, addr):08x}")
       elif args.cmd == "start":
-          write32(fd, REG_CONTROL, 0x1)
+          write32(fd, tx_base + REG_CONTROL, 0x1)
       elif args.cmd == "stop":
-          write32(fd, REG_CONTROL, 0x2)
+          write32(fd, tx_base + REG_CONTROL, 0x2)
       elif args.cmd == "clear":
-          write32(fd, REG_CONTROL, 0x4)
+          write32(fd, tx_base + REG_CONTROL, 0x4)
       elif args.cmd == "pause":
-          write32(fd, REG_CONTROL, 0x8)
+          write32(fd, tx_base + REG_CONTROL, 0x8)
       elif args.cmd == "resume":
-          write32(fd, REG_CONTROL, 0x0)
+          write32(fd, tx_base + REG_CONTROL, 0x0)
       elif args.cmd == "debug-force-link":
-          value = read32(fd, REG_DEBUG_CTRL)
+          value = read32(fd, tx_base + REG_DEBUG_CTRL)
           value = (value | 0x1) if args.state == "on" else (value & ~0x1)
-          write32(fd, REG_DEBUG_CTRL, value)
+          write32(fd, tx_base + REG_DEBUG_CTRL, value)
       elif args.cmd == "debug-tx-ready":
-          value = read32(fd, REG_DEBUG_CTRL)
+          value = read32(fd, tx_base + REG_DEBUG_CTRL)
           value = (value | 0x2) if args.state == "on" else (value & ~0x2)
-          write32(fd, REG_DEBUG_CTRL, value)
+          write32(fd, tx_base + REG_DEBUG_CTRL, value)
+      elif args.cmd == "rx-status":
+          print_rx_status(fd, rx_base)
+      elif args.cmd == "rx-regs":
+          for name, offset in RX_REG_NAMES:
+              addr = rx_base + offset
+              print(f"0x{addr:05x} {name:<14} 0x{read32(fd, addr):08x}")
+      elif args.cmd == "rx-clear":
+          value = read32(fd, rx_base + RX_REG_CONTROL)
+          write32(fd, rx_base + RX_REG_CONTROL, value | 0x2)
+      elif args.cmd == "rx-enable":
+          value = read32(fd, rx_base + RX_REG_CONTROL)
+          write32(fd, rx_base + RX_REG_CONTROL, value | 0x1)
+      elif args.cmd == "rx-disable":
+          value = read32(fd, rx_base + RX_REG_CONTROL)
+          write32(fd, rx_base + RX_REG_CONTROL, value & ~0x1)
+      elif args.cmd == "rx-capture":
+          value = read32(fd, rx_base + RX_REG_CONTROL)
+          value = (value | 0x4) if args.state == "on" else (value & ~0x4)
+          write32(fd, rx_base + RX_REG_CONTROL, value)
+      elif args.cmd == "rx-config":
+          if args.ring_base is not None:
+              write32(fd, rx_base + RX_REG_RING_BASE_LO, args.ring_base)
+              write32(fd, rx_base + RX_REG_RING_BASE_HI, args.ring_base >> 32)
+          if args.ring_size is not None:
+              write32(fd, rx_base + RX_REG_RING_SIZE, args.ring_size)
+          if args.truncate_bytes is not None:
+              write32(fd, rx_base + RX_REG_TRUNC_BYTES, args.truncate_bytes)
       elif args.cmd == "read-reg":
-          value = read32(fd, args.offset)
-          print(f"0x{args.offset:04x}: 0x{value:08x}")
+          value = read32(fd, tx_base + args.offset)
+          print(f"0x{tx_base + args.offset:05x}: 0x{value:08x}")
       elif args.cmd == "write-reg":
-          write32(fd, args.offset, args.value)
+          write32(fd, tx_base + args.offset, args.value)
     finally:
         os.close(fd)
 
