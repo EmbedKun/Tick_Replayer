@@ -56,6 +56,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rate-q16-16", type=int_auto, default=0x0001_0000)
     parser.add_argument("--force-link-up", action="store_true", help="set DEBUG_CTRL[0] before start for no-fiber ILA bring-up")
     parser.add_argument("--clear-force-link-up", action="store_true", help="clear DEBUG_CTRL[0] before start")
+    parser.add_argument("--force-tx-ready", action="store_true", help="set DEBUG_CTRL[1] to drain replay core when CMAC/FIFO is not ready")
+    parser.add_argument("--clear-force-tx-ready", action="store_true", help="clear DEBUG_CTRL[1] before start")
     parser.add_argument("--no-start", action="store_true")
     parser.add_argument("--chunk-bytes", type=int_auto, default=4 * 1024 * 1024)
     return parser.parse_args()
@@ -97,6 +99,10 @@ def write32(fd: int, offset: int, value: int) -> None:
     os.pwrite(fd, struct.pack("<I", value & 0xFFFF_FFFF), offset)
 
 
+def read32(fd: int, offset: int) -> int:
+    return struct.unpack("<I", os.pread(fd, 4, offset))[0]
+
+
 def write64(fd: int, offset_lo: int, offset_hi: int, value: int) -> None:
     write32(fd, offset_lo, value)
     write32(fd, offset_hi, value >> 32)
@@ -135,8 +141,17 @@ def main() -> None:
         write64(user_fd, REG_LOOP_GAP_LO, REG_LOOP_GAP_HI, args.loop_gap)
         write64(user_fd, REG_START_LO, REG_START_HI, args.start_time)
         write32(user_fd, REG_RATE, args.rate_q16_16)
-        if args.force_link_up or args.clear_force_link_up:
-            write32(user_fd, REG_DEBUG_CTRL, 1 if args.force_link_up else 0)
+        if args.force_link_up or args.clear_force_link_up or args.force_tx_ready or args.clear_force_tx_ready:
+            debug = read32(user_fd, REG_DEBUG_CTRL)
+            if args.force_link_up:
+                debug |= 0x1
+            if args.clear_force_link_up:
+                debug &= ~0x1
+            if args.force_tx_ready:
+                debug |= 0x2
+            if args.clear_force_tx_ready:
+                debug &= ~0x2
+            write32(user_fd, REG_DEBUG_CTRL, debug)
         if not args.no_start:
             write32(user_fd, REG_CONTROL, 0x1)
     finally:

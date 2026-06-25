@@ -71,6 +71,7 @@ module trace_replay_core #(
   logic [31:0] cfg_rate_q16_16;
   logic [31:0] cfg_watermark;
   logic        cfg_force_link_up;
+  logic        cfg_force_tx_ready;
 
   logic        replay_running;
   logic        ddr_busy;
@@ -126,12 +127,19 @@ module trace_replay_core #(
   logic        core_clear;
   logic        core_enable;
   logic        effective_link_up;
+  logic        tx_ready_effective;
+  logic        ddr_reader_start;
+  logic [3:0]  ddr_reader_state;
+  logic [31:0] debug_status;
+  logic [31:0] debug_axi;
 
   assign sel_stream_mode = (cfg_mode == MODE_STREAM);
   assign sel_ddr_mode    = (cfg_mode == MODE_PRELOAD) || (cfg_mode == MODE_LOOP);
   assign core_clear      = clear_pulse || stop_pulse;
   assign effective_link_up = link_up || cfg_force_link_up;
   assign core_enable     = replay_running && !pause && effective_link_up;
+  assign tx_ready_effective = m_tx_axis_tready || cfg_force_tx_ready;
+  assign ddr_reader_start = sel_ddr_mode && (start_pulse || (replay_running && !ddr_busy && !ddr_done && (cfg_pkt_count != 64'd0)));
 
   assign src_meta_valid = sel_stream_mode ? host_meta_valid : ddr_meta_valid;
   assign src_meta_gap   = sel_stream_mode ? host_meta_gap   : ddr_meta_gap;
@@ -146,6 +154,41 @@ module trace_replay_core #(
   assign src_axis_tlast  = sel_stream_mode ? host_axis_tlast  : ddr_axis_tlast;
   assign host_axis_tready = sel_stream_mode ? src_axis_tready : 1'b0;
   assign ddr_axis_tready  = sel_ddr_mode    ? src_axis_tready : 1'b0;
+
+  assign debug_status = {
+    9'd0,
+    cfg_force_tx_ready,
+    ddr_reader_start,
+    m_tx_axis_tready,
+    m_tx_axis_tvalid,
+    src_axis_tready,
+    src_axis_tvalid,
+    pkt_ready,
+    pkt_valid,
+    ddr_axis_tready,
+    ddr_axis_tvalid,
+    ddr_meta_ready,
+    ddr_meta_valid,
+    ddr_error,
+    ddr_done,
+    ddr_busy,
+    core_enable,
+    pause,
+    sel_ddr_mode,
+    sel_stream_mode,
+    ddr_reader_state
+  };
+
+  assign debug_axi = {
+    13'd0,
+    m_axi_arlen,
+    m_axi_rresp,
+    m_axi_rlast,
+    m_axi_rready,
+    m_axi_rvalid,
+    m_axi_arready,
+    m_axi_arvalid
+  };
 
   axi_lite_regs #(
     .ADDR_W(AXIL_ADDR_W),
@@ -185,6 +228,7 @@ module trace_replay_core #(
     .cfg_rate_q16_16(cfg_rate_q16_16),
     .cfg_watermark(cfg_watermark),
     .cfg_force_link_up(cfg_force_link_up),
+    .cfg_force_tx_ready(cfg_force_tx_ready),
     .stat_running(replay_running),
     .stat_done(ddr_done),
     .stat_late(|late_pkts),
@@ -195,7 +239,12 @@ module trace_replay_core #(
     .stat_tx_pkts(tx_pkts),
     .stat_tx_bytes(tx_bytes),
     .stat_late_pkts(late_pkts),
-    .stat_underrun_pkts(underrun_pkts)
+    .stat_underrun_pkts(underrun_pkts),
+    .stat_debug_status(debug_status),
+    .stat_debug_axi(debug_axi),
+    .stat_debug_araddr(m_axi_araddr[63:0]),
+    .stat_debug_rdata_low(m_axi_rdata[31:0]),
+    .stat_debug_ticks(now_ticks)
   );
 
   ddr_trace_reader #(
@@ -204,7 +253,7 @@ module trace_replay_core #(
   ) ddr_reader_i (
     .clk(clk),
     .rstn(rstn),
-    .start(start_pulse && sel_ddr_mode),
+    .start(ddr_reader_start),
     .stop(stop_pulse),
     .clear(clear_pulse),
     .loop_mode(cfg_mode == MODE_LOOP),
@@ -238,7 +287,8 @@ module trace_replay_core #(
     .m_axis_tlast(ddr_axis_tlast),
     .busy(ddr_busy),
     .done(ddr_done),
-    .error(ddr_error)
+    .error(ddr_error),
+    .debug_state(ddr_reader_state)
   );
 
   host_stream_parser host_parser_i (
@@ -266,6 +316,7 @@ module trace_replay_core #(
   replay_scheduler scheduler_i (
     .clk(clk),
     .rstn(rstn),
+    .start(start_pulse),
     .enable(core_enable),
     .clear(core_clear),
     .cfg_start_time(cfg_start_time),
@@ -300,7 +351,7 @@ module trace_replay_core #(
     .m_axis_tdata(m_tx_axis_tdata),
     .m_axis_tkeep(m_tx_axis_tkeep),
     .m_axis_tvalid(m_tx_axis_tvalid),
-    .m_axis_tready(m_tx_axis_tready),
+    .m_axis_tready(tx_ready_effective),
     .m_axis_tlast(m_tx_axis_tlast),
     .m_axis_tuser(m_tx_axis_tuser),
     .underrun_pulse(tx_underrun),

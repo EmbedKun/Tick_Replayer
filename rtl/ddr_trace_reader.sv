@@ -46,7 +46,8 @@ module ddr_trace_reader #(
 
   output logic                     busy,
   output logic                     done,
-  output logic                     error
+  output logic                     error,
+  output logic [3:0]               debug_state
 );
   typedef enum logic [3:0] {
     ST_IDLE,
@@ -87,6 +88,7 @@ module ddr_trace_reader #(
   assign m_axis_tvalid = (state == ST_PAYLOAD_R) && m_axi_rvalid;
   assign m_axis_tkeep  = last_payload_beat ? keep_from_len(payload_bytes_left) : {AXIS_KEEP_W{1'b1}};
   assign m_axis_tlast  = last_payload_beat;
+  assign debug_state   = state;
 
   always_comb begin
     m_axi_arvalid = 1'b0;

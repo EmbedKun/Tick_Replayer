@@ -37,6 +37,13 @@ REG_LATE_LO = 0x0070
 REG_LATE_HI = 0x0074
 REG_UNDERRUN_LO = 0x0078
 REG_UNDERRUN_HI = 0x007C
+REG_DEBUG_STATUS = 0x0080
+REG_DEBUG_AXI = 0x0084
+REG_DEBUG_AR_LO = 0x0088
+REG_DEBUG_AR_HI = 0x008C
+REG_DEBUG_RDATA = 0x0090
+REG_DEBUG_TICK_LO = 0x0094
+REG_DEBUG_TICK_HI = 0x0098
 
 
 REG_NAMES = [
@@ -69,6 +76,13 @@ REG_NAMES = [
     ("LATE_HI", REG_LATE_HI),
     ("UNDERRUN_LO", REG_UNDERRUN_LO),
     ("UNDERRUN_HI", REG_UNDERRUN_HI),
+    ("DEBUG_STATUS", REG_DEBUG_STATUS),
+    ("DEBUG_AXI", REG_DEBUG_AXI),
+    ("DEBUG_AR_LO", REG_DEBUG_AR_LO),
+    ("DEBUG_AR_HI", REG_DEBUG_AR_HI),
+    ("DEBUG_RDATA", REG_DEBUG_RDATA),
+    ("DEBUG_TICK_LO", REG_DEBUG_TICK_LO),
+    ("DEBUG_TICK_HI", REG_DEBUG_TICK_HI),
 ]
 
 
@@ -106,11 +120,17 @@ def print_status(fd: int) -> None:
     print(f"cmac_link_up      : {bool_word(bool(status & (1 << 4)))}")
     print(f"tx_gate_open      : {bool_word(bool(status & (1 << 5)))}")
     print(f"force_link_up     : {bool_word(bool(debug & 0x1))}")
+    print(f"force_tx_ready    : {bool_word(bool(debug & 0x2))}")
     print(f"fifo_level        : {read32(fd, REG_FIFO_LEVEL)}")
     print(f"tx_packets        : {read64(fd, REG_TX_PKTS_LO, REG_TX_PKTS_HI)}")
     print(f"tx_bytes          : {read64(fd, REG_TX_BYTES_LO, REG_TX_BYTES_HI)}")
     print(f"late_packets      : {read64(fd, REG_LATE_LO, REG_LATE_HI)}")
     print(f"underrun_packets  : {read64(fd, REG_UNDERRUN_LO, REG_UNDERRUN_HI)}")
+    print(f"debug_status      : 0x{read32(fd, REG_DEBUG_STATUS):08x}")
+    print(f"debug_axi         : 0x{read32(fd, REG_DEBUG_AXI):08x}")
+    print(f"debug_araddr      : 0x{read64(fd, REG_DEBUG_AR_LO, REG_DEBUG_AR_HI):016x}")
+    print(f"debug_rdata_low   : 0x{read32(fd, REG_DEBUG_RDATA):08x}")
+    print(f"debug_ticks       : {read64(fd, REG_DEBUG_TICK_LO, REG_DEBUG_TICK_HI)}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -128,6 +148,9 @@ def parse_args() -> argparse.Namespace:
 
     debug = sub.add_parser("debug-force-link")
     debug.add_argument("state", choices=["on", "off"])
+
+    debug_tx = sub.add_parser("debug-tx-ready")
+    debug_tx.add_argument("state", choices=["on", "off"])
 
     read_reg = sub.add_parser("read-reg")
     read_reg.add_argument("offset", type=int_auto)
@@ -159,7 +182,13 @@ def main() -> None:
       elif args.cmd == "resume":
           write32(fd, REG_CONTROL, 0x0)
       elif args.cmd == "debug-force-link":
-          write32(fd, REG_DEBUG_CTRL, 1 if args.state == "on" else 0)
+          value = read32(fd, REG_DEBUG_CTRL)
+          value = (value | 0x1) if args.state == "on" else (value & ~0x1)
+          write32(fd, REG_DEBUG_CTRL, value)
+      elif args.cmd == "debug-tx-ready":
+          value = read32(fd, REG_DEBUG_CTRL)
+          value = (value | 0x2) if args.state == "on" else (value & ~0x2)
+          write32(fd, REG_DEBUG_CTRL, value)
       elif args.cmd == "read-reg":
           value = read32(fd, args.offset)
           print(f"0x{args.offset:04x}: 0x{value:08x}")

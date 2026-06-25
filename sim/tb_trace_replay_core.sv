@@ -55,6 +55,11 @@ module tb_trace_replay_core;
 
   int tx_pkt_count;
   int tx_beat_count;
+  logic rd_active;
+  logic [63:0] rd_addr_q;
+  logic [7:0] rd_len_q;
+  logic [7:0] rd_beat_q;
+  logic [2:0] rd_delay_q;
 
   traffic_replay_top_stub dut (
     .clk(clk),
@@ -103,13 +108,98 @@ module tb_trace_replay_core;
     .m_tx_axis_tuser(tx_tuser)
   );
 
-  initial begin
-    arready = 1'b0;
-    rid     = '0;
-    rdata   = '0;
-    rresp   = 2'b00;
-    rlast   = 1'b0;
-    rvalid  = 1'b0;
+  function automatic logic [511:0] test_payload_word(input logic [7:0] value, input int valid_bytes);
+    logic [511:0] word;
+    begin
+      word = '0;
+      for (int i = 0; i < 64; i++) begin
+        if (i < valid_bytes) begin
+          word[i*8 +: 8] = value;
+        end
+      end
+      test_payload_word = word;
+    end
+  endfunction
+
+  function automatic logic [511:0] axi_read_word(input logic [63:0] addr);
+    logic [511:0] word;
+    begin
+      word = '0;
+      unique case (addr)
+        64'h0000_0000: begin
+          word[63:0]    = 64'd8;
+          word[95:64]   = 32'd0;
+          word[111:96]  = 16'd64;
+          word[127:112] = 16'd0;
+        end
+        64'h0000_0040: begin
+          word[63:0]    = 64'd8;
+          word[95:64]   = 32'd1;
+          word[111:96]  = 16'd64;
+          word[127:112] = 16'd0;
+        end
+        64'h0000_0080: begin
+          word[63:0]    = 64'd8;
+          word[95:64]   = 32'd2;
+          word[111:96]  = 16'd124;
+          word[127:112] = 16'd0;
+        end
+        64'h1000_0000: word = test_payload_word(8'haa, 64);
+        64'h1000_0040: word = test_payload_word(8'h55, 64);
+        64'h1000_0080: word = test_payload_word(8'haa, 64);
+        64'h1000_00c0: word = test_payload_word(8'haa, 60);
+        default:       word = 512'h0;
+      endcase
+      axi_read_word = word;
+    end
+  endfunction
+
+  always_ff @(posedge clk) begin
+    if (!rstn) begin
+      arready    <= 1'b0;
+      rid        <= '0;
+      rdata      <= '0;
+      rresp      <= 2'b00;
+      rlast      <= 1'b0;
+      rvalid     <= 1'b0;
+      rd_active  <= 1'b0;
+      rd_addr_q  <= '0;
+      rd_len_q   <= '0;
+      rd_beat_q  <= '0;
+      rd_delay_q <= '0;
+    end else begin
+      arready <= !rd_active;
+
+      if (arvalid && arready) begin
+        rd_active  <= 1'b1;
+        rd_addr_q  <= araddr;
+        rd_len_q   <= arlen;
+        rd_beat_q  <= '0;
+        rd_delay_q <= 3'd2;
+      end
+
+      if (rd_active && !rvalid) begin
+        if (rd_delay_q != 3'd0) begin
+          rd_delay_q <= rd_delay_q - 3'd1;
+        end else begin
+          rvalid <= 1'b1;
+          rdata  <= axi_read_word(rd_addr_q + ({56'd0, rd_beat_q} << 6));
+          rlast  <= (rd_beat_q == rd_len_q);
+          rresp  <= 2'b00;
+          rid    <= '0;
+        end
+      end else if (rvalid && rready) begin
+        if (rlast) begin
+          rvalid    <= 1'b0;
+          rlast     <= 1'b0;
+          rd_active <= 1'b0;
+        end else begin
+          rd_beat_q  <= rd_beat_q + 8'd1;
+          rdata      <= axi_read_word(rd_addr_q + ({56'd0, rd_beat_q + 8'd1} << 6));
+          rlast      <= (rd_beat_q + 8'd1 == rd_len_q);
+        end
+      end
+    end
   end
 
   task automatic axil_write(input [15:0] addr, input [31:0] data);
@@ -222,6 +312,29 @@ module tb_trace_replay_core;
       $fatal(1, "Expected 2 TX beats, got %0d", tx_beat_count);
     end
     $display("PASS: host stream replay emitted %0d packets", tx_pkt_count);
+
+    axil_write(16'h0000, 32'd2);
+    axil_write(16'h0000, 32'd4);
+    axil_write(16'h0004, 32'd0);
+    axil_write(16'h0010, 32'h0000_0000);
+    axil_write(16'h0014, 32'h0000_0000);
+    axil_write(16'h0018, 32'h1000_0000);
+    axil_write(16'h001c, 32'h0000_0000);
+    axil_write(16'h0028, 32'd3);
+    axil_write(16'h002c, 32'd0);
+    axil_write(16'h0000, 32'd1);
+
+    for (int timeout = 0; timeout < 2000 && tx_pkt_count < 5; timeout++) begin
+      @(posedge clk);
+    end
+
+    if (tx_pkt_count != 5) begin
+      $fatal(1, "Expected total 5 TX packets after DDR replay, got %0d", tx_pkt_count);
+    end
+    if (tx_beat_count != 6) begin
+      $fatal(1, "Expected total 6 TX beats after DDR replay, got %0d", tx_beat_count);
+    end
+    $display("PASS: DDR preload replay emitted 3 packets");
     $finish;
   end
 endmodule

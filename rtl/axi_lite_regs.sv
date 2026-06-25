@@ -41,6 +41,7 @@ module axi_lite_regs #(
   output logic [31:0]       cfg_rate_q16_16,
   output logic [31:0]       cfg_watermark,
   output logic              cfg_force_link_up,
+  output logic              cfg_force_tx_ready,
 
   input  logic              stat_running,
   input  logic              stat_done,
@@ -52,7 +53,12 @@ module axi_lite_regs #(
   input  logic [63:0]       stat_tx_pkts,
   input  logic [63:0]       stat_tx_bytes,
   input  logic [63:0]       stat_late_pkts,
-  input  logic [63:0]       stat_underrun_pkts
+  input  logic [63:0]       stat_underrun_pkts,
+  input  logic [31:0]       stat_debug_status,
+  input  logic [31:0]       stat_debug_axi,
+  input  logic [63:0]       stat_debug_araddr,
+  input  logic [31:0]       stat_debug_rdata_low,
+  input  logic [63:0]       stat_debug_ticks
 );
   localparam logic [ADDR_W-1:0] REG_CONTROL      = 16'h0000;
   localparam logic [ADDR_W-1:0] REG_MODE         = 16'h0004;
@@ -83,6 +89,13 @@ module axi_lite_regs #(
   localparam logic [ADDR_W-1:0] REG_LATE_HI      = 16'h0074;
   localparam logic [ADDR_W-1:0] REG_UNDERRUN_LO  = 16'h0078;
   localparam logic [ADDR_W-1:0] REG_UNDERRUN_HI  = 16'h007c;
+  localparam logic [ADDR_W-1:0] REG_DEBUG_STATUS = 16'h0080;
+  localparam logic [ADDR_W-1:0] REG_DEBUG_AXI    = 16'h0084;
+  localparam logic [ADDR_W-1:0] REG_DEBUG_AR_LO  = 16'h0088;
+  localparam logic [ADDR_W-1:0] REG_DEBUG_AR_HI  = 16'h008c;
+  localparam logic [ADDR_W-1:0] REG_DEBUG_RDATA  = 16'h0090;
+  localparam logic [ADDR_W-1:0] REG_DEBUG_TICK_LO= 16'h0094;
+  localparam logic [ADDR_W-1:0] REG_DEBUG_TICK_HI= 16'h0098;
 
   logic [ADDR_W-1:0] awaddr_q;
   logic [ADDR_W-1:0] araddr_q;
@@ -140,6 +153,7 @@ module axi_lite_regs #(
       cfg_rate_q16_16    <= 32'h0001_0000;
       cfg_watermark      <= 32'd4096;
       cfg_force_link_up  <= 1'b0;
+      cfg_force_tx_ready <= 1'b0;
     end else begin
       start_pulse <= 1'b0;
       stop_pulse  <= 1'b0;
@@ -190,6 +204,7 @@ module axi_lite_regs #(
           REG_DEBUG_CTRL: begin
             if (wstrb_q[0]) begin
               cfg_force_link_up <= wdata_q[0];
+              cfg_force_tx_ready <= wdata_q[1];
             end
           end
           default: begin
@@ -226,7 +241,7 @@ module axi_lite_regs #(
           REG_RATE:        s_axil_rdata <= cfg_rate_q16_16;
           REG_WATERMARK:   s_axil_rdata <= cfg_watermark;
           REG_FIFO_LEVEL:  s_axil_rdata <= stat_fifo_level;
-          REG_DEBUG_CTRL:  s_axil_rdata <= {31'd0, cfg_force_link_up};
+          REG_DEBUG_CTRL:  s_axil_rdata <= {30'd0, cfg_force_tx_ready, cfg_force_link_up};
           REG_TX_PKTS_LO:  s_axil_rdata <= stat_tx_pkts[31:0];
           REG_TX_PKTS_HI:  s_axil_rdata <= stat_tx_pkts[63:32];
           REG_TX_BYTES_LO: s_axil_rdata <= stat_tx_bytes[31:0];
@@ -235,6 +250,13 @@ module axi_lite_regs #(
           REG_LATE_HI:     s_axil_rdata <= stat_late_pkts[63:32];
           REG_UNDERRUN_LO: s_axil_rdata <= stat_underrun_pkts[31:0];
           REG_UNDERRUN_HI: s_axil_rdata <= stat_underrun_pkts[63:32];
+          REG_DEBUG_STATUS:s_axil_rdata <= stat_debug_status;
+          REG_DEBUG_AXI:   s_axil_rdata <= stat_debug_axi;
+          REG_DEBUG_AR_LO: s_axil_rdata <= stat_debug_araddr[31:0];
+          REG_DEBUG_AR_HI: s_axil_rdata <= stat_debug_araddr[63:32];
+          REG_DEBUG_RDATA: s_axil_rdata <= stat_debug_rdata_low;
+          REG_DEBUG_TICK_LO:s_axil_rdata <= stat_debug_ticks[31:0];
+          REG_DEBUG_TICK_HI:s_axil_rdata <= stat_debug_ticks[63:32];
           default:         s_axil_rdata <= 32'h0;
         endcase
       end else if (s_axil_rvalid && s_axil_rready) begin

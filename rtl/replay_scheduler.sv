@@ -3,6 +3,7 @@
 module replay_scheduler (
   input  logic        clk,
   input  logic        rstn,
+  input  logic        start,
   input  logic        enable,
   input  logic        clear,
   input  logic [63:0] cfg_start_time,
@@ -43,22 +44,26 @@ module replay_scheduler (
       first_pkt    <= 1'b1;
       late_pulse   <= 1'b0;
     end else begin
-      now_ticks  <= now_ticks + 64'd1;
       late_pulse <= 1'b0;
 
-      if (clear) begin
+      if (clear || start) begin
+        now_ticks    <= '0;
         pending      <= 1'b0;
         target_ticks <= '0;
         pkt_len_q    <= '0;
         pkt_flags_q  <= '0;
         first_pkt    <= 1'b1;
       end else begin
+        if (enable) begin
+          now_ticks <= now_ticks + 64'd1;
+        end
+
         if (s_meta_valid && s_meta_ready) begin
           pending     <= 1'b1;
           pkt_len_q   <= s_meta_len;
           pkt_flags_q <= s_meta_flags;
           if (first_pkt) begin
-            target_ticks <= (cfg_start_time == 64'd0) ? (now_ticks + s_meta_gap_ticks) : cfg_start_time;
+            target_ticks <= (cfg_start_time == 64'd0) ? s_meta_gap_ticks : cfg_start_time;
             first_pkt    <= 1'b0;
           end else begin
             target_ticks <= target_ticks + s_meta_gap_ticks;
