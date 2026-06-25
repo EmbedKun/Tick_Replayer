@@ -533,7 +533,8 @@ DDR reader 当前在 descriptor metadata 被 scheduler 接收后才发 payload r
 当前重要提交：
 
 ```text
-73a8f21073bb64561f46a665624c0eba1becda39  Bring up XDMA DDR replay debug flow
+2b80337b4c321323e48ab740b79de957f2054cc7  Fix DDR preload replay scheduler bring-up
+99a5264a83bba9950ec002ff7f57d0eebd7cdfca  Ignore Vivado WebTalk generated files
 ```
 
 上传 GitHub 前可以先导出一份干净源码快照：
