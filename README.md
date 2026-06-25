@@ -1,84 +1,166 @@
 # Traffic Replay on Xilinx Alveo U200
 
-这个仓库是 U200 单端口 100Gbps 流量回放仪的源码化工程。当前目标是先跑通：
+这个仓库是基于 Xilinx Alveo U200 的单端口 100Gbps 流量回放仪工程。当前版本已经跑通主链路：
 
-- Host 通过 PCIe XDMA 把 `desc.bin` / `data.bin` 写入 U200 DDR4 C0。
-- FPGA 从 DDR4 读 trace，按包间隔调度，经 512-bit AXI4-Stream 发给 QSFP0 CMAC。
-- 主机通过 XDMA AXI-Lite 控制面选择 `PRELOAD` / `LOOP`，并保留 `STREAM` RTL 路径。
+Host 通过 PCIe XDMA 把 trace 写入 FPGA DDR4，FPGA 从 DDR4 读取包描述符和包数据，按照 descriptor 中的包间隔调度，经 512-bit AXI4-Stream 送到 QSFP0 CMAC TX。当前重点是先完成 `PRELOAD` 和 `DDR LOOP` 两种 DDR 回放模式，以及无光纤时的 ILA bring-up。
 
-## 本机环境
+## 工程位置
 
-- Windows 工程目录：`C:\Users\mkxue\Desktop\traffic_replay`
-- Vivado：`D:\Xilinx\Vivado\2020.2\bin\vivado.bat`
-- 目标器件：`xcu200-fsgd2104-2-e`
-- Board part：`xilinx.com:au200:part0:1.3`
-- 硬件 Vivado 生成目录：默认 `D:\tr_build\vivado_hw`
-- Vivado 临时目录：默认 `D:\tr_tmp`
-- 远程烧录 hw_server：`172.22.5.106:3121`
+- 源码工程：`C:\Users\mkxue\Desktop\traffic_replay`
+- Vivado 版本：`D:\Xilinx\Vivado\2020.2\bin\vivado.bat`
+- Vivado GUI 工程：`D:\tr_build_debug\vivado_hw\traffic_replay_hw.xpr`
+- 已生成 bitstream：`D:\tr_build_debug\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit`
+- 已生成 ILA probes：`D:\tr_build_debug\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.ltx`
+- 远程 U200 主机：`172.22.5.106`
+- 远程 hw_server：`172.22.5.106:3121`
 
 不要把 SSH 密码、私钥、license 文件写入仓库。
+
+## 当前完成度
+
+已完成：
+
+- U200 硬件 BD 工程脚本化生成。
+- PCIe XDMA endpoint，设备 ID 固定为 `10ee:903f`，class code 为 `058000`。
+- Host 通过 XDMA H2C/C2H 访问 FPGA DDR4 C0。
+- Host 通过 XDMA user BAR 访问 FPGA AXI-Lite 控制寄存器。
+- DDR 预加载回放模式 `PRELOAD`。
+- DDR 循环回放模式 `LOOP`，`LOOP_COUNT=0` 表示无限循环。
+- 无光纤调试开关 `DEBUG_CTRL[0] force_link_up`。
+- CMAC TX 侧 ILA，能抓 `tvalid/tlast/tuser/tkeep/tdata[31:0]`。
+- Linux 命令行工具：pcap 转 trace、加载 trace、控制/读状态。
+- 仿真、综合、实现、bitstream、远程烧录、XDMA 驱动加载、DDR 读写和 ILA 抓包验证。
+
+暂未完成：
+
+- XDMA/QDMA streaming H2C 直连 `STREAM` 模式的 BD 接线。
+- 完整 traffic_replay 风格的高层 CLI，例如一条命令完成 pcap 转换、下载、配置、启动、状态轮询。
+- 真实光纤链路下的 CMAC link-up、线速发包、外部网卡收包验证。
+- 多端口 100Gbps 回放。
+- 精度优化版调度架构。当前 scheduler 在 DDR UI clock 域，后续若追求极限间隔精度，建议把 scheduler/TX 前移到 CMAC TX user clock 域，并在 DDR read path 后增加更深预取 FIFO。
+- 高吞吐压力测试和大 pcap 长时间稳定性测试。
+- pcapng 支持。当前 `pcap2trace.py` 只支持 classic pcap。
+
+## 总体架构图
+
+```mermaid
+flowchart LR
+  subgraph "Host Linux"
+    PCAP["pcap file"]
+    CONVERT["pcap2trace.py<br/>desc.bin + data.bin"]
+    LOAD["xdma_load_trace.py<br/>write DDR + start"]
+    CLI["traffic_replay_cli.py<br/>status/control"]
+    XDMA_DRV["Xilinx XDMA driver<br/>/dev/xdma0_*"]
+  end
+
+  subgraph "PCIe Gen3 x16"
+    XDMA["XDMA IP<br/>device 10ee:903f"]
+  end
+
+  subgraph "FPGA DDR UI Clock Domain"
+    DDR["DDR4 C0<br/>trace storage"]
+    REGS["axi_lite_regs.sv<br/>control/status"]
+    READER["ddr_trace_reader.sv<br/>read descriptor/data"]
+    SCHED["replay_scheduler.sv<br/>gap tick scheduler"]
+    TX["replay_tx_engine.sv<br/>packetize AXIS"]
+  end
+
+  subgraph "CMAC TX Clock Domain"
+    FIFO["axis_async_fifo.v<br/>CDC FIFO"]
+    ILA["cmac_tx_ila<br/>TX debug probes"]
+    CMAC["CMAC QSFP0<br/>512-bit AXIS TX"]
+    QSFP["QSFP0 100G port"]
+  end
+
+  PCAP --> CONVERT
+  CONVERT --> LOAD
+  LOAD --> XDMA_DRV
+  CLI --> XDMA_DRV
+  XDMA_DRV --> XDMA
+  XDMA -- "M_AXI H2C/C2H" --> DDR
+  XDMA -- "M_AXI_LITE user BAR" --> REGS
+  REGS -- "mode/base/count/start/force-link" --> READER
+  DDR --> READER
+  READER -- "meta: gap,len,flags" --> SCHED
+  READER -- "payload AXIS" --> TX
+  SCHED -- "packet release" --> TX
+  TX -- "512-bit AXIS" --> FIFO
+  FIFO --> ILA
+  ILA --> CMAC
+  CMAC --> QSFP
+```
 
 ## 目录结构
 
 ```text
-rtl/        回放核心 RTL 和 BD module wrapper
-sim/        XSim testbench
-scripts/    Vivado 工程、仿真、综合、硬件 BD、远程烧录脚本
-software/   pcap 转 trace 工具，以及 Linux XDMA trace loader
-docs/       架构和维护笔记
-constraints/ stub 约束，以及 U200 硬件 bitstream 约束
+rtl/          回放核心 RTL
+sim/          XSim testbench
+scripts/      Vivado 工程、仿真、综合、实现、烧录、ILA 抓取脚本
+software/     pcap 转 trace、XDMA trace loader、控制 CLI
+constraints/  U200 硬件约束和 stub 约束
+reports/      时序报告、ILA CSV 等验证输出
+docs/         维护笔记
 ```
 
-## 硬件 Block Design
+注意：`build/`、`.Xil/`、Vivado 生成物、trace 输出不纳入版本管理。`build/corundum_ref/` 只是参考资料缓存，不是当前设计的主源码。
 
-脚本 `scripts/create_hw_project.tcl` 会创建 `D:\tr_build\vivado_hw\traffic_replay_hw.xpr`，其中包含：
+## 主要模块
+
+| 模块 | 文件 | 功能 | 时钟域 |
+| --- | --- | --- | --- |
+| 顶层回放核心 | `rtl/trace_replay_core.sv` | 连接寄存器、DDR reader、scheduler、TX engine，选择 DDR/stream 数据源 | DDR UI clock |
+| AXI-Lite 寄存器 | `rtl/axi_lite_regs.sv` | Host 控制面，模式、地址、包数、loop、force-link、状态计数器 | DDR UI clock |
+| DDR trace reader | `rtl/ddr_trace_reader.sv` | 从 DDR 读 64B descriptor，再按 descriptor 读 payload | DDR UI clock |
+| 调度器 | `rtl/replay_scheduler.sv` | 按 `gap_ticks` 控制每个包何时释放给 TX engine | DDR UI clock |
+| TX engine | `rtl/replay_tx_engine.sv` | 把 payload AXIS 和 packet metadata 组合成 CMAC TX AXIS 包流 | DDR UI clock |
+| 异步 FIFO | `rtl/axis_async_fifo.v` | DDR UI clock 到 CMAC TX user clock 的 AXIS CDC | DDR UI clock / CMAC TX clock |
+| Host stream parser | `rtl/host_stream_parser.sv` | RTL 已有 stream parser，用于未来 host streaming 模式 | DDR UI clock |
+| BD wrapper core | `rtl/traffic_replay_bd_core.v` | 把 RTL core 包装成 Vivado BD module | DDR UI clock |
+| 包格式公共定义 | `rtl/traffic_replay_pkg.sv` | 数据宽度、keep 生成、descriptor 常量 | RTL package |
+| stub top | `rtl/traffic_replay_top_stub.sv` | 快速 stub 综合检查 | stub |
+
+## Block Design 连接关系
+
+`scripts/create_hw_project.tcl` 创建完整 U200 硬件 BD，核心连接如下：
 
 ```text
 PCIe x16 Gen3 XDMA
-  M_AXI      -> AXI clock converter -> DDR SmartConnect -> DDR4 C0
-  M_AXI_LITE -> AXI-Lite clock converter -> control SmartConnect
-                                      -> replay regs
-                                      -> AXI-Lite register slice -> DDR4 control regs
+  M_AXI
+    -> AXI clock converter
+    -> DDR SmartConnect
+    -> DDR4 C0
 
-DDR4 C0 -> replay_core M_AXI read path
-replay_core M_TX_AXIS -> RTL AXIS async FIFO -> CMAC QSFP0 TX
+  M_AXI_LITE
+    -> AXI-Lite clock converter
+    -> control SmartConnect
+    -> trace_replay_core AXI-Lite regs
+    -> AXI-Lite register slice
+    -> DDR4 control regs
 
-QSFP0 CMAC:
-  AXIS 512-bit
-  CAUI-4 4x25G
-  GT refclk 161.1328125 MHz
-  CMAC hard block from the known-good U200 CMAC setup
+DDR4 C0
+  -> trace_replay_core M_AXI read path
+  -> ddr_trace_reader
+  -> replay_scheduler + replay_tx_engine
+  -> axis_async_fifo
+  -> CMAC QSFP0 TX
+
+CMAC TX ILA
+  probes: tvalid, tready_const, tlast, tuser, tkeep, tdata[31:0], stat_rx_aligned
 ```
 
-PCIe refclk 使用 `util_ds_buf` 的 `IBUFDSGTE`，顶层暴露 `pcie_refclk_clk_p/n`，不是未约束的单端内部时钟。
+PCIe refclk 使用 `util_ds_buf` 的 `IBUFDSGTE`，顶层暴露 `pcie_refclk_clk_p/n`。CMAC QSFP0 使用 4x25G CAUI-4，GT refclk 为 161.1328125 MHz。QSFP0 sideband 当前由 BD 绑为常量：`qsfp0_resetl=1`、`qsfp0_lpmode=0`、`qsfp0_refclk_reset=0`、`qsfp0_fs=2'b10`。
 
-硬件 bitstream 使用 `constraints/traffic_replay_u200.xdc`。该文件显式记录 U200 的 PCIe x16、QSFP0 4x25G、PCIe refclk、DDR4 C0 refclk、QSFP0 sideband 和 bitstream 配置；DDR4 C0 的完整地址/数据脚由 DDR4 IP 通过 U200 board interface 生成约束。stub 综合只加载 `constraints/traffic_replay_stub.xdc`。
-
-QSFP0 sideband 当前由 BD 绑为常量：`qsfp0_resetl=1`、`qsfp0_lpmode=0`、`qsfp0_refclk_reset=0`、`qsfp0_fs=2'b10`，用于启用模块并选择 161.1328125 MHz 参考时钟。
-
-XDMA endpoint 固定为 `10ee:903f`，class code 为 `058000`，避免 Linux 把它识别为串口类设备。AXI-Lite BAR 映射到 replay control/status 寄存器和 DDR4 control regs；AXI Memory BAR 通过 XDMA H2C/C2H 访问 DDR4 C0。
-
-默认硬件 BD 会插入 `cmac_tx_ila`，采样时钟为 `cmac_0/gt_txusrclk2`，探针包含 CMAC TX AXIS 的 `tvalid/tlast/tuser/tkeep/tdata[31:0]` 和 `stat_rx_aligned`。如果只想生成不带 ILA 的版本，运行 Vivado 前设置 `TRAFFIC_REPLAY_ENABLE_ILA=0`。
-
-CMAC AXIS TX 当前配置没有对外提供 `tready`，因此 BD 显式把 `tx_axis_fifo/m_axis_tready` 绑为 1。调试 ILA 里看到 `tvalid` 拉高、`tlast` 成帧，即表示 replay core 已经把包送到 CMAC TX 侧。
-
-硬件工程默认生成在 D 盘短路径，避免 U200 XDMA/DDR/CMAC OOC 综合占满 C 盘，也降低 Vivado 2020.2 在 Windows 上对子 IP 临时路径长度敏感的问题。需要改工程位置时，运行前设置环境变量 `TRAFFIC_REPLAY_HW_BUILD_ROOT`；需要改临时目录时，设置 `TRAFFIC_REPLAY_VIVADO_TEMP`；需要改 Vivado 并行度时，设置 `TRAFFIC_REPLAY_VIVADO_JOBS`，默认是 `1`，用于避开本机通过 task worker 跑 XDMA/OOC 时偶发卡住的问题。
-
-Vivado 2020.2 安装目录里的 `xpm_fifo.sv` 在本机不是标准 Xilinx XPM FIFO 定义，因此硬件 BD 不依赖 Xilinx `axis_clock_converter` IP 的 XPM FIFO；`rtl/axis_async_fifo.v` 用纯 RTL 实现 DDR UI clock 到 CMAC TX clock 的 AXIS 异步 FIFO。
-
-当前 FIFO 读侧的预读判断只依赖已寄存的队列占用，不把 CMAC `tready` 同拍反馈到 BRAM enable/读指针；DDR4 AXI-Lite control 口前也插入了 `axi_register_slice`。这两处用于收敛 322MHz CMAC TX clock 和 DDR UI clock 域的关键时序路径。
-
-当前硬件 BD 把 replay core 放在 DDR UI clock 域，并用 RTL AXIS async FIFO 跨到 CMAC TX user clock。这样便于先完成 Host -> DDR -> CMAC 的 bring-up；后续追求极限精度时，可以把 scheduler/TX 前移到 CMAC 时钟域，并给 DDR read path 加更深 FIFO。
+CMAC AXIS TX 当前配置没有对外提供 `tready`，因此 BD 显式把 `tx_axis_fifo/m_axis_tready` 绑为 1。ILA 里看到 `tvalid` 拉高、`tlast` 成帧，即表示 replay core 已经把包送到 CMAC TX 侧。
 
 ## 地址映射
 
-XDMA `M_AXI`：
+XDMA `M_AXI` 访问 DDR：
 
 ```text
 0x0000_0000_0000_0000 - 0x0000_0003_FFFF_FFFF  DDR4 C0, 16GB
 ```
 
-XDMA `M_AXI_LITE`：
+XDMA `M_AXI_LITE` 访问控制面：
 
 ```text
 0x0000_0000 - 0x0000_FFFF  replay control/status regs
@@ -87,9 +169,14 @@ XDMA `M_AXI_LITE`：
 
 ## 回放模式
 
-- `PRELOAD`：Host 先把 descriptor/data 写入 DDR，再写寄存器启动。当前硬件主路径。
-- `LOOP`：与 `PRELOAD` 使用同一 DDR 读路径，到尾部后回到起点。`LOOP_COUNT == 0` 表示无限循环。
-- `STREAM`：RTL 已有 host stream parser，但当前 BD 没有把 XDMA H2C stream 接到该输入。后续可在 XDMA/QDMA streaming 口稳定后接入。
+`PRELOAD`：
+Host 先把 `desc.bin` 和 `data.bin` 写入 DDR，再写 AXI-Lite 寄存器启动。当前主路径已实现并通过硬件验证。
+
+`LOOP`：
+与 `PRELOAD` 共用 DDR reader，到最后一个包后回到第一个包。`LOOP_COUNT=0` 表示无限循环。已实现并通过 ILA loop trace 验证。
+
+`STREAM`：
+RTL 中已有 `host_stream_parser.sv`，但当前 BD 没有把 XDMA H2C streaming 口接进来，所以系统级 streaming 模式暂未实现。
 
 ## Trace 格式
 
@@ -110,7 +197,11 @@ struct replay_desc {
 };
 ```
 
-硬件 BD 中调度 tick 使用 DDR UI clock，建议生成 trace 时先用 `--tick-hz 300000000`。如果以后把 scheduler 放到 CMAC TX user clock，再改回 CMAC TX clock 对应频率。
+当前调度 tick 使用 DDR UI clock，建议生成 trace 时使用：
+
+```powershell
+python .\software\pcap2trace.py .\input.pcap --out-dir .\trace_out --tick-hz 300000000
+```
 
 ## 寄存器表
 
@@ -138,7 +229,7 @@ AXI-Lite 数据宽度 32 bit：
 0x0048 RATE_Q16_16      reserved; host should pre-scale gap_ticks for now
 0x004c WATERMARK
 0x0050 FIFO_LEVEL
-0x0054 DEBUG_CTRL   bit0 force_link_up
+0x0054 DEBUG_CTRL       bit0 force_link_up
 0x0060 TX_PKTS_LO
 0x0064 TX_PKTS_HI
 0x0068 TX_BYTES_LO
@@ -148,6 +239,24 @@ AXI-Lite 数据宽度 32 bit：
 0x0078 UNDERRUN_PKTS_LO
 0x007c UNDERRUN_PKTS_HI
 ```
+
+## 如何打开 Vivado GUI 工程
+
+如果已经生成过硬件 BD，直接打开：
+
+```powershell
+& D:\Xilinx\Vivado\2020.2\bin\vivado.bat D:\tr_build_debug\vivado_hw\traffic_replay_hw.xpr
+```
+
+如果要从脚本重新生成工程：
+
+```powershell
+$env:TRAFFIC_REPLAY_HW_BUILD_ROOT="D:\tr_build_debug"
+powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbd
+& D:\Xilinx\Vivado\2020.2\bin\vivado.bat D:\tr_build_debug\vivado_hw\traffic_replay_hw.xpr
+```
+
+默认硬件工程目录是 `D:\tr_build\vivado_hw`。本次调试为了避开已经打开的旧 Vivado GUI，使用的是 `D:\tr_build_debug\vivado_hw`。
 
 ## 常用命令
 
@@ -166,89 +275,119 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action synth
 生成并校验 U200 硬件 BD：
 
 ```powershell
+$env:TRAFFIC_REPLAY_HW_BUILD_ROOT="D:\tr_build_debug"
 powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbd
 ```
 
-完整生成硬件 bitstream（推荐先生成 BD，再打开已有工程构建）：
+完整生成硬件 bitstream：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbd
+$env:TRAFFIC_REPLAY_HW_BUILD_ROOT="D:\tr_build_debug"
 powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbit_existing
-```
-
-pcap 转 trace：
-
-```powershell
-python .\software\pcap2trace.py .\input.pcap --out-dir .\trace_out --tick-hz 300000000
-```
-
-在插有 U200 的 Linux 机器上，通过 XDMA driver 写 DDR 并启动：
-
-```bash
-python3 software/xdma_load_trace.py \
-  --manifest trace_out/manifest.json \
-  --desc-base 0x00000000 \
-  --data-base 0x10000000 \
-  --mode preload \
-  --force-link-up
-```
-
-无光纤调试时使用 `--force-link-up` 或：
-
-```bash
-python3 software/traffic_replay_cli.py debug-force-link on
-python3 software/traffic_replay_cli.py status
-```
-
-抓取 CMAC TX ILA：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action program -Bitfile D:\tr_build_debug\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
-& D:\Xilinx\Vivado\2020.2\bin\vivado.bat -mode batch -source .\scripts\capture_cmac_ila.tcl -tclargs D:\tr_build_debug\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.ltx .\reports\cmac_tx_ila_capture.csv
 ```
 
 远程烧录已有 bitstream：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action program -Bitfile .\path\to\design.bit
+powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action program -Bitfile D:\tr_build_debug\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
 ```
 
-烧录 PCIe endpoint bitstream 后建议重启远程主机，让 PCIe PERST 重新训练并重新分配 BAR。正常枚举应类似：
+抓取 CMAC TX ILA：
+
+```powershell
+& D:\Xilinx\Vivado\2020.2\bin\vivado.bat -mode batch -source .\scripts\capture_cmac_ila.tcl -tclargs D:\tr_build_debug\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.ltx .\reports\cmac_tx_ila_capture.csv
+```
+
+Linux 上加载 trace 并启动：
+
+```bash
+python3 /home/user/traffic_replay_software/xdma_load_trace.py \
+  --manifest /home/user/trace_out/manifest.json \
+  --desc-base 0x00000000 \
+  --data-base 0x10000000 \
+  --mode preload
+```
+
+无光纤调试时打开 TX gate：
+
+```bash
+python3 /home/user/traffic_replay_software/traffic_replay_cli.py debug-force-link on
+python3 /home/user/traffic_replay_software/traffic_replay_cli.py status
+```
+
+## 远程板卡启动流程
+
+1. 本地生成 bitstream。
+2. 本地通过 Vivado 连接远程 `hw_server` 烧录 U200。
+3. 远程主机重启，让 PCIe endpoint 经过 PERST 重新训练和重新分配 BAR。
+4. 远程确认枚举：
 
 ```bash
 lspci -nn -d 10ee:
 # 01:00.0 Memory controller [0580]: Xilinx Corporation Device [10ee:903f]
 ```
 
-远程 Linux 使用 Xilinx XDMA driver，可从官方 `dma_ip_drivers` 的 `2020.2` 分支构建：
+5. 远程加载 Xilinx XDMA driver：
 
 ```bash
-git clone https://github.com/Xilinx/dma_ip_drivers.git
-cd dma_ip_drivers
+cd /home/user/dma_ip_drivers
 git checkout 2020.2
 make -C XDMA/linux-kernel/xdma
 sudo insmod XDMA/linux-kernel/xdma/xdma.ko
 ls -l /dev/xdma*
 ```
 
-## 已验证
+6. 远程使用 `/home/user/traffic_replay_software/traffic_replay_cli.py` 和 `xdma_load_trace.py` 控制回放。
 
-- `hwbd`：Vivado 2020.2 成功创建并 validate BD，生成 `traffic_replay_bd_wrapper.v`。
-- `sim`：XSim testbench 通过，输出 2 个包。
-- `synth`：stub 顶层综合通过，0 errors / 0 warnings。
-- `hwbit_existing`：使用 `constraints/traffic_replay_u200.xdc` 生成完整 U200 bitstream。2026-06-25 本机通过，调试产物为 `D:\tr_build_debug\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit`，ILA probes 为同目录 `traffic_replay_bd_wrapper.ltx`。
-- 远程 bring-up：JTAG 烧录后重启远程主机，PCIe 枚举为 `Memory controller [0580]: Xilinx Corporation Device [10ee:903f]`。
-- XDMA driver：远程 `dma_ip_drivers` 的 `2020.2` 分支驱动 `v2020.2.2` 成功 probe，识别 `config bar 1, user 0`，生成 `/dev/xdma0_h2c_0`、`/dev/xdma0_c2h_0`、`/dev/xdma0_user`。
-- DDR/XDMA：远程通过 H2C/C2H 在 `0x00000000`、`0x00100000`、`0x10000000` 完成 4KB、64KB、1MB 往返读写测试，全部 PASS。
-- 控制面：`traffic_replay_cli.py status/debug-force-link` 能读写 AXI-Lite；`DEBUG_CTRL[0]` 打开时 `tx_gate_open=yes`，关闭后恢复。
-- 回放 smoke：无光纤、`force-link-up` 下，3 包 trace 回放完成，`tx_packets=3`、`tx_bytes=252`；使用足够 gap 时 `late_packets=0`、`underrun_packets=0`。
-- CMAC TX ILA：远程 loop trace 运行时，`scripts/capture_cmac_ila.tcl` 以 `tx_axis_fifo_m_axis_tvalid==1` 触发并导出 `reports/cmac_tx_ila_capture.csv`；CSV 中能看到 `tvalid` 有效采样、`tkeep=ffffffffffffffff`、`tdata_low=aaaaaaaa`。
-- 最终实现时序：`reports/hw_impl_timing_summary.rpt` 显示 `WNS=0.017ns`、`TNS=0.000ns`、失败端点 0，`All user specified timing constraints are met.`
-- bitgen 仍有 `Evaluation License Warning` critical warning；正式长期使用前需要确认 CMAC 等 IP license 不是限时 evaluation。
+## 已验证结果
+
+仿真：
+
+- `powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action sim`
+- XSim testbench 通过，输出 2 个包。
+
+本地实现：
+
+- `hwbd`：Vivado 2020.2 成功创建并 validate BD。
+- `synth`：stub 顶层综合通过。
+- `hwbit_existing`：完整 U200 bitstream 生成成功。
+- 最终时序报告：`reports/hw_impl_timing_summary.rpt`
+- 关键时序：`WNS=0.017ns`、`TNS=0.000ns`、失败端点 0。
+- 报告中显示：`All user specified timing constraints are met.`
+- bitgen 有 `Evaluation License Warning` critical warning；正式长期使用前需要确认 CMAC 等 IP license 不是限时 evaluation。
+
+远程硬件：
+
+- JTAG 烧录成功，Vivado 识别 1 个 MIG core 和 1 个 ILA core。
+- 重启后 PCIe 枚举为 `Memory controller [0580] 10ee:903f`。
+- XDMA driver `v2020.2.2` 成功 probe，识别 `config bar 1, user 0`。
+- `/dev/xdma0_h2c_0`、`/dev/xdma0_c2h_0`、`/dev/xdma0_user` 均生成。
+- DDR/XDMA 往返读写测试通过：
+  - `0x00000000`，4KB，PASS。
+  - `0x00100000`，64KB，PASS。
+  - `0x10000000`，1MB，PASS。
+- AXI-Lite 控制面可读写。
+- `DEBUG_CTRL[0] force_link_up` 打开后 `tx_gate_open=yes`，关闭后恢复。
+- 无光纤下 3 包 smoke trace 回放完成，`tx_packets=3`、`tx_bytes=252`。
+- 使用足够 gap 时，`late_packets=0`、`underrun_packets=0`。
+- loop trace 运行时，`scripts/capture_cmac_ila.tcl` 成功以 `tx_axis_fifo_m_axis_tvalid==1` 触发 ILA。
+- ILA CSV：`reports/cmac_tx_ila_capture.csv`，可见 `tvalid` 有效、`tkeep=ffffffffffffffff`、`tdata_low=aaaaaaaa`。
+
+## 重要实现细节
+
+当前硬件 BD 把 replay core 放在 DDR UI clock 域，使用 `axis_async_fifo.v` 跨到 CMAC TX user clock 域。这样工程容易 bring-up，也便于 Host 写 DDR 后直接回放。
+
+DDR reader 当前在 descriptor metadata 被 scheduler 接收后才发 payload read。如果首包 gap 太小，TX engine 可能先要数据而 DDR payload 尚未返回，此时会产生 `underrun`。硬件 smoke test 使用较大 gap 后，`late/underrun` 均为 0。后续做高精度/高吞吐版本时，应增加 descriptor/payload 预取队列。
+
+`RATE_Q16_16` 目前保留，硬件没有做动态速率缩放。主机侧应在生成 trace 时预先把 pcap 时间间隔转换成当前 tick 频率下的 `gap_ticks`。
 
 ## 版本管理
 
-仓库保存源码、脚本、文档和软件工具。`build/`、`.Xil/`、Vivado 生成物、trace 输出不纳入版本管理。
+当前重要提交：
+
+```text
+73a8f21073bb64561f46a665624c0eba1becda39  Bring up XDMA DDR replay debug flow
+```
 
 建议后续提交粒度：
 
