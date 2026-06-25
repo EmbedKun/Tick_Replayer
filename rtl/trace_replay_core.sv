@@ -70,6 +70,7 @@ module trace_replay_core #(
   logic [63:0] cfg_start_time;
   logic [31:0] cfg_rate_q16_16;
   logic [31:0] cfg_watermark;
+  logic        cfg_force_link_up;
 
   logic        replay_running;
   logic        ddr_busy;
@@ -124,11 +125,13 @@ module trace_replay_core #(
   logic [15:0] pkt_flags;
   logic        core_clear;
   logic        core_enable;
+  logic        effective_link_up;
 
   assign sel_stream_mode = (cfg_mode == MODE_STREAM);
   assign sel_ddr_mode    = (cfg_mode == MODE_PRELOAD) || (cfg_mode == MODE_LOOP);
   assign core_clear      = clear_pulse || stop_pulse;
-  assign core_enable     = replay_running && !pause && link_up;
+  assign effective_link_up = link_up || cfg_force_link_up;
+  assign core_enable     = replay_running && !pause && effective_link_up;
 
   assign src_meta_valid = sel_stream_mode ? host_meta_valid : ddr_meta_valid;
   assign src_meta_gap   = sel_stream_mode ? host_meta_gap   : ddr_meta_gap;
@@ -181,11 +184,13 @@ module trace_replay_core #(
     .cfg_start_time(cfg_start_time),
     .cfg_rate_q16_16(cfg_rate_q16_16),
     .cfg_watermark(cfg_watermark),
+    .cfg_force_link_up(cfg_force_link_up),
     .stat_running(replay_running),
     .stat_done(ddr_done),
     .stat_late(|late_pkts),
     .stat_underrun(|underrun_pkts),
     .stat_link_up(link_up),
+    .stat_effective_link_up(effective_link_up),
     .stat_fifo_level(32'd0),
     .stat_tx_pkts(tx_pkts),
     .stat_tx_bytes(tx_bytes),

@@ -56,6 +56,12 @@ PCIe refclk 使用 `util_ds_buf` 的 `IBUFDSGTE`，顶层暴露 `pcie_refclk_clk
 
 QSFP0 sideband 当前由 BD 绑为常量：`qsfp0_resetl=1`、`qsfp0_lpmode=0`、`qsfp0_refclk_reset=0`、`qsfp0_fs=2'b10`，用于启用模块并选择 161.1328125 MHz 参考时钟。
 
+XDMA endpoint 固定为 `10ee:903f`，class code 为 `058000`，避免 Linux 把它识别为串口类设备。AXI-Lite BAR 映射到 replay control/status 寄存器和 DDR4 control regs；AXI Memory BAR 通过 XDMA H2C/C2H 访问 DDR4 C0。
+
+默认硬件 BD 会插入 `cmac_tx_ila`，采样时钟为 `cmac_0/gt_txusrclk2`，探针包含 CMAC TX AXIS 的 `tvalid/tlast/tuser/tkeep/tdata[31:0]` 和 `stat_rx_aligned`。如果只想生成不带 ILA 的版本，运行 Vivado 前设置 `TRAFFIC_REPLAY_ENABLE_ILA=0`。
+
+CMAC AXIS TX 当前配置没有对外提供 `tready`，因此 BD 显式把 `tx_axis_fifo/m_axis_tready` 绑为 1。调试 ILA 里看到 `tvalid` 拉高、`tlast` 成帧，即表示 replay core 已经把包送到 CMAC TX 侧。
+
 硬件工程默认生成在 D 盘短路径，避免 U200 XDMA/DDR/CMAC OOC 综合占满 C 盘，也降低 Vivado 2020.2 在 Windows 上对子 IP 临时路径长度敏感的问题。需要改工程位置时，运行前设置环境变量 `TRAFFIC_REPLAY_HW_BUILD_ROOT`；需要改临时目录时，设置 `TRAFFIC_REPLAY_VIVADO_TEMP`；需要改 Vivado 并行度时，设置 `TRAFFIC_REPLAY_VIVADO_JOBS`，默认是 `1`，用于避开本机通过 task worker 跑 XDMA/OOC 时偶发卡住的问题。
 
 Vivado 2020.2 安装目录里的 `xpm_fifo.sv` 在本机不是标准 Xilinx XPM FIFO 定义，因此硬件 BD 不依赖 Xilinx `axis_clock_converter` IP 的 XPM FIFO；`rtl/axis_async_fifo.v` 用纯 RTL 实现 DDR UI clock 到 CMAC TX clock 的 AXIS 异步 FIFO。
@@ -113,7 +119,8 @@ AXI-Lite 数据宽度 32 bit：
 ```text
 0x0000 CONTROL      bit0 start, bit1 stop, bit2 clear counters, bit3 pause
 0x0004 MODE         0 preload, 1 stream, 2 loop
-0x0008 STATUS       bit0 running, bit1 done, bit2 late, bit3 underrun, bit4 link_up
+0x0008 STATUS       bit0 running, bit1 done, bit2 late, bit3 underrun,
+                    bit4 physical_cmac_link_up, bit5 tx_gate_open
 0x0010 DESC_BASE_LO
 0x0014 DESC_BASE_HI
 0x0018 DATA_BASE_LO
@@ -131,6 +138,7 @@ AXI-Lite 数据宽度 32 bit：
 0x0048 RATE_Q16_16      reserved; host should pre-scale gap_ticks for now
 0x004c WATERMARK
 0x0050 FIFO_LEVEL
+0x0054 DEBUG_CTRL   bit0 force_link_up
 0x0060 TX_PKTS_LO
 0x0064 TX_PKTS_HI
 0x0068 TX_BYTES_LO
@@ -181,7 +189,22 @@ python3 software/xdma_load_trace.py \
   --manifest trace_out/manifest.json \
   --desc-base 0x00000000 \
   --data-base 0x10000000 \
-  --mode preload
+  --mode preload \
+  --force-link-up
+```
+
+无光纤调试时使用 `--force-link-up` 或：
+
+```bash
+python3 software/traffic_replay_cli.py debug-force-link on
+python3 software/traffic_replay_cli.py status
+```
+
+抓取 CMAC TX ILA：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action program -Bitfile D:\tr_build_debug\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
+& D:\Xilinx\Vivado\2020.2\bin\vivado.bat -mode batch -source .\scripts\capture_cmac_ila.tcl -tclargs D:\tr_build_debug\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.ltx .\reports\cmac_tx_ila_capture.csv
 ```
 
 远程烧录已有 bitstream：
@@ -190,12 +213,36 @@ python3 software/xdma_load_trace.py \
 powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action program -Bitfile .\path\to\design.bit
 ```
 
+烧录 PCIe endpoint bitstream 后建议重启远程主机，让 PCIe PERST 重新训练并重新分配 BAR。正常枚举应类似：
+
+```bash
+lspci -nn -d 10ee:
+# 01:00.0 Memory controller [0580]: Xilinx Corporation Device [10ee:903f]
+```
+
+远程 Linux 使用 Xilinx XDMA driver，可从官方 `dma_ip_drivers` 的 `2020.2` 分支构建：
+
+```bash
+git clone https://github.com/Xilinx/dma_ip_drivers.git
+cd dma_ip_drivers
+git checkout 2020.2
+make -C XDMA/linux-kernel/xdma
+sudo insmod XDMA/linux-kernel/xdma/xdma.ko
+ls -l /dev/xdma*
+```
+
 ## 已验证
 
 - `hwbd`：Vivado 2020.2 成功创建并 validate BD，生成 `traffic_replay_bd_wrapper.v`。
 - `sim`：XSim testbench 通过，输出 2 个包。
 - `synth`：stub 顶层综合通过，0 errors / 0 warnings。
-- `hwbit_existing`：使用 `constraints/traffic_replay_u200.xdc` 生成完整 U200 bitstream。2026-06-25 本机通过，产物为 `D:\tr_build\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit`。
+- `hwbit_existing`：使用 `constraints/traffic_replay_u200.xdc` 生成完整 U200 bitstream。2026-06-25 本机通过，调试产物为 `D:\tr_build_debug\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit`，ILA probes 为同目录 `traffic_replay_bd_wrapper.ltx`。
+- 远程 bring-up：JTAG 烧录后重启远程主机，PCIe 枚举为 `Memory controller [0580]: Xilinx Corporation Device [10ee:903f]`。
+- XDMA driver：远程 `dma_ip_drivers` 的 `2020.2` 分支驱动 `v2020.2.2` 成功 probe，识别 `config bar 1, user 0`，生成 `/dev/xdma0_h2c_0`、`/dev/xdma0_c2h_0`、`/dev/xdma0_user`。
+- DDR/XDMA：远程通过 H2C/C2H 在 `0x00000000`、`0x00100000`、`0x10000000` 完成 4KB、64KB、1MB 往返读写测试，全部 PASS。
+- 控制面：`traffic_replay_cli.py status/debug-force-link` 能读写 AXI-Lite；`DEBUG_CTRL[0]` 打开时 `tx_gate_open=yes`，关闭后恢复。
+- 回放 smoke：无光纤、`force-link-up` 下，3 包 trace 回放完成，`tx_packets=3`、`tx_bytes=252`；使用足够 gap 时 `late_packets=0`、`underrun_packets=0`。
+- CMAC TX ILA：远程 loop trace 运行时，`scripts/capture_cmac_ila.tcl` 以 `tx_axis_fifo_m_axis_tvalid==1` 触发并导出 `reports/cmac_tx_ila_capture.csv`；CSV 中能看到 `tvalid` 有效采样、`tkeep=ffffffffffffffff`、`tdata_low=aaaaaaaa`。
 - 最终实现时序：`reports/hw_impl_timing_summary.rpt` 显示 `WNS=0.017ns`、`TNS=0.000ns`、失败端点 0，`All user specified timing constraints are met.`
 - bitgen 仍有 `Evaluation License Warning` critical warning；正式长期使用前需要确认 CMAC 等 IP license 不是限时 evaluation。
 

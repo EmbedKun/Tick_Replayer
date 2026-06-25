@@ -29,6 +29,7 @@ REG_LOOP_GAP_HI = 0x003C
 REG_START_LO = 0x0040
 REG_START_HI = 0x0044
 REG_RATE = 0x0048
+REG_DEBUG_CTRL = 0x0054
 
 MODE_PRELOAD = 0
 MODE_STREAM = 1
@@ -53,6 +54,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--loop-gap", type=int_auto, default=0)
     parser.add_argument("--start-time", type=int_auto, default=0)
     parser.add_argument("--rate-q16-16", type=int_auto, default=0x0001_0000)
+    parser.add_argument("--force-link-up", action="store_true", help="set DEBUG_CTRL[0] before start for no-fiber ILA bring-up")
+    parser.add_argument("--clear-force-link-up", action="store_true", help="clear DEBUG_CTRL[0] before start")
     parser.add_argument("--no-start", action="store_true")
     parser.add_argument("--chunk-bytes", type=int_auto, default=4 * 1024 * 1024)
     return parser.parse_args()
@@ -132,6 +135,8 @@ def main() -> None:
         write64(user_fd, REG_LOOP_GAP_LO, REG_LOOP_GAP_HI, args.loop_gap)
         write64(user_fd, REG_START_LO, REG_START_HI, args.start_time)
         write32(user_fd, REG_RATE, args.rate_q16_16)
+        if args.force_link_up or args.clear_force_link_up:
+            write32(user_fd, REG_DEBUG_CTRL, 1 if args.force_link_up else 0)
         if not args.no_start:
             write32(user_fd, REG_CONTROL, 0x1)
     finally:

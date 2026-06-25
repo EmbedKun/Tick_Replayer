@@ -40,12 +40,14 @@ module axi_lite_regs #(
   output logic [63:0]       cfg_start_time,
   output logic [31:0]       cfg_rate_q16_16,
   output logic [31:0]       cfg_watermark,
+  output logic              cfg_force_link_up,
 
   input  logic              stat_running,
   input  logic              stat_done,
   input  logic              stat_late,
   input  logic              stat_underrun,
   input  logic              stat_link_up,
+  input  logic              stat_effective_link_up,
   input  logic [31:0]       stat_fifo_level,
   input  logic [63:0]       stat_tx_pkts,
   input  logic [63:0]       stat_tx_bytes,
@@ -72,6 +74,7 @@ module axi_lite_regs #(
   localparam logic [ADDR_W-1:0] REG_RATE         = 16'h0048;
   localparam logic [ADDR_W-1:0] REG_WATERMARK    = 16'h004c;
   localparam logic [ADDR_W-1:0] REG_FIFO_LEVEL   = 16'h0050;
+  localparam logic [ADDR_W-1:0] REG_DEBUG_CTRL   = 16'h0054;
   localparam logic [ADDR_W-1:0] REG_TX_PKTS_LO   = 16'h0060;
   localparam logic [ADDR_W-1:0] REG_TX_PKTS_HI   = 16'h0064;
   localparam logic [ADDR_W-1:0] REG_TX_BYTES_LO  = 16'h0068;
@@ -136,6 +139,7 @@ module axi_lite_regs #(
       cfg_start_time     <= '0;
       cfg_rate_q16_16    <= 32'h0001_0000;
       cfg_watermark      <= 32'd4096;
+      cfg_force_link_up  <= 1'b0;
     end else begin
       start_pulse <= 1'b0;
       stop_pulse  <= 1'b0;
@@ -183,6 +187,11 @@ module axi_lite_regs #(
           REG_START_HI:     cfg_start_time[63:32] <= apply_wstrb(cfg_start_time[63:32], wdata_q, wstrb_q);
           REG_RATE:         cfg_rate_q16_16 <= apply_wstrb(cfg_rate_q16_16, wdata_q, wstrb_q);
           REG_WATERMARK:    cfg_watermark   <= apply_wstrb(cfg_watermark, wdata_q, wstrb_q);
+          REG_DEBUG_CTRL: begin
+            if (wstrb_q[0]) begin
+              cfg_force_link_up <= wdata_q[0];
+            end
+          end
           default: begin
           end
         endcase
@@ -199,7 +208,7 @@ module axi_lite_regs #(
         unique case (s_axil_araddr)
           REG_CONTROL:     s_axil_rdata <= {28'd0, pause, 3'd0};
           REG_MODE:        s_axil_rdata <= {30'd0, cfg_mode};
-          REG_STATUS:      s_axil_rdata <= {27'd0, stat_link_up, stat_underrun, stat_late, stat_done, stat_running};
+          REG_STATUS:      s_axil_rdata <= {26'd0, stat_effective_link_up, stat_link_up, stat_underrun, stat_late, stat_done, stat_running};
           REG_DESC_BASE_LO:s_axil_rdata <= cfg_desc_base[31:0];
           REG_DESC_BASE_HI:s_axil_rdata <= cfg_desc_base[63:32];
           REG_DATA_BASE_LO:s_axil_rdata <= cfg_data_base[31:0];
@@ -217,6 +226,7 @@ module axi_lite_regs #(
           REG_RATE:        s_axil_rdata <= cfg_rate_q16_16;
           REG_WATERMARK:   s_axil_rdata <= cfg_watermark;
           REG_FIFO_LEVEL:  s_axil_rdata <= stat_fifo_level;
+          REG_DEBUG_CTRL:  s_axil_rdata <= {31'd0, cfg_force_link_up};
           REG_TX_PKTS_LO:  s_axil_rdata <= stat_tx_pkts[31:0];
           REG_TX_PKTS_HI:  s_axil_rdata <= stat_tx_pkts[63:32];
           REG_TX_BYTES_LO: s_axil_rdata <= stat_tx_bytes[31:0];

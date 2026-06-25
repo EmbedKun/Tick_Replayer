@@ -71,6 +71,10 @@ create_bd_design $bd_name
 current_bd_design $bd_name
 
 set const_idx 0
+set enable_debug_ila 1
+if {[info exists ::env(TRAFFIC_REPLAY_ENABLE_ILA)] && $::env(TRAFFIC_REPLAY_ENABLE_ILA) ne ""} {
+  set enable_debug_ila $::env(TRAFFIC_REPLAY_ENABLE_ILA)
+}
 
 proc add_const {name width value} {
   if {[llength [get_bd_cells -quiet $name]] == 0} {
@@ -165,6 +169,15 @@ set_property -dict [list \
   CONFIG.mode_selection {Advanced} \
   CONFIG.en_gt_selection {true} \
   CONFIG.select_quad {GTY_Quad_227} \
+  CONFIG.vendor_id {10EE} \
+  CONFIG.pf0_device_id {903F} \
+  CONFIG.pf0_class_code {058000} \
+  CONFIG.pf0_class_code_base {05} \
+  CONFIG.pf0_class_code_sub {80} \
+  CONFIG.pf0_class_code_interface {00} \
+  CONFIG.pf0_subsystem_vendor_id {10EE} \
+  CONFIG.pf0_subsystem_id {0007} \
+  CONFIG.tl_pf_enable_reg {1} \
   CONFIG.axi_data_width {512_bit} \
   CONFIG.axi_addr_width {64} \
   CONFIG.axi_id_width {4} \
@@ -259,6 +272,29 @@ set_property -dict [list \
   CONFIG.TX_IPG_VALUE {12} \
 ] [get_bd_cells cmac_0]
 
+if {$enable_debug_ila} {
+  create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice cmac_tx_ila_tdata_low
+  set_property -dict [list \
+    CONFIG.DIN_WIDTH {512} \
+    CONFIG.DIN_FROM {31} \
+    CONFIG.DIN_TO {0} \
+    CONFIG.DOUT_WIDTH {32} \
+  ] [get_bd_cells cmac_tx_ila_tdata_low]
+
+  create_bd_cell -type ip -vlnv xilinx.com:ip:ila cmac_tx_ila
+  set_property -dict [list \
+    CONFIG.C_DATA_DEPTH {1024} \
+    CONFIG.C_NUM_OF_PROBES {7} \
+    CONFIG.C_PROBE0_WIDTH {1} \
+    CONFIG.C_PROBE1_WIDTH {32} \
+    CONFIG.C_PROBE2_WIDTH {1} \
+    CONFIG.C_PROBE3_WIDTH {1} \
+    CONFIG.C_PROBE4_WIDTH {64} \
+    CONFIG.C_PROBE5_WIDTH {32} \
+    CONFIG.C_PROBE6_WIDTH {1} \
+  ] [get_bd_cells cmac_tx_ila]
+}
+
 try_board_intf xdma_0/pcie_mgt pci_express_x16
 try_board_intf pcie_refclk_buf/CLK_IN_D pcie_refclk
 try_board_pin xdma_0/sys_rst_n pcie_perstn
@@ -312,6 +348,19 @@ connect_bd_net [get_bd_pins rst_ddr/peripheral_reset] [get_bd_pins rst_cmac_init
 connect_bd_net [get_bd_pins cmac_0/gt_txusrclk2] [get_bd_pins cmac_0/rx_clk]
 connect_bd_net [get_bd_pins rst_cmac_init/peripheral_reset] [get_bd_pins cmac_0/sys_reset] [get_bd_pins cmac_0/core_tx_reset] [get_bd_pins cmac_0/core_rx_reset] [get_bd_pins cmac_0/core_drp_reset]
 connect_bd_net [get_bd_pins cmac_0/stat_rx_aligned] [get_bd_pins replay_core/link_up]
+connect_const tx_axis_fifo/m_axis_tready 1 1
+
+if {$enable_debug_ila} {
+  connect_bd_net [get_bd_pins cmac_0/gt_txusrclk2] [get_bd_pins cmac_tx_ila/clk]
+  connect_bd_net [get_bd_pins tx_axis_fifo/m_axis_tvalid] [get_bd_pins cmac_tx_ila/probe0]
+  connect_bd_net [add_const cmac_tx_ila_tready_const 32 1] [get_bd_pins cmac_tx_ila/probe1]
+  connect_bd_net [get_bd_pins tx_axis_fifo/m_axis_tlast] [get_bd_pins cmac_tx_ila/probe2]
+  connect_bd_net [get_bd_pins tx_axis_fifo/m_axis_tuser] [get_bd_pins cmac_tx_ila/probe3]
+  connect_bd_net [get_bd_pins tx_axis_fifo/m_axis_tkeep] [get_bd_pins cmac_tx_ila/probe4]
+  connect_bd_net [get_bd_pins tx_axis_fifo/m_axis_tdata] [get_bd_pins cmac_tx_ila_tdata_low/Din]
+  connect_bd_net [get_bd_pins cmac_tx_ila_tdata_low/Dout] [get_bd_pins cmac_tx_ila/probe5]
+  connect_bd_net [get_bd_pins cmac_0/stat_rx_aligned] [get_bd_pins cmac_tx_ila/probe6]
+}
 
 connect_bd_intf_net [get_bd_intf_pins xdma_0/M_AXI] [get_bd_intf_pins host_smc/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins host_smc/M00_AXI] [get_bd_intf_pins xdma_to_ddr_cc/S_AXI]

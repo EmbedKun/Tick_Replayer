@@ -35,6 +35,11 @@ set dev [lindex $devices 0]
 current_hw_device $dev
 refresh_hw_device $dev
 set_property PROGRAM.FILE $bitfile $dev
+set ltxfile [file rootname $bitfile].ltx
+if {[file exists $ltxfile]} {
+  set_property PROBES.FILE $ltxfile $dev
+  puts "Using probes file $ltxfile"
+}
 program_hw_devices $dev
 refresh_hw_device $dev
 puts "Programmed $dev with $bitfile"
