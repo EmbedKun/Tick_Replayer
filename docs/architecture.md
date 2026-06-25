@@ -32,12 +32,12 @@ XDMA x16 Gen3
                                        -> DDR4 control AXI-Lite
 
 replay_core/M_AXI      -> DDR SmartConnect -> DDR4 C0
-replay_core/M_TX_AXIS  -> AXIS clock converter -> CMAC QSFP0 axis_tx
+replay_core/M_TX_AXIS  -> axis_async_fifo -> CMAC QSFP0 axis_tx
 ```
 
 The PCIe differential refclk is connected through `util_ds_buf` configured as `IBUFDSGTE`, matching the known-good U200 project style. The CMAC is configured for QSFP0, CAUI-4, 512-bit AXIS, 161.1328125 MHz GT refclk, and no RS-FEC.
 
-The current BD clocks the replay core from the DDR4 UI clock. This is intentional for first bring-up because both the XDMA DDR write path and the replay DDR read path share the same memory clock after CDC. TX data crosses into the CMAC user clock through an AXIS clock converter. For the final timing-precision version, move the scheduler and TX engine into the CMAC TX user clock domain and put a deeper packet FIFO between DDR and scheduler/TX.
+The current BD clocks the replay core from the DDR4 UI clock. This is intentional for first bring-up because both the XDMA DDR write path and the replay DDR read path share the same memory clock after CDC. TX data crosses into the CMAC user clock through `axis_async_fifo.v`. For the final timing-precision version, move the scheduler and TX engine into the CMAC TX user clock domain and put a deeper packet FIFO between DDR and scheduler/TX.
 
 Address map exposed to the host:
 
@@ -63,13 +63,14 @@ For minimum Ethernet frames, descriptor command overhead can dominate. Keep the 
 
 ## Timestamp behavior
 
-The scheduler maintains `target_ticks`. For each packet:
+The scheduler uses replay-relative time. `CONTROL.start` and `CONTROL.clear` reset `now_ticks`, pending state, and first-packet state. The scheduler maintains `target_ticks`. For each packet:
 
 ```text
-target_ticks = first ? start_time_or_now_plus_gap : target_ticks + scaled_gap
+target_ticks = first ? (START_TIME == 0 ? first_gap : START_TIME)
+                     : target_ticks + next_gap
 ```
 
-`gap_ticks` is expected to be pre-scaled by host software. The register `RATE_Q16_16` is reserved for a later pipelined hardware scaler; the first timing-oriented RTL avoids a combinational 64x32 multiply in the 322MHz scheduler path.
+`gap_ticks` is expected to be pre-scaled by host software. The register `RATE_Q16_16` is reserved for a later pipelined hardware scaler.
 
 For the current hardware BD, generate traces with `--tick-hz 300000000` because the replay core is clocked by the DDR UI clock. The original stub and standalone CMAC-oriented estimates used 322.265625 MHz.
 

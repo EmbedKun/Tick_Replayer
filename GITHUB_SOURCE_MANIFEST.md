@@ -49,6 +49,7 @@ scripts/synth_check.tcl
 scripts/program_remote.tcl
 scripts/capture_cmac_ila.tcl
 scripts/query_xdma_props.tcl
+scripts/draw_system_architecture.py
 ```
 
 仿真：
@@ -69,6 +70,8 @@ software/traffic_replay_cli.py
 
 ```text
 docs/architecture.md
+docs/PROJECT_BRINGUP_NOTES.md
+docs/system_architecture_overview.png
 ```
 
 ## 不应上传的内容
