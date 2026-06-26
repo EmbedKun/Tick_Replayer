@@ -14,7 +14,9 @@ proc source_vivado_init {subdir} {
   }
   set old_dir [pwd]
   cd $init_dir
-  source -notrace $init_file
+  if {[catch {source -notrace $init_file} init_err]} {
+    puts "WARNING: failed to source Vivado init file $init_file: $init_err"
+  }
   cd $old_dir
 }
 
