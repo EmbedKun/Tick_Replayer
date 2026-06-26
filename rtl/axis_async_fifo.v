@@ -54,7 +54,7 @@ module axis_async_fifo #
   localparam PTR_W = DEPTH_LOG2 + 1;
   localparam PAYLOAD_W = DATA_W + KEEP_W + USER_W + 1;
   localparam RAM_READ_LATENCY = 2;
-  localparam READ_PIPE_LEN = RAM_READ_LATENCY + 1;
+  localparam READ_PIPE_LEN = RAM_READ_LATENCY;
   localparam OUT_DEPTH = 4;
   localparam OUT_PTR_W = 2;
   localparam OUT_COUNT_W = 3;
@@ -84,8 +84,7 @@ module axis_async_fifo #
   wire ram_return_valid = rd_valid_pipe[READ_PIPE_LEN-1];
   wire [OUT_COUNT_W-1:0] outstanding_count =
     {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[0]} +
-    {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[1]} +
-    {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[2]};
+    {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[1]};
   wire [OUT_COUNT_W-1:0] total_buffered = out_count + outstanding_count;
   wire rd_issue = !rd_empty_now && (total_buffered < OUT_DEPTH);
 

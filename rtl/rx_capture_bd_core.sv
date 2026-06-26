@@ -448,17 +448,17 @@ module rx_capture_core #(
         2'd0: begin
           if (fifo_tvalid && fifo_tready) begin
             automatic logic [31:0] rem_before;
-            automatic logic [AXIS_KEEP_W_P-1:0] cap_keep;
             automatic logic [6:0] beat_bytes;
-            automatic logic [6:0] cap_bytes;
             automatic logic do_capture;
 
             rem_before = in_packet_q ? capture_remaining_q : cfg_trunc_bytes;
-            cap_keep = limit_keep(fifo_tkeep, rem_before);
             beat_bytes = popcount_keep(fifo_tkeep);
-            cap_bytes = popcount_keep(cap_keep);
-            do_capture = cfg_capture_enable && (cfg_ring_size != 32'd0) && (cap_bytes != 7'd0);
+            do_capture = cfg_capture_enable && (cfg_ring_size != 32'd0) && (rem_before != 32'd0);
 
+            // The debug ring stores full 512-bit beats; TKEEP-derived counters
+            // still tell software how many bytes in each beat were meaningful.
+            m_axi_wdata <= fifo_tdata;
+            m_axi_wstrb <= {AXIS_KEEP_W_P{1'b1}};
             stat_rx_bytes_q <= stat_rx_bytes_q + {57'd0, beat_bytes};
             if (fifo_tlast) begin
               stat_rx_pkts_q <= stat_rx_pkts_q + 64'd1;
@@ -469,20 +469,17 @@ module rx_capture_core #(
               capture_remaining_q <= 32'd0;
             end else begin
               in_packet_q <= 1'b1;
-              capture_remaining_q <= (rem_before > beat_bytes) ? (rem_before - beat_bytes) : 32'd0;
+              capture_remaining_q <= (rem_before > AXIS_KEEP_W_P) ? (rem_before - AXIS_KEEP_W_P) : 32'd0;
             end
 
             if (do_capture) begin
               m_axi_awaddr  <= cfg_ring_base + {32'd0, write_ptr_q};
               m_axi_awvalid <= 1'b1;
-              m_axi_wdata   <= fifo_tdata;
-              m_axi_wstrb   <= cap_keep;
               m_axi_wvalid  <= 1'b1;
               m_axi_bready  <= 1'b1;
               aw_done_q     <= 1'b0;
               w_done_q      <= 1'b0;
               writer_state_q <= 2'd1;
-              stat_cap_bytes_q <= stat_cap_bytes_q + {57'd0, cap_bytes};
               if (write_ptr_q + AXIS_KEEP_W_P >= cfg_ring_size) begin
                 write_ptr_q <= 32'd0;
               end else begin
@@ -508,6 +505,7 @@ module rx_capture_core #(
         2'd2: begin
           if (m_axi_bvalid) begin
             stat_axi_writes_q <= stat_axi_writes_q + 64'd1;
+            stat_cap_bytes_q <= stat_cap_bytes_q + 64'd64;
             if (m_axi_bresp != 2'b00) begin
               stat_axi_errors_q <= stat_axi_errors_q + 64'd1;
             end

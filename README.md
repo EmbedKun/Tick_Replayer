@@ -15,19 +15,21 @@
 - Host 通过 `/dev/xdma0_h2c_0` 和 `/dev/xdma0_c2h_0` 对 FPGA DDR4 做 memory-mapped DMA。
 - Host 通过 `/dev/xdma0_user` 访问 replay core 的 AXI-Lite 控制寄存器。
 - FPGA 从 DDR4 读取 descriptor 和 payload，并按 `gap_ticks` 调度发包。
-- 无光纤时通过 `force_link_up` 和 `force_tx_ready` 验证 DDR reader、scheduler、TX engine 的内部通路。
+- 无光纤时可通过 `force_link_up` 和 `force_tx_ready` 验证 DDR reader、scheduler、TX engine 的内部通路。
 - 双端口 BD 已生成并烧录：QSFP0/QSFP1 各自连接一套 replay core、TX async FIFO、CMAC 和 RX capture core。
-- 双端口无光纤 TX smoke test 通过：TX0/TX1 分别从不同 DDR 地址装载同一 3 包 trace，均完成 `tx_packets=3`、`tx_bytes=252`。
-- RX0/RX1 的 AXI-Lite 寄存器、ring base/size/truncate 配置、enable/capture 状态读写已通过；因为暂未接光纤，RX 包计数尚未做真实链路验证。
+- QSFP0 和 QSFP1 已用 100G 光纤互联，两个 CMAC 都能真实 link up。
+- 双端口实测通过：TX0 -> RX1、TX1 -> RX0 都能回放并被对端 RX capture 统计和写入 DDR ring。
+- 单包长度扫描 `60/64/124/128/256B` 双向通过，RX 计数与 TX 计数一致，`rx_errors=0`。
+- 3 包 DDR preload trace 双向通过，TX/RX 都统计为 `3 packets / 252 bytes`，RX ring 可通过 C2H 读回预期内容。
 - XSim 仿真覆盖 host stream path 和 DDR preload path。
-- 远端 U200 JTAG 烧录、PCIe rescan、XDMA driver probe、DDR H2C/C2H 回读和 3 包 DDR preload smoke test 均通过。
+- 远端 U200 JTAG 烧录、PCIe rescan、XDMA driver probe、DDR H2C/C2H 回读和双端口光纤互联 smoke test 均通过。
 
 暂未完成或仍需加强：
 
 - XDMA/QDMA streaming H2C 直连 `STREAM` 模式的 BD 接线。
-- 接真实光纤后的 CMAC link-up、线速发包和外部网卡收包验证。
+- 接真实 DDoS 防御仪或外部网卡后的端到端收包验证。
 - 大 pcap 长时间压力测试和 100Gbps 极限吞吐优化。
-- RX 侧真实收包统计、DDR ring 写入和 Host 读取最近包窗口验证。
+- RX 侧满速压力下的 ring 写入稳定性、覆盖策略和 metadata 格式完善。
 - pcapng 支持。当前 `software/pcap2trace.py` 只支持 classic pcap。
 - 更完整的 traffic_replay 风格高层 CLI，例如一条命令完成 pcap 转换、加载、启动和状态轮询。
 
@@ -55,7 +57,7 @@ RX0: cmac_0/rx_axis_* -> rx_cap_0 -> DDR ring writer
 RX1: cmac_1/rx_axis_* -> rx_cap_1 -> DDR ring writer
 ```
 
-RX capture 当前是“统计 + 截断保存最近数据”的原型：CMAC RX AXIS 先进入异步 FIFO，再跨到 DDR UI clock 域。启用 capture 后，每个包最多写入 `TRUNC_BYTES` 字节到 DDR ring，ring 以 64B beat 为单位前进并在 `RING_SIZE` 内回绕。这个实现用于 bring-up 和后续扩展入口，暂时不是满速抓包器。
+RX capture 当前是“统计 + 截断保存最近数据”的原型：CMAC RX AXIS 先进入异步 FIFO，再跨到 DDR UI clock 域。启用 capture 后，DDR ring 按完整 64B beat 写入，`TRUNC_BYTES` 控制每个包最多保存多少个 beat，ring 在 `RING_SIZE` 内回绕。`rx_bytes` 表示 TKEEP 计算出的有效包字节数，`captured_bytes` 表示写进 ring 的 64B beat 字节数，所以最后一个 beat 的无效 lane 可能是填充或旧数据。这个实现用于 bring-up 和后续扩展入口，暂时不是满速抓包器。
 
 ## 仓库结构
 
@@ -81,11 +83,15 @@ pcap
   -> software/xdma_load_trace.py
   -> XDMA H2C
   -> FPGA DDR4
-  -> ddr_trace_reader
-  -> replay_scheduler
-  -> replay_tx_engine
-  -> axis_async_fifo
-  -> CMAC QSFP0 TX
+  -> per-port ddr_trace_reader / scheduler / tx_engine
+  -> per-port axis_async_fifo
+  -> CMAC QSFP0/QSFP1 TX
+
+CMAC QSFP0/QSFP1 RX
+  -> per-port RX axis_async_fifo
+  -> rx_capture_core
+  -> DDR ring
+  -> XDMA C2H debug readback
 ```
 
 控制流如下：
@@ -109,19 +115,26 @@ XDMA M_AXI
 XDMA M_AXI_LITE
   -> AXI-Lite clock converter
   -> control SmartConnect
-  -> replay_core/S_AXIL
+  -> replay_core_0/S_AXIL
+  -> replay_core_1/S_AXIL
+  -> rx_cap_0/S_AXIL
+  -> rx_cap_1/S_AXIL
   -> DDR4 control register slice
 
-replay_core/M_AXI
+replay_core_0/1 M_AXI
   -> DDR SmartConnect
   -> DDR4 C0
 
-replay_core/M_TX_AXIS
+rx_cap_0/1 M_AXI
+  -> DDR SmartConnect
+  -> DDR4 C0
+
+replay_core_0/1 M_TX_AXIS
   -> axis_async_fifo
-  -> CMAC QSFP0 AXIS TX
+  -> CMAC QSFP0/QSFP1 AXIS TX
 ```
 
-当前 replay core 跑在 DDR4 UI clock 域，TX 输出通过 `axis_async_fifo.v` 跨到 CMAC TX user clock 域。这样做便于早期 bring-up，因为 Host 写 DDR 和 replay core 读 DDR 都在同一内存时钟体系内。后续如果继续追求极限时间精度，可以把 scheduler/TX 前移到 CMAC TX user clock 域，并在 DDR reader 后增加更深的 descriptor/payload 预取队列。
+当前 replay core 和 RX capture 的 DDR 写入侧跑在 DDR4 UI clock 域，TX/RX 都通过 `axis_async_fifo.v` 跨到 CMAC user clock 域。这样做便于早期 bring-up，因为 Host 写 DDR、replay core 读 DDR 和 RX ring 写 DDR 都在同一内存时钟体系内。后续如果继续追求极限时间精度，可以把 scheduler/TX 前移到 CMAC TX user clock 域，并在 DDR reader 后增加更深的 descriptor/payload 预取队列。
 
 ## 主要 RTL 模块
 
@@ -293,7 +306,7 @@ D:\tr_build_dual\vivado_hw\traffic_replay_hw.xpr
 D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
 ```
 
-这版 bitstream 已经烧录到远程 U200，PCIe rescan 后枚举为 `10ee:903f`，XDMA 设备节点恢复正常。实现日志里 bitgen 为 0 Errors；最终 timing summary 显示 user constraints met。
+这版 bitstream 已经烧录到远程 U200，PCIe rescan 后枚举为 `10ee:903f`，XDMA 设备节点恢复正常。实现日志里 bitgen 为 0 Errors；最终 timing summary 显示 user constraints met，最后一次实测构建的 WNS 为 `+0.007 ns`。
 
 JTAG 重配后，远端 Linux 需要重新枚举 PCIe。最稳妥是重启；本次验证中也使用过 remove/rescan：
 
@@ -399,8 +412,12 @@ sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py regs
   - `late_packets=0`
   - `underrun_packets=0`
   - `debug_ticks=90006`
+- QSFP0/QSFP1 用 100G 光纤互联后，TX0 -> RX1 和 TX1 -> RX0 均通过：
+  - 单包 `60/64/124/128/256B` 长度扫描，RX 包数/字节数与 TX 一致，`rx_errors=0`。
+  - 3 包 trace 双向均为 `tx_packets=3`、`tx_bytes=252`、对端 `rx_packets=3`、`rx_bytes=252`、`rx_errors=0`。
+  - RX ring C2H 回读能看到预期的 64B beat 内容：`0xaa...`、`0x55...`、递增字节序列。
 
-这说明当前已经证明：Host 能通过 XDMA 写 DDR，FPGA replay core 能从 DDR 读 descriptor/payload，scheduler 能按相对时间释放包，TX engine 能把包推出到 TX 输出侧。没有接光纤时，这还不等价于 QSFP 光口真实发包；真实发包仍需要 CMAC link-up 和外部收包验证。
+这说明当前已经证明：Host 能通过 XDMA 写 DDR，FPGA replay core 能从 DDR 读 descriptor/payload，scheduler 能按相对时间释放包，TX engine 能把包推出到 CMAC，两个 QSFP 光口互联时对端 RX 能统计并把最近数据写入 DDR ring。下一步才是接真实被测设备或外部网卡做端到端流量验证和吞吐压力测试。
 
 ## 版本管理
 
@@ -490,20 +507,50 @@ sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 s
 
 现象同 TX0：`tx_packets=3`、`tx_bytes=252`。
 
-RX0/RX1 ring 配置示例：
+RX0/RX1 ring 配置示例。实测时为了避开 TX trace 数据区，RX1 使用 `0x30000000`，RX0 使用 `0x32000000`：
 
 ```bash
-sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-config --ring-base 0x20000000 --ring-size 0x00100000 --truncate-bytes 128
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-config --ring-base 0x32000000 --ring-size 0x00100000 --truncate-bytes 128
 sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-clear
 sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-enable
 sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-capture on
 sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-status
 
-sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-config --ring-base 0x21000000 --ring-size 0x00100000 --truncate-bytes 128
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-config --ring-base 0x30000000 --ring-size 0x00100000 --truncate-bytes 128
 sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-clear
 sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-enable
 sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-capture on
 sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-status
 ```
 
-无光纤时的预期现象是 `rx_enable=yes`、`capture_enable=yes`、`fifo_ready=yes`，但 `link_up=no`、`rx_packets=0`。接光纤后需要继续验证 CMAC link-up、RX 包计数、`captured_bytes`、`axi_writes` 和 DDR ring 内容。
+100G 光纤互联后的单包长度扫描：
+
+```text
+dir        len  tx_pkts  tx_bytes  rx_pkts  rx_bytes  rx_errs  axi_writes  write_ptr
+TX0->RX1    60        1        60        1        60        0           1         64
+TX0->RX1    64        1        64        1        64        0           1         64
+TX0->RX1   124        1       124        1       124        0           2        128
+TX0->RX1   128        1       128        1       128        0           2        128
+TX0->RX1   256        1       256        1       256        0           4        256
+TX1->RX0    60        1        60        1        60        0           1         64
+TX1->RX0    64        1        64        1        64        0           1         64
+TX1->RX0   124        1       124        1       124        0           2        128
+TX1->RX0   128        1       128        1       128        0           2        128
+TX1->RX0   256        1       256        1       256        0           4        256
+```
+
+100G 光纤互联后的 3 包 trace 实测：
+
+```text
+TX0 -> RX1:
+  TX0 done=yes, tx_packets=3, tx_bytes=252, late_packets=0, underrun_packets=0
+  RX1 link_up=yes, rx_packets=3, rx_bytes=252, rx_errors=0
+  RX1 captured_bytes=256, axi_writes=4, write_ptr=256
+
+TX1 -> RX0:
+  TX1 done=yes, tx_packets=3, tx_bytes=252, late_packets=0, underrun_packets=0
+  RX0 link_up=yes, rx_packets=3, rx_bytes=252, rx_errors=0
+  RX0 captured_bytes=256, axi_writes=4, write_ptr=256
+```
+
+RX ring 是按 64B beat 保存的，所以 124B 包会占 2 个 beat，`captured_bytes=256` 对应 4 个写入 beat，而不是 252 个有效以太网字节。

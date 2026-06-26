@@ -76,6 +76,8 @@ Host Python
 
 无光纤时，用 `DEBUG_CTRL[0] force_link_up` 打开 TX gate，用 `DEBUG_CTRL[1] force_tx_ready` 让 TX engine 内部认为下游 ready，这样可以不依赖 CMAC 真实 link-up 来验证内部路径。
 
+接上 QSFP0/QSFP1 之间的 100G 光纤后，TX0 -> RX1 和 TX1 -> RX0 都已经验证通过：CMAC link-up、TX 计数、RX 计数、RX ring 写入和 Host C2H 读回都能闭环。
+
 ## 4. Block Design 里的 IP
 
 Block Design 由 `scripts/create_hw_project.tcl` 生成。关键 IP 如下。
@@ -177,7 +179,7 @@ RX CRC: stripping enabled
 TX IPG: 12
 ```
 
-CMAC TX input 来自 `axis_async_fifo`。当前 BD 里 CMAC TX 侧 `tready` 没有作为外部信号反馈给 replay core，所以早期验证主要看 TX engine 计数和可选 ILA。真正接光纤后，还要验证 `stat_rx_aligned`、CMAC link 状态和外部收包。
+CMAC TX input 来自 `axis_async_fifo`。当前 BD 里 CMAC TX 侧 `tready` 没有作为外部信号反馈给 replay core，所以早期无光纤验证主要看 TX engine 计数和可选 ILA。接 QSFP0/QSFP1 互联光纤后，两个 CMAC 的 link 状态和双向 RX packet counter 已经验证通过；后续还需要接真实被测设备或外部网卡做端到端验证。
 
 ### ILA
 
@@ -405,7 +407,20 @@ tuser
 
 ### `axis_async_fifo.v`
 
-负责 DDR UI clock 到 CMAC TX user clock 的 CDC。当前 FIFO 是早期 bring-up 版本，后续线速压力下可能需要更深、更严格 timing 的实现。
+负责 DDR UI clock 到 CMAC TX user clock 的 CDC，也被 RX capture 用来从 CMAC RX clock 跨回 DDR UI clock。这次真实光纤联调时发现过一个关键 bug：`xpm_memory_sdpram` 的 `.READ_LATENCY_B(2)` 已经表示 RAM 输出延迟 2 拍，原代码又额外把 valid pipe 做成 `RAM_READ_LATENCY + 1`，导致 `tdata/tkeep/tlast` 与 valid 对齐晚了一拍。
+
+现象是：
+
+- 60B/64B 单 beat 包基本正常。
+- 124B、128B、256B 这类多 beat 包会在 RX 侧被拆成多个包，`rx_packets` 比实际多，ring 里的数据也会出现错位或重复。
+
+修复后：
+
+```systemverilog
+localparam READ_PIPE_LEN = RAM_READ_LATENCY;
+```
+
+同时 `outstanding_count` 只统计两个 valid pipe bit。修完后跑了双向长度扫描：`60/64/124/128/256B` 均为 TX 1 包、RX 1 包、字节数一致、`rx_errors=0`。
 
 ### `host_stream_parser.sv`
 
@@ -470,6 +485,8 @@ sudo python3 traffic_replay_cli.py debug-tx-ready on
 
 `status` 会把关键状态翻译成人能读的形式。`regs` 用于完整 dump。
 
+双端口 RX bring-up 时修过一次 CLI 位解析：`rx_capture_core` 的 `STATUS` 中 bit5 才是 `link_up`，bit4 是 `fifo_valid`，bit6 是 `overflow_seen`，`writer_state` 在 bit[8:7]。如果这些位解错，会出现原始寄存器已经显示链路 up，但 `rx-status` 仍打印 `link_up=no` 的假象。
+
 ## 8. 仿真做了什么
 
 仿真入口：
@@ -522,6 +539,8 @@ fifo_level=0
 1. DDR reader start 兜底：如果 start pulse 错过，只要系统处于 running、DDR reader idle、pkt_count 非零，就重新拉起 reader。
 2. 调度器时间基准：`start/clear` 重置 `now_ticks` 和首包状态，避免全局计数器旧值影响新 trace。
 3. 调试通路：加 `force_tx_ready` 和 debug regs，使无光纤时也能确认 TX path 是否真的走完。
+4. RX capture ring 写入改成完整 64B beat 写入，避免 sparse `WSTRB` 在调试 ring C2H 读回时引入不稳定因素。
+5. 修复 `axis_async_fifo` read valid pipeline off-by-one，解决多 beat 包被拆包和 TLAST 对齐错误。
 
 ### 重新生成 bitstream
 
@@ -694,7 +713,7 @@ D:\tr_build_fix\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrappe
 
 ## 11. 双端口原型增量记录
 
-这次在单端口版本上扩成了双端口原型，目标是让一块 U200 同时扮演 pcap 里的两个逻辑方向。当前没有接光纤，所以只验证到 PCIe/XDMA/DDR/双 TX 内部通路和 RX capture 控制面；真实 RX 收包要等光纤接上后继续测。
+这次在单端口版本上扩成了双端口原型，目标是让一块 U200 同时扮演 pcap 里的两个逻辑方向。现在已经用 QSFP0/QSFP1 之间的 100G 光纤把双向链路跑通：TX0 可以打到 RX1，TX1 可以打到 RX0。当前验证重点仍是功能闭环和调试能力，不代表已经做到 100Gbps 满速压力。
 
 ### 新增模块
 
@@ -711,8 +730,9 @@ rtl/rx_capture_bd_core.v   Vivado BD 用 Verilog wrapper
 - 因为 CMAC RX 没有 `tready`，内部只能在 FIFO 满时丢弃新 beat，并通过 overflow sticky bit 暴露风险。
 - 用 `axis_async_fifo` 从 CMAC RX clock 跨到 DDR UI clock。
 - 统计 RX packets/bytes/errors。
-- 可选把每个包前 `TRUNC_BYTES` 字节写入 DDR ring buffer。
-- DDR ring 写入是单 beat AXI4 write，便于 bring-up，不是满速抓包器。
+- 可选把每个包前 `TRUNC_BYTES` 对应的 64B beat 写入 DDR ring buffer。
+- DDR ring 写入是单 beat AXI4 write，并且当前 `WSTRB` 全 1，便于 Host C2H 稳定回读调试数据；`rx_bytes` 才是 TKEEP 算出的有效以太网字节数，`captured_bytes` 是 ring 实际写入的 64B beat 字节数。
+- 这个模块当前是统计和最近数据窗口，不是满速抓包器。
 
 RX capture 寄存器地址相对每个 RX block base：
 
@@ -828,7 +848,7 @@ Vivado 结果：
 - `place_design` 通过，没有复现之前的 clock routing failed。
 - `route_design` 通过。
 - `write_bitstream` 通过，0 Errors。
-- 最终 `reports/hw_impl_timing_summary.rpt` 显示 user constraints met。
+- 最终 `reports/hw_impl_timing_summary.rpt` 显示 user constraints met；修复 FIFO 后最后一次 bitstream 的 WNS 是 `+0.007 ns`。
 - CMAC 仍有 `cmac_an_lt` design_linking license 的 critical warning，这是 CMAC IP license 相关提示，不是实现错误。
 
 远程 U200 烧录：
@@ -847,6 +867,7 @@ DDR DMA 回读：
 0x00100000 64KB     PASS
 0x10000000 1MB      PASS
 0x30000000 4KB      PASS
+0x32000000 4KB      PASS
 ```
 
 TX0 装载 `/home/user/trace_out/manifest.json`：
@@ -877,33 +898,70 @@ late_packets=0
 underrun_packets=0
 ```
 
-RX0/RX1 控制面：
+RX0/RX1 控制面和光纤互联前的空闲状态：
 
 ```text
-RX0 ring_base=0x20000000, ring_size=0x00100000, truncate=128
-RX1 ring_base=0x21000000, ring_size=0x00100000, truncate=128
+RX0 ring_base=0x32000000, ring_size=0x00100000, truncate=128
+RX1 ring_base=0x30000000, ring_size=0x00100000, truncate=128
 rx_enable=yes
 capture_enable=yes
 fifo_ready=yes
-link_up=no
-rx_packets=0
-captured_bytes=0
-axi_writes=0
 ```
 
-没有接光纤，所以 `link_up=no` 和 `rx_packets=0` 是预期现象。接光纤后的下一步是看 `stat_rx_aligned`、RX packet counter、DDR ring `write_ptr/captured_bytes/axi_writes` 是否递增，并用 C2H 从 ring base 读回最近包头。
+接 QSFP0/QSFP1 100G 光纤后，先关闭 debug 强制项：
+
+```bash
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 debug-force-link off
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 debug-tx-ready off
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 debug-force-link off
+sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 debug-tx-ready off
+```
+
+两个 TX status 都显示 `cmac_link_up=yes`，两个 RX status 都显示 `link_up=yes` 和 `fifo_ready=yes`。
+
+单包长度扫描结果：
+
+```text
+dir        len  tx_pkts  tx_bytes  rx_pkts  rx_bytes  rx_errs  axi_writes  write_ptr
+TX0->RX1    60        1        60        1        60        0           1         64
+TX0->RX1    64        1        64        1        64        0           1         64
+TX0->RX1   124        1       124        1       124        0           2        128
+TX0->RX1   128        1       128        1       128        0           2        128
+TX0->RX1   256        1       256        1       256        0           4        256
+TX1->RX0    60        1        60        1        60        0           1         64
+TX1->RX0    64        1        64        1        64        0           1         64
+TX1->RX0   124        1       124        1       124        0           2        128
+TX1->RX0   128        1       128        1       128        0           2        128
+TX1->RX0   256        1       256        1       256        0           4        256
+```
+
+原 3 包 trace 双向结果：
+
+```text
+TX0 -> RX1:
+  TX0 done=yes, tx_packets=3, tx_bytes=252, late_packets=0, underrun_packets=0
+  RX1 link_up=yes, rx_packets=3, rx_bytes=252, rx_errors=0
+  RX1 captured_bytes=256, axi_writes=4, write_ptr=256
+
+TX1 -> RX0:
+  TX1 done=yes, tx_packets=3, tx_bytes=252, late_packets=0, underrun_packets=0
+  RX0 link_up=yes, rx_packets=3, rx_bytes=252, rx_errors=0
+  RX0 captured_bytes=256, axi_writes=4, write_ptr=256
+```
+
+RX ring C2H 回读内容符合预期：第一包是 64B `0xaa`，第二包是 64B `0x55`，第三包是递增字节序列，占两个 64B beat。第三包有效长度是 124B，所以最后一个 beat 的末尾 4B 不是有效包数据。
 
 ## 12. 后续开发建议
 
 优先级从高到低：
 
-1. 接光纤，验证 CMAC link-up 和外部收包。
+1. 接真实 DDoS 防御仪或外部网卡，验证端到端收包和双向业务场景。
 2. 给 DDR reader 加 descriptor/payload prefetch，解决小包吞吐问题。
 3. 把 scheduler/TX 移到 CMAC TX user clock 域，提高包间隔精度。
 4. 接入 XDMA/QDMA streaming H2C，实现 Host streaming 模式。
 5. 做高层 CLI，把 pcap2trace、load、start、status 封成一个用户命令。
 6. 扩展 pcap 处理：IP/port/DNS/checksum 一致性修改，带宽/RTT/丢包率场景生成。
-7. 增加真实 pcap 回放自动化测试和长时间稳定性测试。
+7. 增加真实 pcap 回放自动化测试、长时间稳定性测试和满速压力测试。
 
 ## 13. 容易踩坑的点
 
