@@ -5,12 +5,12 @@
 <p><strong>DDR-backed dual-port 100G FPGA traffic replay prototype for Xilinx Alveo U200.</strong></p>
 
 <p>
-  <code>FPGA</code> ·
-  <code>100G Ethernet</code> ·
-  <code>Xilinx Alveo U200</code> ·
-  <code>PCIe XDMA</code> ·
-  <code>DDR4</code> ·
-  <code>CMAC</code> ·
+  <code>FPGA</code> /
+  <code>100G Ethernet</code> /
+  <code>Xilinx Alveo U200</code> /
+  <code>PCIe XDMA</code> /
+  <code>DDR4</code> /
+  <code>CMAC</code> /
   <code>PCAP replay</code>
 </p>
 
@@ -29,9 +29,10 @@ and receive at the same time, which is the behavior needed when one FPGA
 emulates both sides of a bidirectional trace around a network device under test.
 
 This repository is source-oriented: it contains `RTL`, Vivado Tcl scripts,
-constraints, simulation, host utilities, documentation, and verification
-screenshots.  Vivado generated projects, build logs, bitstreams, traces, and
-private machine state are intentionally excluded.
+constraints, simulation, host utilities, documentation, verification
+screenshots, and selected archived bitstreams with matching TXT notes.  Vivado
+generated projects, build logs, temporary traces, and private machine state are
+intentionally excluded.
 
 ## Table of Contents
 
@@ -42,8 +43,10 @@ private machine state are intentionally excluded.
 * [Repository Layout](#repository-layout)
 * [Requirements](#requirements)
 * [Build](#build)
+* [Bitstream Archive](#bitstream-archive)
 * [Programming and PCIe Rescan](#programming-and-pcie-rescan)
 * [Host Tools](#host-tools)
+* [Stream Mode and Stress Testing](#stream-mode-and-stress-testing)
 * [Verification](#verification)
 * [Current Limitations](#current-limitations)
 
@@ -63,8 +66,8 @@ private machine state are intentionally excluded.
 * Replay modes:
   * `PRELOAD`: host preloads descriptor and payload files into `DDR4`.
   * `LOOP`: `DDR4`-backed replay loop is wired in `RTL`.
-  * `STREAM`: host stream parser exists in RTL, but the current block design does
-    not yet connect an `XDMA`/`QDMA` streaming `H2C` path to it.
+  * `STREAM`: host writes a stream buffer into `DDR4` through memory-mapped
+    `XDMA H2C`; the FPGA reads it sequentially and feeds the stream parser.
 * Host-side Python tools for `pcap` conversion, `XDMA` loading, control registers,
   status registers, and RX capture configuration.
 * Verified `QSFP0` <-> `QSFP1` 100G optical loop with bidirectional `TX`/`RX`
@@ -119,6 +122,22 @@ PCAP / generated trace
   -> QSFP0 / QSFP1
 ```
 
+DDR-backed `STREAM` movement:
+
+```text
+desc.bin + data.bin
+  -> trace_to_stream.py
+  -> stream.bin
+  -> xdma_stream_load.py
+  -> /dev/xdma0_h2c_0
+  -> FPGA DDR4 stream buffer
+  -> ddr_stream_reader
+  -> host_stream_parser
+  -> replay scheduler
+  -> TX packet engine
+  -> 100G CMAC TX
+```
+
 Control and debug movement:
 
 ```text
@@ -145,6 +164,8 @@ The major IP and RTL blocks are:
 | `SmartConnect` | Arbitrates host DMA, `TX` readers, and `RX` ring writers into `DDR4`; also routes `AXI-Lite` control accesses. |
 | `trace_replay_core` | Per-port `TX` replay core with `AXI-Lite` registers, `DDR4` trace reader, scheduler, and `TX` engine. |
 | `ddr_trace_reader` | Reads 64-byte descriptors and payload beats from `DDR4`. |
+| `ddr_stream_reader` | Reads a sequential stream buffer from `DDR4` for `STREAM` mode. |
+| `host_stream_parser` | Parses one 64-byte stream header beat followed by packet payload beats. |
 | `replay_scheduler` | Maintains a replay-relative tick counter and releases packets according to descriptor gap fields. |
 | `replay_tx_engine` | Converts scheduled payload beats into 512-bit `CMAC TX AXI-Stream` frames. |
 | `axis_async_fifo` | Crosses between the `DDR4` UI clock and `CMAC` user clocks. |
@@ -228,9 +249,29 @@ Example descriptors from the three-packet smoke trace:
 | 1 | `30000` | `1` | `64` | `0` |
 | 2 | `30000` | `2` | `124` | `0` |
 
+`STREAM` mode uses a DDR-backed stream buffer.  The buffer is a linear sequence
+of packet records:
+
+```text
+64-byte stream header for packet 0
+64-byte-aligned payload for packet 0
+64-byte stream header for packet 1
+64-byte-aligned payload for packet 1
+...
+```
+
+The stream header uses the same first 16 bytes as `replay_desc`:
+`gap_ticks`, `frame_len`, and `flags` are consumed by the FPGA stream parser.
+`data_word_offset` is ignored in `STREAM` mode and should be written as `0`.
+The payload immediately follows the header and is padded to a 64-byte boundary.
+The FPGA reads exactly `TRACE_BYTES` bytes from `DESC_BASE`, so the host must
+program `DESC_BASE` as the stream-buffer base address and `TRACE_BYTES` as the
+full stream-buffer size.
+
 ## Repository Layout
 
 ```text
+bitstreams/    Selected archived bitstreams plus per-version TXT notes
 constraints/   U200 and stub XDC constraints
 docs/images/   Architecture and verification screenshots
 rtl/           SystemVerilog/Verilog replay, CDC, and RX capture RTL
@@ -287,6 +328,27 @@ The generated bitstream is written under the selected build root:
 
 The latest verified build completed with bitgen `0 Errors`; the final timing
 summary met user constraints with WNS `+0.007 ns`.
+
+## Bitstream Archive
+
+Important hardware images are archived under `bitstreams/`.  Each version should
+include the `.bit` file, the matching `.ltx` file when available, and a TXT note
+with the source commit, SHA256 hash, build root, and verification status.
+
+Archive a generated bitstream from PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\archive_bitstream.ps1 `
+  -Bitfile D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit `
+  -Ltx D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.ltx `
+  -Name pre_stream_dual_qsfp_loop_verified `
+  -BuildRoot D:\tr_build_dual `
+  -Notes "H2C/C2H DDR readback passed; TX0->RX1 and TX1->RX0 loopback passed."
+```
+
+The archived TXT file is the audit trail for that hardware image.  Before
+programming an old bitstream, compare its recorded SHA256 hash with the local
+file.
 
 ## Programming and PCIe Rescan
 
@@ -357,6 +419,33 @@ sudo python3 /home/user/traffic_replay_software/xdma_load_trace.py \
   --mode preload
 ```
 
+Convert a descriptor/data trace into a `STREAM` buffer:
+
+```bash
+python3 /home/user/traffic_replay_software/trace_to_stream.py \
+  --manifest /home/user/trace_out/manifest.json \
+  --out /home/user/trace_out/stream.bin
+```
+
+Load the stream buffer and start `STREAM` replay:
+
+```bash
+sudo python3 /home/user/traffic_replay_software/xdma_stream_load.py \
+  --port 0 \
+  --manifest /home/user/trace_out/stream_manifest.json \
+  --stream-base 0x20000000
+```
+
+Generate a synthetic trace for controlled testing:
+
+```bash
+python3 /home/user/traffic_replay_software/gen_synthetic_trace.py \
+  --out-dir /home/user/synth_64B \
+  --packet-count 100000 \
+  --frame-len 64 \
+  --gap-ticks 0
+```
+
 Query status:
 
 ```bash
@@ -387,6 +476,43 @@ byte count derived from `TKEEP`, while `captured_bytes` is the number of 64-byte
 ring bytes written.  The unused lanes at the end of the final beat are not valid
 packet bytes.
 
+## Stream Mode and Stress Testing
+
+Current `STREAM` mode is DDR-backed.  The host still uses the memory-mapped
+`XDMA H2C` device to write a linear stream buffer into `DDR4`; the FPGA
+`ddr_stream_reader` then reads that buffer in 512-bit AXI bursts and feeds
+`host_stream_parser`.  This keeps the stable `XDMA`/`DDR4` block design intact
+while exercising the stream parser, scheduler, and `TX` engine with a continuous
+packet stream.
+
+Run a max-throughput sweep with synthetic zero-gap packets:
+
+```bash
+sudo python3 /home/user/traffic_replay_software/stream_stress_test.py \
+  --port 0 \
+  --frame-sizes 64,128,256,512,1024,1518 \
+  --packet-count 100000 \
+  --gap-ticks 0 \
+  --stream-base 0x20000000 \
+  --csv /home/user/stream_stress.csv
+```
+
+Useful debug switches:
+
+* `--force-link-up`: open the replay gate even when the `CMAC` link is down.
+* `--force-tx-ready`: drain the replay core when the downstream `CMAC`/FIFO path
+  is not ready.  This is useful for logic-only bring-up, but it bypasses the
+  real transmit backpressure path and should not be used for final throughput
+  numbers.
+
+The stress script reports:
+
+* `load_gbps`: host-to-DDR DMA load rate for the generated stream buffer.
+* `hw_gbps`: FPGA replay throughput computed from `tx_bytes` and the hardware
+  replay tick counter.
+* `late_packets` and `underrun_packets`: scheduler and payload starvation
+  indicators.
+
 ## Verification
 
 Run `RTL` simulation:
@@ -398,12 +524,21 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action sim
 The current `XSim` testbench covers:
 
 * Host stream parser path: emits 2 packets.
+* DDR-backed `STREAM` buffer path: emits 2 packets from an AXI read memory
+  model.
 * `DDR4` preload path: emits 3 packets from an AXI read memory model.
 
 Run syntax checks for the host tools:
 
 ```powershell
-python -m py_compile software\traffic_replay_cli.py software\xdma_load_trace.py software\pcap2trace.py
+python -m py_compile `
+  software\traffic_replay_cli.py `
+  software\xdma_load_trace.py `
+  software\xdma_stream_load.py `
+  software\pcap2trace.py `
+  software\trace_to_stream.py `
+  software\gen_synthetic_trace.py `
+  software\stream_stress_test.py
 ```
 
 Run basic `XDMA` `DDR4` readback after programming:
@@ -435,6 +570,8 @@ The latest hardware smoke test proves:
 * `AXI-Lite` register access works through the `XDMA` user `BAR`.
 * `TX0` and `TX1` can read descriptors and payloads from `DDR4`.
 * The scheduler and `TX` engine release packets and update counters.
+* DDR-backed `STREAM` mode passes `RTL` simulation; hardware throughput testing
+  is done with `stream_stress_test.py`.
 * `QSFP0` and `QSFP1` `CMAC` links come up over the 100G optical loop.
 * `TX0` -> `RX1` and `TX1` -> `RX0` both preserve packet count and byte count.
 * Multi-beat packets up to at least 256 bytes are not split after the `FIFO`
@@ -447,8 +584,8 @@ The latest hardware smoke test proves:
   packet replay.
 * The `DDR4` trace reader is intentionally simple; descriptor caching, payload
   prefetch, deeper FIFOs, and multiple outstanding reads are future work.
-* `STREAM` mode is reserved in `RTL` but not connected to an `XDMA`/`QDMA`
-  streaming `H2C` endpoint in the current block design.
+* `STREAM` mode is currently DDR-backed through memory-mapped `XDMA H2C`.  A
+  true direct `XDMA`/`QDMA` AXI4-Stream `H2C` endpoint is future work.
 * `RX` capture is a statistics and recent-packet debug window, not a full-rate
   packet recorder.
 * The current `pcap` converter supports classic `pcap`, not `pcapng`.

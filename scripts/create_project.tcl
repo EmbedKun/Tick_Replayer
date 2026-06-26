@@ -19,6 +19,7 @@ set rtl_files [list \
   [file join $repo_dir rtl replay_tx_engine.sv] \
   [file join $repo_dir rtl host_stream_parser.sv] \
   [file join $repo_dir rtl ddr_trace_reader.sv] \
+  [file join $repo_dir rtl ddr_stream_reader.sv] \
   [file join $repo_dir rtl trace_replay_core.sv] \
   [file join $repo_dir rtl traffic_replay_bd_core.v] \
   [file join $repo_dir rtl traffic_replay_top_stub.sv] \
