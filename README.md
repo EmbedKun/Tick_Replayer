@@ -513,6 +513,27 @@ The stress script reports:
 * `late_packets` and `underrun_packets`: scheduler and payload starvation
   indicators.
 
+Latest hardware results are recorded in
+[`docs/stream_mode_test_20260627.md`](docs/stream_mode_test_20260627.md).  The
+test used the archived bitstream
+`bitstreams/20260627_014343_stream_prefetch_lutram_fifo_dual_qsfp_impl/`,
+programmed onto the U200, with `QSFP0` and `QSFP1` connected by 100G fiber.
+
+Zero-gap `STREAM` sweep on TX0:
+
+| Frame bytes | Packets | Completed | TX packets | TX bytes | Replay Gbps | Load Gbps | Underrun count |
+| ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: |
+| `64` | `100000` | yes | `100000` | `6400000` | `17.328` | `7.011` | `0` |
+| `128` | `100000` | yes | `100000` | `12800000` | `23.104` | `13.789` | `249960` |
+| `256` | `100000` | yes | `100000` | `25600000` | `27.725` | `15.961` | `892300` |
+| `512` | `100000` | yes | `100000` | `51200000` | `30.807` | `17.641` | `2258888` |
+| `1024` | `100000` | yes | `100000` | `102400000` | `32.619` | `18.786` | `4947916` |
+| `1518` | `100000` | yes | `100000` | `151800000` | `32.882` | `11.983` | `7692989` |
+
+The current maximum measured zero-gap replay rate is about `32.9 Gbps` for
+1518-byte frames.  A conservative no-underrun scheduled point for 1518-byte
+frames was observed at `gap_ticks=480`, about `7.59 Gbps`.
+
 ## Verification
 
 Run `RTL` simulation:
@@ -577,15 +598,21 @@ The latest hardware smoke test proves:
 * Multi-beat packets up to at least 256 bytes are not split after the `FIFO`
   read-latency fix.
 * `RX` capture writes a readable recent-packet window into `DDR4`.
+* DDR-backed `STREAM` replay now runs on hardware.  TX0 zero-gap stress tests
+  complete for `64` through `1518` byte synthetic packets, and RX1 loopback
+  counters plus DDR sample ring readback were verified.
 
 ## Current Limitations
 
-* The design has not yet been optimized for sustained 100Gbps minimum-size
-  packet replay.
+* The design has not yet been optimized for sustained `100Gbps` replay.  The
+  latest zero-gap `STREAM` sweep measured about `32.9Gbps` for 1518-byte frames.
 * The `DDR4` trace reader is intentionally simple; descriptor caching, payload
   prefetch, deeper FIFOs, and multiple outstanding reads are future work.
-* `STREAM` mode is currently DDR-backed through memory-mapped `XDMA H2C`.  A
-  true direct `XDMA`/`QDMA` AXI4-Stream `H2C` endpoint is future work.
+* `STREAM` mode is currently DDR-backed through memory-mapped `XDMA H2C`.  The
+  FPGA stream source uses simple single-burst read sequencing, so large-packet
+  zero-gap tests can report `underrun_packets`.  A true direct `XDMA`/`QDMA`
+  AXI4-Stream `H2C` endpoint, or a deeper multi-outstanding DDR stream source,
+  is future work.
 * `RX` capture is a statistics and recent-packet debug window, not a full-rate
   packet recorder.
 * The current `pcap` converter supports classic `pcap`, not `pcapng`.

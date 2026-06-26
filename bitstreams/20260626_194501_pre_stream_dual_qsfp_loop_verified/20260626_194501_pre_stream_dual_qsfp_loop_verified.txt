@@ -1,0 +1,34 @@
+﻿Traffic Replay Bitstream Archive
+================================
+
+Name: pre_stream_dual_qsfp_loop_verified
+Archive timestamp: 20260626_194501
+Repository: C:\Users\mkxue\Desktop\traffic_replay
+Git branch: unknown (git.exe unavailable)
+Git commit: unknown (git.exe unavailable)
+Build root: D:\tr_build_dual
+
+Bitstream file: traffic_replay_bd_wrapper.bit
+Bitstream size bytes: 37515783
+Bitstream SHA256: 339B21B6C51899A9A0AC79D194A9228EC778AC6651FC7E87C50C7A6344E34B31
+Original bitstream path: D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
+
+LTX file: traffic_replay_bd_wrapper.ltx
+LTX size bytes: 1061
+LTX SHA256: 59DAE6BD977EC12820E482CB1940D945B9A9AB01C07E1C08C76CC186282B814C
+
+Design summary
+--------------
+- Target board: Xilinx Alveo U200.
+- PCIe path: XDMA memory-mapped H2C/C2H plus AXI-Lite BAR control.
+- Replay path: DDR-backed preload/loop replay and DDR-backed stream-buffer replay.
+- Ethernet path: 100G CMAC/QSFP replay and capture datapaths.
+
+Verification notes
+------------------
+Pre-stream stable hardware image. H2C/C2H DDR readback passed. TX0 to RX1 and TX1 to RX0 QSFP loopback passed for packet length sweep and the 3-packet trace. Timing met in the previous implementation run.
+
+Operational reminder
+--------------------
+Keep this directory together with the matching repository commit.  The SHA256
+line above is the canonical integrity check before programming the FPGA.

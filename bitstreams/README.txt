@@ -14,3 +14,15 @@ Recommended command from PowerShell:
     -BuildRoot D:\tr_build_dual `
     -Notes "H2C/C2H DDR readback passed; TX0->RX1 and TX1->RX0 loopback passed."
 
+Archived versions currently kept in this repository:
+
+  20260626_194501_pre_stream_dual_qsfp_loop_verified
+    Dual-QSFP preload/loop bring-up image with optical loop verification.
+
+  20260626_212201_stream_ddr_buffer_dual_qsfp_impl
+    First DDR-backed STREAM mode implementation image.
+
+  20260627_014343_stream_prefetch_lutram_fifo_dual_qsfp_impl
+    Restored LUTRAM stream-prefetch FIFO image.  Vivado implementation and
+    bitgen completed successfully with routed timing met.  This is the current
+    hardware-tested STREAM mode image.

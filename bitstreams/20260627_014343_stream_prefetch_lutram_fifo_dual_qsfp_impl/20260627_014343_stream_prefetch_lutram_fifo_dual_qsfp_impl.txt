@@ -1,0 +1,41 @@
+﻿Traffic Replay Bitstream Archive
+================================
+
+Name: stream_prefetch_lutram_fifo_dual_qsfp_impl
+Archive timestamp: 20260627_014343
+Repository: C:\Users\mkxue\Desktop\traffic_replay
+Git branch: main
+Git commit: 8c44b19edf9a60e1675432d58a2a716a0b268015
+Build root: D:\tr_build_stream_fifo
+
+Bitstream file: traffic_replay_bd_wrapper.bit
+Bitstream size bytes: 37092295
+Bitstream SHA256: A85CCD9990B72E66B5ED184F9DB1C14A92C73A8A7F09092756665CC39D04FCE5
+Original bitstream path: D:\tr_build_stream_fifo\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
+
+LTX file: traffic_replay_bd_wrapper.ltx
+LTX size bytes: 1061
+LTX SHA256: 59DAE6BD977EC12820E482CB1940D945B9A9AB01C07E1C08C76CC186282B814C
+
+Design summary
+--------------
+- Target board: Xilinx Alveo U200.
+- PCIe path: XDMA memory-mapped H2C/C2H plus AXI-Lite BAR control.
+- Replay path: DDR-backed preload/loop replay and DDR-backed stream-buffer replay.
+- Ethernet path: 100G CMAC/QSFP replay and capture datapaths.
+
+Verification notes
+------------------
+- Restored the original LUTRAM/asynchronous-read stream prefetch FIFO after confirming the earlier clock-routing failure was caused by local host memory pressure, not a persistent RTL issue.
+- Source tree status before archive: no tracked source modifications; only bitstream archive directories are untracked.
+- XSim regression passed: host stream replay emitted 2 packets; DDR stream-buffer replay emitted 2 packets; DDR preload replay emitted 3 packets.
+- Vivado 2020.2 hardware build root: D:\tr_build_stream_fifo, jobs=1, ILA=0.
+- Synthesis completed with 0 errors and 0 critical warnings.
+- Implementation completed through write_bitstream successfully.
+- Routed timing met: WNS=0.026 ns, TNS=0.000 ns, WHS=0.010 ns, THS=0.000 ns.
+- Routed utilization snapshot: BRAM tiles=135.5, URAM=0, DSP=3.
+
+Operational reminder
+--------------------
+Keep this directory together with the matching repository commit.  The SHA256
+line above is the canonical integrity check before programming the FPGA.

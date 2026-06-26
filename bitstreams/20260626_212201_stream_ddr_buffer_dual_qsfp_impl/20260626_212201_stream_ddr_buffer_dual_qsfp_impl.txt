@@ -1,0 +1,34 @@
+﻿Traffic Replay Bitstream Archive
+================================
+
+Name: stream_ddr_buffer_dual_qsfp_impl
+Archive timestamp: 20260626_212201
+Repository: C:\Users\mkxue\Desktop\traffic_replay
+Git branch: main
+Git commit: 9be6f24ce9bcd2e6c3c22587bc873f09290a340d
+Build root: D:\tr_build_stream
+
+Bitstream file: traffic_replay_bd_wrapper.bit
+Bitstream size bytes: 36486895
+Bitstream SHA256: B1147AF73FD733353BCD64DBD2C820DC0A3B17257BD02881C59C699968D8F731
+Original bitstream path: D:\tr_build_stream\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
+
+LTX file: traffic_replay_bd_wrapper.ltx
+LTX size bytes: 1061
+LTX SHA256: 59DAE6BD977EC12820E482CB1940D945B9A9AB01C07E1C08C76CC186282B814C
+
+Design summary
+--------------
+- Target board: Xilinx Alveo U200.
+- PCIe path: XDMA memory-mapped H2C/C2H plus AXI-Lite BAR control.
+- Replay path: DDR-backed preload/loop replay and DDR-backed stream-buffer replay.
+- Ethernet path: 100G CMAC/QSFP replay and capture datapaths.
+
+Verification notes
+------------------
+Source commit 9be6f24ce9bcd2e6c3c22587bc873f09290a340d. STREAM mode is implemented as a DDR-backed stream buffer loaded through XDMA memory-mapped H2C, then replayed by the FPGA through the existing host stream parser and scheduler path. XSim passed host stream replay, DDR stream-buffer replay, and DDR preload replay tests. Python host tools passed py_compile. Stub synthesis passed with 0 errors. Hardware block design implementation and bitstream generation completed successfully. Route status reports 0 routing errors. Timing is met: WNS=0.002 ns, TNS=0.000 ns, WHS=0.010 ns, THS=0.000 ns.
+
+Operational reminder
+--------------------
+Keep this directory together with the matching repository commit.  The SHA256
+line above is the canonical integrity check before programming the FPGA.
