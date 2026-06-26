@@ -138,6 +138,63 @@ RX0: QSFP0 -> CMAC0 RX -> rx_cap_0 -> DDR ring writer
 RX1: QSFP1 -> CMAC1 RX -> rx_cap_1 -> DDR ring writer
 ```
 
+## Trace Descriptor Format
+
+`PRELOAD` and `LOOP` replay modes use two binary files:
+
+* `desc.bin`: one fixed-size descriptor per packet.
+* `data.bin`: packet payload bytes, padded to 64-byte AXI data beats.
+
+Each descriptor is exactly 64 bytes, little-endian, and naturally aligned to one
+512-bit AXI beat.  The hardware descriptor reader fetches descriptor `N` from:
+
+```text
+descriptor_address = DESC_BASE + N * 64
+```
+
+Descriptor byte layout:
+
+| Byte offset | RTL bits | Field | Width | Description |
+| --- | --- | --- | --- | --- |
+| `0x00` | `[63:0]` | `gap_ticks` | 64 bits | Inter-packet gap in replay clock ticks.  With `START_TIME=0`, the first packet is released after the first descriptor gap. |
+| `0x08` | `[95:64]` | `data_word_offset` | 32 bits | Payload offset from `DATA_BASE`, measured in 64-byte words. |
+| `0x0c` | `[111:96]` | `frame_len` | 16 bits | Number of valid frame bytes to transmit.  FCS is not stored; CMAC inserts FCS on TX. |
+| `0x0e` | `[127:112]` | `flags` | 16 bits | Reserved for future per-packet options.  Current tools write `0`. |
+| `0x10` | `[511:128]` | `reserved` | 48 bytes | Reserved.  Must be written as zero for forward compatibility. |
+
+Equivalent packed C layout:
+
+```c
+struct replay_desc {
+    uint64_t gap_ticks;
+    uint32_t data_word_offset;
+    uint16_t frame_len;
+    uint16_t flags;
+    uint8_t  reserved[48];
+};
+```
+
+The payload start address is computed by the FPGA as:
+
+```text
+payload_address = DATA_BASE + data_word_offset * 64
+payload_beats   = ceil(frame_len / 64)
+```
+
+`data.bin` stores each packet payload at a 64-byte boundary.  If `frame_len` is
+not a multiple of 64, the host pads the remaining bytes in the final beat, and
+the TX engine generates `TKEEP` from `frame_len` so that only valid bytes are
+transmitted.  The current `pcap2trace.py` default pads short frames to 60 bytes
+and does not store Ethernet FCS.
+
+Example descriptors from the three-packet smoke trace:
+
+| Packet | `gap_ticks` | `data_word_offset` | `frame_len` | `flags` |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | `30000` | `0` | `64` | `0` |
+| 1 | `30000` | `1` | `64` | `0` |
+| 2 | `30000` | `2` | `124` | `0` |
+
 ## Repository Layout
 
 ```text
@@ -243,18 +300,6 @@ The converter creates:
 desc.bin
 data.bin
 manifest.json
-```
-
-Descriptor layout:
-
-```c
-struct replay_desc {
-    uint64_t gap_ticks;
-    uint32_t data_word_offset;  // 64-byte word offset from DATA_BASE
-    uint16_t frame_len;
-    uint16_t flags;
-    uint8_t  reserved[48];
-};
 ```
 
 Load a trace to TX0 and start `PRELOAD` replay:
@@ -376,11 +421,3 @@ The latest hardware smoke test proves:
 * The current pcap converter supports classic pcap, not pcapng.
 * End-to-end testing through the target DDoS protection appliance is still a
   future integration step.
-
-## References
-
-This project uses standard Xilinx IP blocks and follows the same general
-source-first repository style used by established FPGA networking projects such
-as [Corundum](https://github.com/corundum/corundum).  The implementation here is
-not a Corundum fork; it is a purpose-built replay instrument prototype using
-XDMA, DDR4, and CMAC on Alveo U200.
