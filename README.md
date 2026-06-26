@@ -41,7 +41,27 @@ private machine state are not versioned.
 
 ## System Architecture
 
-![Tick Replayer architecture](docs/images/system_architecture_overview.png)
+### Block Diagram
+
+![Tick Replayer block diagram](docs/images/replay_arch.png)
+
+Block diagram of the Tick Replayer FPGA traffic replay system.  APP: host-side
+application scripts for pcap processing, trace generation, XDMA loading, and
+replay control; XDMA Driver: Xilinx DMA Linux driver exposing H2C, C2H, and user
+BAR character devices; PCIe XDMA IP: Xilinx PCI Express DMA endpoint; AXIL M:
+AXI-Lite master used by XDMA to access control and status registers; AXI M:
+memory-mapped AXI master used for H2C and C2H DDR access; H2C: host-to-card DMA;
+C2H: card-to-host DMA; BAR: PCIe base address register window used for AXI-Lite
+control; SmartConnect: Xilinx AXI interconnect/arbitration fabric; DDR4: FPGA
+external memory used for TX descriptors, TX payload data, and RX sample rings;
+TX DESC: transmit packet descriptor storage; TX DATA: transmit packet payload
+storage; RX SAMPLE: truncated receive sample ring storage; TX Replay Core:
+descriptor/payload prefetch, replay scheduler, and transmit packet engine; Sched:
+replay scheduler driven by descriptor packet gaps; RX Capture Core: receive
+statistics and sample writer; FIFO: AXI-Stream clock-domain crossing and
+buffering; CMAC: Xilinx 100G Ethernet MAC; QSFP: 100G optical transceiver port.
+The diagram shows one replay/capture interface slice; the dual-port build
+instantiates the same logical TX/RX path for the active CMAC/QSFP ports.
 
 The host prepares replay traces and controls the FPGA through PCIe.  The FPGA
 stores traces in DDR4 and uses independent per-port replay cores to feed the
