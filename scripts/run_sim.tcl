@@ -9,6 +9,7 @@ set sim_files [list \
 add_files -fileset sim_1 $sim_files
 set_property file_type SystemVerilog [get_files $sim_files]
 set_property top tb_trace_replay_core [get_filesets sim_1]
+set_property xsim.simulate.runtime {20us} [get_filesets sim_1]
 update_compile_order -fileset sim_1
 
 launch_simulation

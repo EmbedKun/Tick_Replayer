@@ -128,6 +128,21 @@ module trace_replay_core #(
   logic                   stream_ddr_mode;
   logic                   stream_reader_start;
 
+  localparam int STREAM_FIFO_DEPTH = 128;
+  localparam int STREAM_FIFO_COUNT_W = $clog2(STREAM_FIFO_DEPTH + 1);
+  localparam logic [STREAM_FIFO_COUNT_W-1:0] STREAM_FIFO_DEPTH_LEVEL = STREAM_FIFO_DEPTH;
+  localparam logic [STREAM_FIFO_COUNT_W-1:0] STREAM_FIFO_LEVEL_ONE = 1;
+
+  logic [AXIS_DATA_W-1:0] stream_fifo_axis_tdata;
+  logic [AXIS_KEEP_W-1:0] stream_fifo_axis_tkeep;
+  logic                   stream_fifo_axis_tvalid;
+  logic                   stream_fifo_axis_tready;
+  logic                   stream_fifo_axis_tlast;
+  logic [STREAM_FIFO_COUNT_W-1:0] stream_fifo_level;
+  logic [STREAM_FIFO_COUNT_W-1:0] stream_fifo_watermark_beats;
+  logic                   stream_prefetch_ready;
+  logic                   parser_enable;
+
   logic [AXIS_DATA_W-1:0] parser_axis_tdata;
   logic [AXIS_KEEP_W-1:0] parser_axis_tkeep;
   logic                   parser_axis_tvalid;
@@ -170,6 +185,7 @@ module trace_replay_core #(
   logic        source_busy;
   logic        source_done;
   logic        source_error;
+  logic        replay_done;
   logic [3:0]  ddr_reader_state;
   logic [3:0]  active_reader_state;
   logic [31:0] debug_status;
@@ -188,6 +204,8 @@ module trace_replay_core #(
   assign source_done = sel_ddr_mode ? ddr_done : (stream_ddr_mode ? stream_ddr_done : 1'b0);
   assign source_error = sel_ddr_mode ? ddr_error : (stream_ddr_mode ? stream_ddr_error : 1'b0);
   assign active_reader_state = stream_ddr_mode ? stream_ddr_state : ddr_reader_state;
+  assign replay_done = sel_ddr_mode ? ddr_done :
+                       (stream_ddr_mode ? (stream_ddr_done && (cfg_pkt_count != 64'd0) && (tx_pkts >= cfg_pkt_count)) : 1'b0);
 
   assign m_axi_arid     = stream_ddr_mode ? stream_m_axi_arid     : ddr_m_axi_arid;
   assign m_axi_araddr   = stream_ddr_mode ? stream_m_axi_araddr   : ddr_m_axi_araddr;
@@ -202,12 +220,14 @@ module trace_replay_core #(
   assign ddr_m_axi_rvalid     = !stream_ddr_mode ? m_axi_rvalid  : 1'b0;
   assign stream_m_axi_rvalid  =  stream_ddr_mode ? m_axi_rvalid  : 1'b0;
 
-  assign parser_axis_tdata  = stream_ddr_mode ? stream_ddr_axis_tdata  : s_host_axis_tdata;
-  assign parser_axis_tkeep  = stream_ddr_mode ? stream_ddr_axis_tkeep  : s_host_axis_tkeep;
-  assign parser_axis_tvalid = stream_ddr_mode ? stream_ddr_axis_tvalid : s_host_axis_tvalid;
-  assign parser_axis_tlast  = stream_ddr_mode ? stream_ddr_axis_tlast  : s_host_axis_tlast;
-  assign stream_ddr_axis_tready = stream_ddr_mode ? parser_axis_tready : 1'b0;
+  assign parser_axis_tdata  = stream_ddr_mode ? stream_fifo_axis_tdata  : s_host_axis_tdata;
+  assign parser_axis_tkeep  = stream_ddr_mode ? stream_fifo_axis_tkeep  : s_host_axis_tkeep;
+  assign parser_axis_tvalid = stream_ddr_mode ? stream_fifo_axis_tvalid : s_host_axis_tvalid;
+  assign parser_axis_tlast  = stream_ddr_mode ? stream_fifo_axis_tlast  : s_host_axis_tlast;
+  assign stream_fifo_axis_tready = stream_ddr_mode ? parser_axis_tready : 1'b0;
   assign s_host_axis_tready     = stream_ddr_mode ? 1'b0 : parser_axis_tready;
+  assign stream_prefetch_ready  = !stream_ddr_mode || stream_ddr_done || (stream_fifo_level >= stream_fifo_watermark_beats);
+  assign parser_enable          = core_enable && sel_stream_mode && stream_prefetch_ready;
 
   assign src_meta_valid = sel_stream_mode ? host_meta_valid : ddr_meta_valid;
   assign src_meta_gap   = sel_stream_mode ? host_meta_gap   : ddr_meta_gap;
@@ -258,6 +278,16 @@ module trace_replay_core #(
     m_axi_arvalid
   };
 
+  always_comb begin
+    if (cfg_watermark[31:6] == 26'd0) begin
+      stream_fifo_watermark_beats = STREAM_FIFO_LEVEL_ONE;
+    end else if (cfg_watermark[31:6] >= STREAM_FIFO_DEPTH) begin
+      stream_fifo_watermark_beats = STREAM_FIFO_DEPTH_LEVEL;
+    end else begin
+      stream_fifo_watermark_beats = cfg_watermark[6 +: STREAM_FIFO_COUNT_W];
+    end
+  end
+
   axi_lite_regs #(
     .ADDR_W(AXIL_ADDR_W),
     .DATA_W(32)
@@ -298,12 +328,12 @@ module trace_replay_core #(
     .cfg_force_link_up(cfg_force_link_up),
     .cfg_force_tx_ready(cfg_force_tx_ready),
     .stat_running(replay_running),
-    .stat_done(source_done),
+    .stat_done(replay_done),
     .stat_late(|late_pkts),
     .stat_underrun(|underrun_pkts),
     .stat_link_up(link_up),
     .stat_effective_link_up(effective_link_up),
-    .stat_fifo_level(32'd0),
+    .stat_fifo_level({{(32-STREAM_FIFO_COUNT_W){1'b0}}, stream_fifo_level}),
     .stat_tx_pkts(tx_pkts),
     .stat_tx_bytes(tx_bytes),
     .stat_late_pkts(late_pkts),
@@ -395,10 +425,31 @@ module trace_replay_core #(
     .debug_state(stream_ddr_state)
   );
 
+  axis_sync_fifo #(
+    .DATA_W(AXIS_DATA_W),
+    .KEEP_W(AXIS_KEEP_W),
+    .DEPTH(STREAM_FIFO_DEPTH)
+  ) stream_prefetch_fifo_i (
+    .clk(clk),
+    .rstn(rstn),
+    .clear(core_clear || start_pulse),
+    .s_axis_tdata(stream_ddr_axis_tdata),
+    .s_axis_tkeep(stream_ddr_axis_tkeep),
+    .s_axis_tvalid(stream_ddr_axis_tvalid),
+    .s_axis_tready(stream_ddr_axis_tready),
+    .s_axis_tlast(stream_ddr_axis_tlast),
+    .m_axis_tdata(stream_fifo_axis_tdata),
+    .m_axis_tkeep(stream_fifo_axis_tkeep),
+    .m_axis_tvalid(stream_fifo_axis_tvalid),
+    .m_axis_tready(stream_fifo_axis_tready),
+    .m_axis_tlast(stream_fifo_axis_tlast),
+    .level(stream_fifo_level)
+  );
+
   host_stream_parser host_parser_i (
     .clk(clk),
     .rstn(rstn),
-    .enable(core_enable && sel_stream_mode),
+    .enable(parser_enable),
     .clear(core_clear),
     .s_axis_tdata(parser_axis_tdata),
     .s_axis_tkeep(parser_axis_tkeep),
@@ -476,7 +527,7 @@ module trace_replay_core #(
 
       if (start_pulse) begin
         replay_running <= 1'b1;
-      end else if (stop_pulse || source_done) begin
+      end else if (stop_pulse || replay_done) begin
         replay_running <= 1'b0;
       end
 
