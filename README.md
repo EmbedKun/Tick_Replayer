@@ -1,43 +1,74 @@
-# Tick Replayer
+<div align="center">
 
-Tick Replayer is an FPGA traffic replay prototype for the Xilinx Alveo U200.
-It loads packet descriptors and payload data from a Linux host into FPGA DDR4
-through PCIe XDMA, then replays the traffic through 100G CMAC ports with
-descriptor-controlled inter-packet timing.
+<h1>Tick Replayer</h1>
 
-The current design is a dual-port prototype.  QSFP0 and QSFP1 each have an
+<p><strong>DDR-backed dual-port 100G FPGA traffic replay prototype for Xilinx Alveo U200.</strong></p>
+
+<p>
+  <code>FPGA</code> ·
+  <code>100G Ethernet</code> ·
+  <code>Xilinx Alveo U200</code> ·
+  <code>PCIe XDMA</code> ·
+  <code>DDR4</code> ·
+  <code>CMAC</code> ·
+  <code>PCAP replay</code>
+</p>
+
+</div>
+
+## Overview
+
+`Tick Replayer` loads packet descriptors and payload data from a Linux host into
+FPGA `DDR4` through `PCIe XDMA`, then replays the traffic through 100G `CMAC`
+ports with descriptor-controlled inter-packet timing.
+
+The current design is a dual-port prototype.  `QSFP0` and `QSFP1` each have an
 independent transmit replay pipeline, and each receive side has a lightweight
-statistics and recent-packet capture path.  The two QSFP ports can transmit and
-receive at the same time, which is the behavior needed when one FPGA emulates
-both sides of a bidirectional trace around a network device under test.
+statistics and recent-packet capture path.  The two `QSFP` ports can transmit
+and receive at the same time, which is the behavior needed when one FPGA
+emulates both sides of a bidirectional trace around a network device under test.
 
-This repository is intentionally source-oriented: it contains RTL, Vivado Tcl,
+This repository is source-oriented: it contains `RTL`, Vivado Tcl scripts,
 constraints, simulation, host utilities, documentation, and verification
 screenshots.  Vivado generated projects, build logs, bitstreams, traces, and
-private machine state are not versioned.
+private machine state are intentionally excluded.
+
+## Table of Contents
+
+* [Features](#features)
+* [System Architecture](#system-architecture)
+* [FPGA Datapath](#fpga-datapath)
+* [Trace Descriptor Format](#trace-descriptor-format)
+* [Repository Layout](#repository-layout)
+* [Requirements](#requirements)
+* [Build](#build)
+* [Programming and PCIe Rescan](#programming-and-pcie-rescan)
+* [Host Tools](#host-tools)
+* [Verification](#verification)
+* [Current Limitations](#current-limitations)
 
 ## Features
 
-* Xilinx Alveo U200 target.
-* PCIe Gen3 x16 endpoint based on Xilinx XDMA.
-* One memory-mapped H2C/C2H XDMA path for DDR4 access.
-* AXI-Lite control plane through the XDMA user BAR.
-* DDR4-backed trace storage for descriptors and payloads.
-* Dual 100G CMAC datapath:
-  * TX0 replay core to QSFP0.
-  * TX1 replay core to QSFP1.
-  * RX0 capture/stat core from QSFP0.
-  * RX1 capture/stat core from QSFP1.
+* `Xilinx Alveo U200` target.
+* `PCIe Gen3 x16` endpoint based on Xilinx `XDMA`.
+* One memory-mapped `H2C`/`C2H` `XDMA` path for `DDR4` access.
+* `AXI-Lite` control plane through the `XDMA` user `BAR`.
+* `DDR4`-backed trace storage for descriptors and payloads.
+* Dual 100G `CMAC` datapath:
+  * `TX0` replay core to `QSFP0`.
+  * `TX1` replay core to `QSFP1`.
+  * `RX0` capture/stat core from `QSFP0`.
+  * `RX1` capture/stat core from `QSFP1`.
 * Descriptor format with per-packet gap, payload offset, frame length, and flags.
 * Replay modes:
-  * `PRELOAD`: host preloads descriptor and payload files into DDR4.
-  * `LOOP`: DDR-backed replay loop is wired in RTL.
+  * `PRELOAD`: host preloads descriptor and payload files into `DDR4`.
+  * `LOOP`: `DDR4`-backed replay loop is wired in `RTL`.
   * `STREAM`: host stream parser exists in RTL, but the current block design does
-    not yet connect an XDMA/QDMA streaming H2C path to it.
-* Host-side Python tools for pcap conversion, XDMA loading, control registers,
+    not yet connect an `XDMA`/`QDMA` streaming `H2C` path to it.
+* Host-side Python tools for `pcap` conversion, `XDMA` loading, control registers,
   status registers, and RX capture configuration.
-* Verified QSFP0 <-> QSFP1 100G optical loop with bidirectional TX/RX counters
-  and DDR ring readback.
+* Verified `QSFP0` <-> `QSFP1` 100G optical loop with bidirectional `TX`/`RX`
+  counters and `DDR4` ring readback.
 
 ## System Architecture
 
@@ -45,29 +76,31 @@ private machine state are not versioned.
 
 ![Tick Replayer block diagram](docs/images/replay_arch.png)
 
-Block diagram of the Tick Replayer FPGA traffic replay system.  APP: host-side
-application scripts for pcap processing, trace generation, XDMA loading, and
-replay control; XDMA Driver: Xilinx DMA Linux driver exposing H2C, C2H, and user
-BAR character devices; PCIe XDMA IP: Xilinx PCI Express DMA endpoint; AXIL M:
-AXI-Lite master used by XDMA to access control and status registers; AXI M:
-memory-mapped AXI master used for H2C and C2H DDR access; H2C: host-to-card DMA;
-C2H: card-to-host DMA; BAR: PCIe base address register window used for AXI-Lite
-control; SmartConnect: Xilinx AXI interconnect/arbitration fabric; DDR4: FPGA
-external memory used for TX descriptors, TX payload data, and RX sample rings;
-TX DESC: transmit packet descriptor storage; TX DATA: transmit packet payload
-storage; RX SAMPLE: truncated receive sample ring storage; TX Replay Core:
-descriptor/payload prefetch, replay scheduler, and transmit packet engine; Sched:
-replay scheduler driven by descriptor packet gaps; RX Capture Core: receive
-statistics and sample writer; FIFO: AXI-Stream clock-domain crossing and
-buffering; CMAC: Xilinx 100G Ethernet MAC; QSFP: 100G optical transceiver port.
-The diagram shows one replay/capture interface slice; the dual-port build
-instantiates the same logical TX/RX path for the active CMAC/QSFP ports.
+Block diagram of the `Tick Replayer` FPGA traffic replay system.  `APP`:
+host-side application scripts for `pcap` processing, trace generation, `XDMA`
+loading, and replay control; `XDMA Driver`: Xilinx DMA Linux driver exposing
+`H2C`, `C2H`, and user `BAR` character devices; `PCIe XDMA IP`: Xilinx PCI
+Express DMA endpoint; `AXIL M`: `AXI-Lite` master used by `XDMA` to access
+control and status registers; `AXI M`: memory-mapped AXI master used for `H2C`
+and `C2H` DDR access; `H2C`: host-to-card DMA; `C2H`: card-to-host DMA; `BAR`:
+PCIe base address register window used for `AXI-Lite` control; `SmartConnect`:
+Xilinx AXI interconnect/arbitration fabric; `DDR4`: FPGA external memory used
+for `TX` descriptors, `TX` payload data, and `RX` sample rings; `TX DESC`:
+transmit packet descriptor storage; `TX DATA`: transmit packet payload storage;
+`RX SAMPLE`: truncated receive sample ring storage; `TX Replay Core`:
+descriptor/payload prefetch, replay scheduler, and transmit packet engine;
+`Sched`: replay scheduler driven by descriptor packet gaps; `RX Capture Core`:
+receive statistics and sample writer; `FIFO`: `AXI-Stream` clock-domain crossing
+and buffering; `CMAC`: Xilinx 100G Ethernet MAC; `QSFP`: 100G optical
+transceiver port.  The diagram shows one replay/capture interface slice; the
+dual-port build instantiates the same logical `TX`/`RX` path for the active
+`CMAC`/`QSFP` ports.
 
-The host prepares replay traces and controls the FPGA through PCIe.  The FPGA
-stores traces in DDR4 and uses independent per-port replay cores to feed the
-100G CMAC transmit interfaces.  The receive side does not upload every packet to
-the host; it keeps counters and optionally writes a truncated recent-packet
-window into DDR4 so that software can inspect selected data through XDMA C2H.
+The host prepares replay traces and controls the FPGA through `PCIe`.  The FPGA
+stores traces in `DDR4` and uses independent per-port replay cores to feed the
+100G `CMAC` transmit interfaces.  The receive side does not upload every packet
+to the host; it keeps counters and optionally writes a truncated recent-packet
+window into `DDR4` so that software can inspect selected data through `XDMA C2H`.
 
 High-level data movement:
 
@@ -107,18 +140,18 @@ The major IP and RTL blocks are:
 
 | Block | Role |
 | --- | --- |
-| XDMA | PCIe Gen3 x16 endpoint.  Provides memory-mapped H2C/C2H DMA and an AXI-Lite master for BAR-mapped registers. |
-| DDR4 MIG | U200 DDR4 C0 memory controller.  Stores TX descriptors, TX payloads, and RX capture rings. |
-| SmartConnect | Arbitrates host DMA, TX readers, and RX ring writers into DDR4; also routes AXI-Lite control accesses. |
-| `trace_replay_core` | Per-port TX replay core with AXI-Lite registers, DDR trace reader, scheduler, and TX engine. |
-| `ddr_trace_reader` | Reads 64-byte descriptors and payload beats from DDR4. |
+| `XDMA` | `PCIe Gen3 x16` endpoint.  Provides memory-mapped `H2C`/`C2H` DMA and an `AXI-Lite` master for `BAR`-mapped registers. |
+| `DDR4 MIG` | U200 `DDR4 C0` memory controller.  Stores `TX` descriptors, `TX` payloads, and `RX` capture rings. |
+| `SmartConnect` | Arbitrates host DMA, `TX` readers, and `RX` ring writers into `DDR4`; also routes `AXI-Lite` control accesses. |
+| `trace_replay_core` | Per-port `TX` replay core with `AXI-Lite` registers, `DDR4` trace reader, scheduler, and `TX` engine. |
+| `ddr_trace_reader` | Reads 64-byte descriptors and payload beats from `DDR4`. |
 | `replay_scheduler` | Maintains a replay-relative tick counter and releases packets according to descriptor gap fields. |
-| `replay_tx_engine` | Converts scheduled payload beats into 512-bit CMAC TX AXI-Stream frames. |
-| `axis_async_fifo` | Crosses between DDR UI clock and CMAC user clocks. |
-| `rx_capture_bd_core` | Per-port RX statistics and truncated DDR ring capture. |
-| CMAC0 / CMAC1 | 100G Ethernet MACs connected to QSFP0 and QSFP1. |
+| `replay_tx_engine` | Converts scheduled payload beats into 512-bit `CMAC TX AXI-Stream` frames. |
+| `axis_async_fifo` | Crosses between the `DDR4` UI clock and `CMAC` user clocks. |
+| `rx_capture_bd_core` | Per-port `RX` statistics and truncated `DDR4` ring capture. |
+| `CMAC0` / `CMAC1` | 100G Ethernet MACs connected to `QSFP0` and `QSFP1`. |
 
-Current AXI-Lite map:
+Current `AXI-Lite` map:
 
 ```text
 0x00000 - 0x0ffff  TX0 replay registers
@@ -210,17 +243,17 @@ software/      Host-side pcap conversion, XDMA loader, and control CLI
 
 FPGA build host:
 
-* Windows host tested with Vivado 2020.2.
-* Xilinx licenses for CMAC, XDMA, DDR4, and related IP.
-* Vivado path used during bring-up: `D:\Xilinx\Vivado\2020.2\bin\vivado.bat`.
+* Windows host tested with `Vivado 2020.2`.
+* Xilinx licenses for `CMAC`, `XDMA`, `DDR4`, and related IP.
+* PowerShell environment capable of running the scripts in `scripts/`.
 
 Target machine:
 
-* Linux host with an Alveo U200 installed.
-* Xilinx XDMA reference driver.
+* Linux host with an `Alveo U200` installed.
+* Xilinx `XDMA` reference driver.
 * Remote `hw_server` for JTAG programming.
-* Two QSFP 100G optical ports.  The current smoke test uses a QSFP0 <-> QSFP1
-  fiber loop.
+* Two `QSFP` 100G optical ports.  The current smoke test uses a `QSFP0` <->
+  `QSFP1` fiber loop.
 
 ## Build
 
@@ -246,14 +279,14 @@ $env:TRAFFIC_REPLAY_ENABLE_ILA="0"
 powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbit_existing
 ```
 
-The last verified bitstream was generated at:
+The generated bitstream is written under the selected build root:
 
 ```text
-D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
+%TRAFFIC_REPLAY_HW_BUILD_ROOT%\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
 ```
 
-That build completed with bitgen `0 Errors`; the final timing summary met user
-constraints with WNS `+0.007 ns`.
+The latest verified build completed with bitgen `0 Errors`; the final timing
+summary met user constraints with WNS `+0.007 ns`.
 
 ## Programming and PCIe Rescan
 
@@ -262,7 +295,7 @@ Program the U200 through the remote hardware server:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 `
   -Action program `
-  -Bitfile D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
+  -Bitfile "$env:TRAFFIC_REPLAY_HW_BUILD_ROOT\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit"
 ```
 
 After programming a PCIe endpoint through JTAG, the Linux host must rescan PCIe
@@ -349,23 +382,23 @@ sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 r
 sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-capture on
 ```
 
-RX capture writes complete 64-byte beats to DDR.  `rx_bytes` is the meaningful
-byte count derived from TKEEP, while `captured_bytes` is the number of 64-byte
+`RX` capture writes complete 64-byte beats to `DDR4`.  `rx_bytes` is the meaningful
+byte count derived from `TKEEP`, while `captured_bytes` is the number of 64-byte
 ring bytes written.  The unused lanes at the end of the final beat are not valid
 packet bytes.
 
 ## Verification
 
-Run RTL simulation:
+Run `RTL` simulation:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action sim
 ```
 
-The current XSim testbench covers:
+The current `XSim` testbench covers:
 
 * Host stream parser path: emits 2 packets.
-* DDR preload path: emits 3 packets from an AXI read memory model.
+* `DDR4` preload path: emits 3 packets from an AXI read memory model.
 
 Run syntax checks for the host tools:
 
@@ -373,7 +406,7 @@ Run syntax checks for the host tools:
 python -m py_compile software\traffic_replay_cli.py software\xdma_load_trace.py software\pcap2trace.py
 ```
 
-Run basic XDMA DDR readback after programming:
+Run basic `XDMA` `DDR4` readback after programming:
 
 ```bash
 sudo python3 ddr_readback_check.py
@@ -383,7 +416,7 @@ Representative output:
 
 ![XDMA probe and DDR readback](docs/images/xdma_probe_and_ddr.png)
 
-Check dual-port link and RX status after connecting QSFP0 and QSFP1 with a
+Check dual-port link and `RX` status after connecting `QSFP0` and `QSFP1` with a
 100G fiber:
 
 ![Dual-port link status](docs/images/dual_link_status.png)
@@ -398,26 +431,26 @@ Run the three-packet DDR preload trace over both directions:
 
 The latest hardware smoke test proves:
 
-* Host H2C/C2H DMA can read and write DDR4.
-* AXI-Lite register access works through the XDMA user BAR.
-* TX0 and TX1 can read descriptors and payloads from DDR4.
-* The scheduler and TX engine release packets and update counters.
-* QSFP0 and QSFP1 CMAC links come up over the 100G optical loop.
-* TX0 -> RX1 and TX1 -> RX0 both preserve packet count and byte count.
-* Multi-beat packets up to at least 256 bytes are not split after the FIFO
+* Host `H2C`/`C2H` DMA can read and write `DDR4`.
+* `AXI-Lite` register access works through the `XDMA` user `BAR`.
+* `TX0` and `TX1` can read descriptors and payloads from `DDR4`.
+* The scheduler and `TX` engine release packets and update counters.
+* `QSFP0` and `QSFP1` `CMAC` links come up over the 100G optical loop.
+* `TX0` -> `RX1` and `TX1` -> `RX0` both preserve packet count and byte count.
+* Multi-beat packets up to at least 256 bytes are not split after the `FIFO`
   read-latency fix.
-* RX capture writes a readable recent-packet window into DDR4.
+* `RX` capture writes a readable recent-packet window into `DDR4`.
 
 ## Current Limitations
 
 * The design has not yet been optimized for sustained 100Gbps minimum-size
   packet replay.
-* The DDR trace reader is intentionally simple; descriptor caching, payload
+* The `DDR4` trace reader is intentionally simple; descriptor caching, payload
   prefetch, deeper FIFOs, and multiple outstanding reads are future work.
-* `STREAM` mode is reserved in RTL but not connected to an XDMA/QDMA streaming
-  H2C endpoint in the current block design.
-* RX capture is a statistics and recent-packet debug window, not a full-rate
+* `STREAM` mode is reserved in `RTL` but not connected to an `XDMA`/`QDMA`
+  streaming `H2C` endpoint in the current block design.
+* `RX` capture is a statistics and recent-packet debug window, not a full-rate
   packet recorder.
-* The current pcap converter supports classic pcap, not pcapng.
+* The current `pcap` converter supports classic `pcap`, not `pcapng`.
 * End-to-end testing through the target DDoS protection appliance is still a
   future integration step.
