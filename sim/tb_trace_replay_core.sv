@@ -369,6 +369,7 @@ module tb_trace_replay_core;
     axil_write(16'h0024, 32'd0);
     axil_write(16'h0028, 32'd2);
     axil_write(16'h002c, 32'd0);
+    axil_write(16'h004c, 32'd64);
     axil_write(16'h00b0, 32'd512);
     axil_write(16'h00b4, 32'd0);
     axil_write(16'h00a0, 32'd128);

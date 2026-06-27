@@ -38,6 +38,7 @@ REG_PKT_HI = 0x002C
 REG_START_LO = 0x0040
 REG_START_HI = 0x0044
 REG_RATE = 0x0048
+REG_WATERMARK = 0x004C
 REG_DEBUG_CTRL = 0x0054
 REG_TX_PKTS_LO = 0x0060
 REG_TX_PKTS_HI = 0x0064
@@ -88,6 +89,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-interval", type=float, default=0.001)
     parser.add_argument("--start-time", type=int_auto, default=0)
     parser.add_argument("--rate-q16-16", type=int_auto, default=0x0001_0000)
+    parser.add_argument("--watermark", type=int_auto, default=4096)
     parser.add_argument("--tick-hz", type=int_auto, default=DEFAULT_TICK_HZ)
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--force-link-up", action="store_true")
@@ -166,6 +168,7 @@ def configure(user_fd: int, base: int, args: argparse.Namespace) -> None:
     write64(user_fd, base + REG_PKT_LO, base + REG_PKT_HI, 0)
     write64(user_fd, base + REG_START_LO, base + REG_START_HI, args.start_time)
     write32(user_fd, base + REG_RATE, args.rate_q16_16)
+    write32(user_fd, base + REG_WATERMARK, args.watermark)
     write64(user_fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, 0)
     write64(user_fd, base + REG_STREAM_RING_LO, base + REG_STREAM_RING_HI, args.ring_size)
     write32(user_fd, base + REG_STREAM_CTRL, 0)

@@ -132,10 +132,9 @@ module trace_replay_core #(
   logic [31:0]            stream_ddr_status;
   logic [3:0]             stream_ddr_state;
   logic                   stream_ddr_mode;
-  logic                   stream_ring_mode;
   logic                   stream_reader_start;
 
-  localparam int STREAM_FIFO_DEPTH = 128;
+  localparam int STREAM_FIFO_DEPTH = 2048;
   localparam int STREAM_FIFO_COUNT_W = $clog2(STREAM_FIFO_DEPTH + 1);
   localparam logic [STREAM_FIFO_COUNT_W-1:0] STREAM_FIFO_DEPTH_LEVEL = STREAM_FIFO_DEPTH;
   localparam logic [STREAM_FIFO_COUNT_W-1:0] STREAM_FIFO_LEVEL_ONE = 1;
@@ -202,7 +201,6 @@ module trace_replay_core #(
   assign sel_stream_mode = (cfg_mode == MODE_STREAM);
   assign sel_ddr_mode    = (cfg_mode == MODE_PRELOAD) || (cfg_mode == MODE_LOOP);
   assign stream_ddr_mode = sel_stream_mode && ((cfg_trace_bytes != 64'd0) || (cfg_stream_ring_size != 64'd0));
-  assign stream_ring_mode = stream_ddr_mode && (cfg_stream_ring_size != 64'd0);
   assign core_clear      = clear_pulse || stop_pulse;
   assign effective_link_up = link_up || cfg_force_link_up;
   assign core_enable     = replay_running && !pause && effective_link_up;
@@ -407,7 +405,7 @@ module trace_replay_core #(
   ddr_stream_reader #(
     .AXI_ADDR_W_P(AXI_ADDR_W_P),
     .AXI_ID_W_P(AXI_ID_W_P),
-    .MAX_BURST_BEATS(16)
+    .MAX_BURST_BEATS(128)
   ) stream_reader_i (
     .clk(clk),
     .rstn(rstn),
@@ -551,7 +549,6 @@ module trace_replay_core #(
         stream_prefetch_active <= 1'b0;
       end else if (core_enable &&
                    (stream_fifo_level >= stream_fifo_watermark_beats ||
-                    (stream_ring_mode && stream_fifo_level != '0) ||
                     stream_ddr_done)) begin
         stream_prefetch_active <= 1'b1;
       end
