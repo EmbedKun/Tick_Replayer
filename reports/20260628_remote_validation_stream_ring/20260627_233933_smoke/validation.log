@@ -1,0 +1,318 @@
+
+===== tx status before =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 status
+mode              : preload
+running           : no
+done              : no
+late              : no
+underrun          : no
+cmac_link_up      : yes
+tx_gate_open      : yes
+force_link_up     : no
+force_tx_ready    : no
+fifo_level        : 0
+tx_packets        : 0
+tx_bytes          : 0
+late_packets      : 0
+underrun_packets  : 0
+debug_status      : 0x00100020
+debug_axi         : 0x00000002
+debug_araddr      : 0x0000000000000000
+debug_rdata_low   : 0x00000000
+debug_ticks       : 0
+stream_ring_size  : 0
+stream_write_ptr  : 0
+stream_read_ptr   : 0
+stream_level      : 0
+stream_eof        : no
+stream_wait_empty : yes
+stream_overrun    : no
+stream_status     : 0x00000200
+
+[exit=0 elapsed=0.033s]
+
+===== rx status before =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-status
+rx_enable         : no
+capture_enable    : no
+link_up           : yes
+fifo_ready        : yes
+fifo_valid        : no
+overflow_seen     : no
+writer_state      : 0
+ring_base         : 0x0000000000000000
+ring_size         : 0
+truncate_bytes    : 256
+write_ptr         : 0
+rx_packets        : 0
+rx_bytes          : 0
+rx_errors         : 0
+captured_bytes    : 0
+axi_writes        : 0
+axi_errors        : 0
+debug             : 0x00000000
+
+[exit=0 elapsed=0.035s]
+
+===== xdma h2c/c2h ddr readback =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/ddr_readback_check.py --repeat 1 --case 0x00000000:0x1000 --case 0x00100000:0x10000 --case 0x10000000:0x100000
+PASS addr=0x00000000 size=4096 repeat=0 h2c=0.396Gbps c2h=0.740Gbps
+PASS addr=0x00100000 size=65536 repeat=0 h2c=5.736Gbps c2h=3.582Gbps
+PASS addr=0x10000000 size=1048576 repeat=0 h2c=13.756Gbps c2h=5.508Gbps
+SUMMARY cases=3 repeat=1 checked_bytes=1118208 aggregate_rw=0.087Gbps
+
+[exit=0 elapsed=0.237s]
+
+===== generate synthetic pcap =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/gen_synthetic_pcap.py --out /home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/udp_1518.pcap --packet-count 4096 --frame-len 1518 --gap-ticks 480 --vary-flow
+pcap              : /home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/udp_1518.pcap
+packet_count      : 4096
+frame_len         : 1518
+gap_ns            : 1600
+total_frame_bytes : 6217728
+
+[exit=0 elapsed=1.120s]
+
+===== pcap to descriptor/data trace =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/pcap2trace.py /home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/udp_1518.pcap --out-dir /home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace
+{
+  "pcap": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/udp_1518.pcap",
+  "descriptor_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace/desc.bin",
+  "data_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace/data.bin",
+  "descriptor_bytes": 64,
+  "data_beat_bytes": 64,
+  "tick_hz": 300000000,
+  "packet_count": 4096,
+  "data_bytes_aligned": 6291456,
+  "total_frame_bytes": 6217728,
+  "max_frame_len": 1518,
+  "first_timestamp_ns": 0,
+  "pcap_info": {
+    "version_major": 2,
+    "version_minor": 4,
+    "snaplen": 65535,
+    "network": 1
+  }
+}
+
+[exit=0 elapsed=0.057s]
+
+===== descriptor/data trace to stream records =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/trace_to_stream.py --manifest /home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace/manifest.json --out /home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/stream.bin
+{
+  "generator": "trace_to_stream.py",
+  "source_manifest": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace/manifest.json",
+  "source_descriptor_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace/desc.bin",
+  "source_data_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace/data.bin",
+  "stream_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/stream.bin",
+  "stream_bytes": 6553600,
+  "packet_count": 4096,
+  "total_frame_bytes": 6217728,
+  "data_beat_bytes": 64,
+  "input": {
+    "pcap": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/udp_1518.pcap",
+    "descriptor_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace/desc.bin",
+    "data_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace/data.bin",
+    "descriptor_bytes": 64,
+    "data_beat_bytes": 64,
+    "tick_hz": 300000000,
+    "packet_count": 4096,
+    "data_bytes_aligned": 6291456,
+    "total_frame_bytes": 6217728,
+    "max_frame_len": 1518,
+    "first_timestamp_ns": 0,
+    "pcap_info": {
+      "version_major": 2,
+      "version_minor": 4,
+      "snaplen": 65535,
+      "network": 1
+    }
+  }
+}
+
+[exit=0 elapsed=0.056s]
+
+===== finite stream throughput sweep =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/stream_stress_test.py --port 0 --frame-sizes 64,128,256,512,1024,1518 --packet-count 2000 --gap-ticks 0 --stream-base 0x20000000 --work-dir /home/user/traffic_replay_validation/current/20260627_233933_smoke/finite_stream --csv /home/user/traffic_replay_validation/current/20260627_233933_smoke/finite_stream_sweep.csv --timeout 30 --watermark 4096
+
+case frame_len=64 packets=2000 stream_bytes=256000
+result done=True tx_pkts=2000 tx_bytes=128000 hw_gbps=37.814 load_gbps=4.514 late=2000 underrun=0
+
+case frame_len=128 packets=2000 stream_bytes=384000
+result done=True tx_pkts=2000 tx_bytes=256000 hw_gbps=60.687 load_gbps=4.377 late=2000 underrun=0
+
+case frame_len=256 packets=2000 stream_bytes=640000
+result done=True tx_pkts=2000 tx_bytes=512000 hw_gbps=81.767 load_gbps=9.044 late=2000 underrun=483
+
+case frame_len=512 packets=2000 stream_bytes=1152000
+result done=True tx_pkts=2000 tx_bytes=1024000 hw_gbps=91.015 load_gbps=8.561 late=2000 underrun=4417
+
+case frame_len=1024 packets=2000 stream_bytes=2176000
+result done=True tx_pkts=2000 tx_bytes=2048000 hw_gbps=96.399 load_gbps=18.104 late=2000 underrun=11914
+
+case frame_len=1518 packets=2000 stream_bytes=3200000
+result done=True tx_pkts=2000 tx_bytes=3036000 hw_gbps=97.184 load_gbps=11.655 late=2000 underrun=20149
+
+wrote /home/user/traffic_replay_validation/current/20260627_233933_smoke/finite_stream_sweep.csv
+
+[exit=0 elapsed=0.627s]
+
+===== generate oversized ring-stream trace =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/gen_synthetic_trace.py --out-dir /home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518 --packet-count 20000 --frame-len 1518 --gap-ticks 480
+{
+  "generator": "gen_synthetic_trace.py",
+  "descriptor_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/desc.bin",
+  "data_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/data.bin",
+  "descriptor_bytes": 64,
+  "data_beat_bytes": 64,
+  "tick_hz": 300000000,
+  "packet_count": 20000,
+  "gap_ticks": 480,
+  "frame_len": 1518,
+  "data_bytes_aligned": 30720000,
+  "total_frame_bytes": 30360000,
+  "max_frame_len": 1518
+}
+
+[exit=0 elapsed=2.715s]
+
+===== ring trace to stream records =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/trace_to_stream.py --manifest /home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/manifest.json --out /home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/stream.bin
+{
+  "generator": "trace_to_stream.py",
+  "source_manifest": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/manifest.json",
+  "source_descriptor_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/desc.bin",
+  "source_data_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/data.bin",
+  "stream_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/stream.bin",
+  "stream_bytes": 32000000,
+  "packet_count": 20000,
+  "total_frame_bytes": 30360000,
+  "data_beat_bytes": 64,
+  "input": {
+    "generator": "gen_synthetic_trace.py",
+    "descriptor_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/desc.bin",
+    "data_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/data.bin",
+    "descriptor_bytes": 64,
+    "data_beat_bytes": 64,
+    "tick_hz": 300000000,
+    "packet_count": 20000,
+    "gap_ticks": 480,
+    "frame_len": 1518,
+    "data_bytes_aligned": 30720000,
+    "total_frame_bytes": 30360000,
+    "max_frame_len": 1518
+  }
+}
+
+[exit=0 elapsed=0.133s]
+
+===== dynamic ddr ring stream replay =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/xdma_stream_ring.py --port 0 --manifest /home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/stream_manifest.json --ring-base 0x20000000 --ring-size 0x800000 --prefill-bytes 0x400000 --watermark 4096 --timeout 30
+stream_file       : /home/user/traffic_replay_validation/current/20260627_233933_smoke/ring_trace_1518/stream.bin
+ring_base         : 0x20000000
+ring_size         : 8388608
+committed_bytes   : 32000000
+committed_packets : 20000
+completed         : True
+tx_packets        : 20000
+tx_bytes          : 30360000
+late_packets      : 17202
+underrun_packets  : 49035
+stream_status     : 0x000003a5
+final_level       : 0
+max_ring_level    : 4193600
+min_ring_free     : 3146432
+load_gbps         : 0.499
+hw_gbps           : 0.550
+load_seconds      : 0.512766
+wall_seconds      : 0.000002
+
+[exit=0 elapsed=0.546s]
+
+===== rx disable =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-disable
+
+[exit=0 elapsed=0.037s]
+
+===== rx configure capture ring =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-config --ring-base 0x30000000 --ring-size 0x1000000 --truncate-bytes 128
+
+[exit=0 elapsed=0.028s]
+
+===== rx clear =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-clear
+
+[exit=0 elapsed=0.038s]
+
+===== rx enable =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-enable
+
+[exit=0 elapsed=0.036s]
+
+===== rx capture on =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-capture on
+
+[exit=0 elapsed=0.030s]
+
+===== tx to opposite qsfp for rx loopback =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/stream_stress_test.py --port 0 --frame-sizes 512 --packet-count 2000 --gap-ticks 0 --stream-base 0x20000000 --work-dir /home/user/traffic_replay_validation/current/20260627_233933_smoke/rx_loopback_tx --timeout 30 --watermark 4096
+
+case frame_len=512 packets=2000 stream_bytes=1152000
+result done=True tx_pkts=2000 tx_bytes=1024000 hw_gbps=88.661 load_gbps=6.986 late=2000 underrun=5005
+
+[exit=0 elapsed=0.121s]
+
+===== rx status after loopback =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-status
+rx_enable         : yes
+capture_enable    : yes
+link_up           : yes
+fifo_ready        : yes
+fifo_valid        : no
+overflow_seen     : yes
+writer_state      : 0
+ring_base         : 0x0000000030000000
+ring_size         : 16777216
+truncate_bytes    : 128
+write_ptr         : 21184
+rx_packets        : 167
+rx_bytes          : 92028
+rx_errors         : 33
+captured_bytes    : 21184
+axi_writes        : 331
+axi_errors        : 0
+debug             : 0x00000004
+
+[exit=0 elapsed=0.034s]
+
+===== tx status after =====
+$ /usr/bin/python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 status
+mode              : stream
+running           : no
+done              : yes
+late              : yes
+underrun          : yes
+cmac_link_up      : yes
+tx_gate_open      : yes
+force_link_up     : no
+force_tx_ready    : no
+fifo_level        : 0
+tx_packets        : 2000
+tx_bytes          : 1024000
+late_packets      : 2000
+underrun_packets  : 5005
+debug_status      : 0x00100215
+debug_axi         : 0x00002782
+debug_araddr      : 0x0000000020119400
+debug_rdata_low   : 0x1f1e1d1c
+debug_ticks       : 27719
+stream_ring_size  : 0
+stream_write_ptr  : 0
+stream_read_ptr   : 1152000
+stream_level      : 0
+stream_eof        : no
+stream_wait_empty : yes
+stream_overrun    : no
+stream_status     : 0x00000225
+
+[exit=0 elapsed=0.037s]

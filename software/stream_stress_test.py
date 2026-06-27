@@ -28,6 +28,7 @@ REG_PKT_HI = 0x002C
 REG_START_LO = 0x0040
 REG_START_HI = 0x0044
 REG_RATE = 0x0048
+REG_WATERMARK = 0x004C
 REG_DEBUG_CTRL = 0x0054
 REG_STREAM_WR_LO = 0x00A0
 REG_STREAM_WR_HI = 0x00A4
@@ -77,6 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gap-ticks", type=int_auto, default=0)
     parser.add_argument("--tick-hz", type=int_auto, default=DEFAULT_TICK_HZ)
     parser.add_argument("--rate-q16-16", type=int_auto, default=0x0001_0000)
+    parser.add_argument("--watermark", type=int_auto, default=4096)
     parser.add_argument("--force-link-up", action="store_true")
     parser.add_argument("--force-tx-ready", action="store_true")
     parser.add_argument("--timeout", type=float, default=30.0)
@@ -137,7 +139,10 @@ def read64(fd: int, lo: int, hi: int) -> int:
 
 
 def configure_and_start(fd: int, base: int, args: argparse.Namespace, stream_bytes: int, packet_count: int) -> None:
+    write32(fd, base + REG_CONTROL, 0x2)
+    time.sleep(0.001)
     write32(fd, base + REG_CONTROL, 0x4)
+    time.sleep(0.001)
     write32(fd, base + REG_MODE, MODE_STREAM)
     write64(fd, base + REG_DESC_BASE_LO, base + REG_DESC_BASE_HI, args.stream_base)
     write64(fd, base + REG_DATA_BASE_LO, base + REG_DATA_BASE_HI, 0)
@@ -145,6 +150,7 @@ def configure_and_start(fd: int, base: int, args: argparse.Namespace, stream_byt
     write64(fd, base + REG_PKT_LO, base + REG_PKT_HI, packet_count)
     write64(fd, base + REG_START_LO, base + REG_START_HI, 0)
     write32(fd, base + REG_RATE, args.rate_q16_16)
+    write32(fd, base + REG_WATERMARK, args.watermark)
     write64(fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, 0)
     write64(fd, base + REG_STREAM_RING_LO, base + REG_STREAM_RING_HI, 0)
     write32(fd, base + REG_STREAM_CTRL, 0)
@@ -156,6 +162,13 @@ def configure_and_start(fd: int, base: int, args: argparse.Namespace, stream_byt
         debug |= 0x2
     write32(fd, base + REG_DEBUG_CTRL, debug)
     write32(fd, base + REG_CONTROL, 0x1)
+
+
+def stop_and_clear(fd: int, base: int) -> None:
+    write32(fd, base + REG_CONTROL, 0x2)
+    time.sleep(0.001)
+    write32(fd, base + REG_CONTROL, 0x4)
+    time.sleep(0.001)
 
 
 def wait_done(fd: int, base: int, timeout_s: float) -> tuple[bool, float]:
@@ -216,6 +229,8 @@ def run_case(args: argparse.Namespace, h2c_fd: int, user_fd: int, base: int, fra
         f"hw_gbps={hw_gbps:.3f} load_gbps={load_gbps:.3f} "
         f"late={late_pkts} underrun={underrun_pkts}"
     )
+    if not completed:
+        stop_and_clear(user_fd, base)
     return result
 
 
@@ -234,6 +249,9 @@ def main() -> None:
             if frame_len <= 0 or frame_len > 0xFFFF:
                 raise SystemExit(f"invalid frame size: {frame_len}")
             results.append(run_case(args, h2c_fd, user_fd, reg_base, frame_len))
+    except BaseException:
+        stop_and_clear(user_fd, reg_base)
+        raise
     finally:
         os.close(h2c_fd)
         os.close(user_fd)

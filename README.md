@@ -47,6 +47,7 @@ intentionally excluded.
 * [Programming and PCIe Rescan](#programming-and-pcie-rescan)
 * [Host Tools](#host-tools)
 * [Stream Mode and Stress Testing](#stream-mode-and-stress-testing)
+* [Hardware Validation Suite](#hardware-validation-suite)
 * [Verification](#verification)
 * [Current Limitations](#current-limitations)
 
@@ -413,6 +414,17 @@ Expected PCIe device ID:
 
 ## Host Tools
 
+Generate deterministic Ethernet/IPv4/UDP pcap traffic for reproducible tests:
+
+```bash
+python3 /home/user/traffic_replay_software/gen_synthetic_pcap.py \
+  --out /home/user/pcap_tests/udp_1518_1M.pcap \
+  --packet-count 1000000 \
+  --frame-len 1518 \
+  --gap-ticks 0 \
+  --vary-flow
+```
+
 Convert a classic pcap to the replay trace format:
 
 ```bash
@@ -578,29 +590,80 @@ The stress script reports:
 * `late_packets` and `underrun_packets`: scheduler and payload starvation
   indicators.
 
-Latest finite-buffer hardware results are recorded in
-[`docs/stream_mode_test_20260627.md`](docs/stream_mode_test_20260627.md).  The
-test used the archived bitstream
-`bitstreams/20260627_014343_stream_prefetch_lutram_fifo_dual_qsfp_impl/`,
-programmed onto the U200, with `QSFP0` and `QSFP1` connected by 100G fiber.
-The DDR ring implementation was added after that image and is currently
-validated by `XSim`; it still needs a fresh bitstream and hardware throughput
-run.
+## Hardware Validation Suite
 
-Zero-gap `STREAM` sweep on TX0:
+`hw_validation_suite.py` runs the common post-programming checks and keeps a
+timestamped log directory on the target host.  It is the preferred way to compare
+important bitstream versions because each run records the same classes of
+evidence:
+
+* `XDMA H2C` / `C2H` deterministic `DDR4` readback.
+* Synthetic `pcap` generation, `pcap2trace.py` conversion, and
+  `trace_to_stream.py` conversion.
+* Finite-buffer `STREAM` throughput sweep.
+* Oversized `DDR4` ring `STREAM` replay where the stream file is larger than the
+  selected FPGA ring window.
+* Optional `QSFP0` -> `QSFP1` RX loopback statistics and truncated sample-ring
+  capture.
+
+Run a quick smoke pass after programming:
+
+```bash
+sudo python3 /home/user/traffic_replay_software/hw_validation_suite.py \
+  --profile smoke \
+  --port 0 \
+  --rx-port 1
+```
+
+Run a larger stress pass:
+
+```bash
+sudo python3 /home/user/traffic_replay_software/hw_validation_suite.py \
+  --profile stress \
+  --port 0 \
+  --rx-port 1
+```
+
+Use `--force-link-up` only for logic bring-up without an optical link.  Throughput
+and packet-loss numbers should be collected with a real `CMAC` link and without
+forcing downstream readiness.
+
+Latest hardware results are recorded in
+[`reports/20260628_remote_validation_stream_ring/`](reports/20260628_remote_validation_stream_ring/).
+The run used the archived bitstream
+`bitstreams/20260627_232530_remote_clearfix_stream_ring_test_bit/`, programmed
+onto the remote U200, with `QSFP0` and `QSFP1` connected by 100G fiber.
+
+Zero-gap finite-buffer `STREAM` sweep on TX0:
 
 | Frame bytes | Packets | Completed | TX packets | TX bytes | Replay Gbps | Load Gbps | Underrun count |
 | ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: |
-| `64` | `100000` | yes | `100000` | `6400000` | `17.328` | `7.011` | `0` |
-| `128` | `100000` | yes | `100000` | `12800000` | `23.104` | `13.789` | `249960` |
-| `256` | `100000` | yes | `100000` | `25600000` | `27.725` | `15.961` | `892300` |
-| `512` | `100000` | yes | `100000` | `51200000` | `30.807` | `17.641` | `2258888` |
-| `1024` | `100000` | yes | `100000` | `102400000` | `32.619` | `18.786` | `4947916` |
-| `1518` | `100000` | yes | `100000` | `151800000` | `32.882` | `11.983` | `7692989` |
+| `64` | `100000` | yes | `100000` | `6400000` | `38.388` | `7.232` | `0` |
+| `128` | `100000` | yes | `100000` | `12800000` | `61.409` | `10.036` | `0` |
+| `256` | `100000` | yes | `100000` | `25600000` | `77.289` | `10.389` | `73451` |
+| `512` | `100000` | yes | `100000` | `51200000` | `88.371` | `10.178` | `257062` |
+| `1024` | `100000` | yes | `100000` | `102400000` | `94.190` | `11.005` | `666357` |
+| `1518` | `100000` | yes | `100000` | `151800000` | `95.518` | `18.290` | `1068958` |
 
-The current maximum measured zero-gap replay rate is about `32.9 Gbps` for
-1518-byte frames.  A conservative no-underrun scheduled point for 1518-byte
-frames was observed at `gap_ticks=480`, about `7.59 Gbps`.
+The current maximum measured finite-buffer replay rate is about `95.5Gbps` for
+1518-byte frames.  The run completed without packet-count loss, but zero-gap
+large-packet tests still report `underrun_packets`, so this should be viewed as
+a functional throughput result rather than a final precision result.
+
+DDR ring `STREAM` was also hardware-tested.  A 200000-packet, 1518-byte,
+`gap_ticks=15000` run completed with matched TX counters and no late or underrun
+events.  A 50000-packet gap sweep found the fastest no-underrun point in this
+Python feeder setup at about `0.455Gbps`:
+
+| Gap ticks | Completed | TX packets | Replay Gbps | Late packets | Underrun packets |
+| ---: | :---: | ---: | ---: | ---: | ---: |
+| `20000` | yes | `50000` | `0.182` | `0` | `0` |
+| `15000` | yes | `50000` | `0.243` | `0` | `0` |
+| `12000` | yes | `50000` | `0.304` | `0` | `0` |
+| `10000` | yes | `50000` | `0.364` | `0` | `0` |
+| `8000` | yes | `50000` | `0.455` | `0` | `0` |
+| `6000` | yes | `50000` | `0.546` | `13770` | `29342` |
+| `4000` | yes | `50000` | `0.549` | `29974` | `68707` |
 
 ## Verification
 
@@ -627,10 +690,13 @@ python -m py_compile `
   software\xdma_load_trace.py `
   software\xdma_stream_load.py `
   software\xdma_stream_ring.py `
+  software\ddr_readback_check.py `
   software\pcap2trace.py `
   software\trace_to_stream.py `
+  software\gen_synthetic_pcap.py `
   software\gen_synthetic_trace.py `
-  software\stream_stress_test.py
+  software\stream_stress_test.py `
+  software\hw_validation_suite.py
 ```
 
 Run basic `XDMA` `DDR4` readback after programming:
@@ -662,34 +728,38 @@ The latest hardware smoke test proves:
 * `AXI-Lite` register access works through the `XDMA` user `BAR`.
 * `TX0` and `TX1` can read descriptors and payloads from `DDR4`.
 * The scheduler and `TX` engine release packets and update counters.
-* DDR-backed finite `STREAM` mode passes `RTL` simulation; hardware throughput
-  testing is done with `stream_stress_test.py`.
-* DDR-backed ring `STREAM` mode passes `RTL` simulation: the reader consumes
-  committed bytes, waits while the Host producer pointer is unchanged, then
-  resumes when software advances `STREAM_WR_PTR`.
+* DDR-backed finite `STREAM` mode passes `RTL` simulation and hardware
+  throughput testing with `stream_stress_test.py`.
+* DDR-backed ring `STREAM` mode passes `RTL` simulation and U200 hardware tests:
+  the reader consumes committed bytes, waits while the Host producer pointer is
+  unchanged, then resumes when software advances `STREAM_WR_PTR`.
 * `QSFP0` and `QSFP1` `CMAC` links come up over the 100G optical loop.
 * `TX0` -> `RX1` and `TX1` -> `RX0` both preserve packet count and byte count.
 * Multi-beat packets up to at least 256 bytes are not split after the `FIFO`
   read-latency fix.
 * `RX` capture writes a readable recent-packet window into `DDR4`.
 * DDR-backed `STREAM` replay now runs on hardware.  TX0 zero-gap stress tests
-  complete for `64` through `1518` byte synthetic packets, and RX1 loopback
-  counters plus DDR sample ring readback were verified.
+  complete for `64` through `1518` byte synthetic packets, DDR ring mode
+  completes bounded-producer tests, and RX1 loopback counters plus DDR sample
+  ring readback were verified at low rate.
 
 ## Current Limitations
 
-* The design has not yet been optimized for sustained `100Gbps` replay.  The
-  latest zero-gap `STREAM` sweep measured about `32.9Gbps` for 1518-byte frames.
+* The finite-buffer `STREAM` path now reaches about `95.5Gbps` for 1518-byte
+  zero-gap packets, but this is not yet a timing-clean production image and
+  large-packet zero-gap runs still report `underrun_packets`.
+* Dynamic DDR ring `STREAM` is functionally verified, but the current Python
+  memory-mapped `XDMA H2C` feeder limits no-underrun replay to about `0.45Gbps`
+  in the latest 1518-byte test.  Reaching 100G dynamic streaming needs a faster
+  host loader, larger batched DMA submission path, direct `XDMA`/`QDMA`
+  AXI4-Stream `H2C`, or a deeper FPGA-side buffering strategy.
+* A 500000-packet finite-buffer long sweep exposed a replay-path recovery issue:
+  after a timeout, normal `stop`/`clear` did not always restore TX operation.
+  Reprogramming the same bitstream recovered the system.  The next RTL fix
+  should add a stronger per-port soft reset covering the stream reader,
+  scheduler, prefetch FIFO, and TX handshake state.
 * The `DDR4` trace reader is intentionally simple; descriptor caching, payload
-  prefetch, deeper FIFOs, and multiple outstanding reads are future work.
-* `STREAM` mode is currently DDR-backed through memory-mapped `XDMA H2C`.  The
-  FPGA stream source uses simple single-burst read sequencing, so large-packet
-  zero-gap tests can report `underrun_packets`.  The ring path solves capacity
-  scaling, not throughput by itself.  A true direct `XDMA`/`QDMA` AXI4-Stream
-  `H2C` endpoint, or a deeper multi-outstanding DDR stream source, is future
-  work.
-* DDR ring `STREAM` has passed RTL simulation but has not yet been rebuilt into
-  a new U200 bitstream or hardware throughput-tested.
+  prefetch, deeper FIFOs, and multiple outstanding reads are still future work.
 * `RX` capture is a statistics and recent-packet debug window, not a full-rate
   packet recorder.
 * The current `pcap` converter supports classic `pcap`, not `pcapng`.

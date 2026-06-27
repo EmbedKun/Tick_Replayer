@@ -48,6 +48,8 @@ module ddr_stream_reader #(
 );
   typedef enum logic [3:0] {
     ST_IDLE,
+    ST_PREP0,
+    ST_PREP1,
     ST_AR,
     ST_R,
     ST_DONE
@@ -59,7 +61,7 @@ module ddr_stream_reader #(
   localparam logic [63:0] BEAT_BYTES_U64 = AXIS_KEEP_BYTES;
   logic [63:0] beats_remaining;
   logic [8:0]  burst_beats_left;
-  logic [8:0]  burst_beats_next;
+  logic [8:0]  burst_beats_issue;
   logic [15:0] final_keep_bytes;
   logic        final_partial_beat;
   logic        last_stream_beat;
@@ -73,8 +75,26 @@ module ddr_stream_reader #(
   logic [63:0] ring_beats_to_wrap;
   logic        ring_overrun;
   logic        ring_empty_wait;
-  logic [63:0] burst_limit;
+  logic [63:0] ring_level_next;
+  logic [31:0] stream_status_next;
   logic [63:0] next_ring_offset;
+  logic [63:0] prep_beats_remaining;
+  logic [63:0] prep_ring_available_beats;
+  logic [63:0] prep_ring_beats_to_wrap;
+  logic        prep_ring_mode;
+  logic        prep_ring_eof;
+  logic        prep_ring_overrun;
+  logic        prep_ring_size_valid;
+
+  function automatic logic [8:0] cap_burst_beats(input logic [63:0] beats);
+    if (beats == 64'd0) begin
+      cap_burst_beats = 9'd0;
+    end else if (beats[63:7] != 57'd0) begin
+      cap_burst_beats = MAX_BURST_BEATS_U9;
+    end else begin
+      cap_burst_beats = {2'd0, beats[6:0]};
+    end
+  endfunction
 
   assign final_partial_beat = (cfg_stream_bytes[5:0] != 6'd0);
   assign final_keep_bytes   = final_partial_beat ? {10'd0, cfg_stream_bytes[5:0]} : AXIS_KEEP_BYTES;
@@ -84,13 +104,13 @@ module ddr_stream_reader #(
   assign ring_write_aligned = {cfg_ring_write_count[63:6], 6'd0};
   assign ring_available_bytes = (ring_write_aligned >= read_count) ? (ring_write_aligned - read_count) : 64'd0;
   assign ring_available_beats = ring_available_bytes[63:6];
-  assign ring_level = ring_available_bytes;
   assign ring_overrun = ring_mode && (ring_available_bytes > cfg_ring_size);
   assign ring_empty_wait = ring_mode && busy && !done && (ring_available_beats == 64'd0) && !cfg_ring_eof;
   assign ring_bytes_to_wrap = (ring_mode && (cfg_ring_size > ring_offset)) ? (cfg_ring_size - ring_offset) : cfg_ring_size;
   assign ring_beats_to_wrap = ring_bytes_to_wrap[63:6];
   assign next_ring_offset = (ring_offset + BEAT_BYTES_U64 >= cfg_ring_size) ? 64'd0 : (ring_offset + BEAT_BYTES_U64);
-  assign stream_status = {
+  assign ring_level_next = ring_available_bytes;
+  assign stream_status_next = {
     20'd0,
     ring_empty_wait,
     ring_overrun,
@@ -103,29 +123,11 @@ module ddr_stream_reader #(
     state
   };
 
-  always_comb begin
-    burst_limit = beats_remaining;
-    if (ring_mode) begin
-      burst_limit = ring_available_beats;
-      if (ring_beats_to_wrap != 64'd0 && burst_limit > ring_beats_to_wrap) begin
-        burst_limit = ring_beats_to_wrap;
-      end
-    end
-
-    if (burst_limit == 64'd0) begin
-      burst_beats_next = 9'd0;
-    end else if (burst_limit > MAX_BURST_BEATS_U64) begin
-      burst_beats_next = MAX_BURST_BEATS_U9;
-    end else begin
-      burst_beats_next = burst_limit[8:0];
-    end
-  end
-
   assign m_axi_arid    = '0;
   assign m_axi_arsize  = 3'd6;
   assign m_axi_arburst = 2'b01;
-  assign m_axi_arvalid = (state == ST_AR) && (burst_beats_next != 9'd0);
-  assign m_axi_arlen   = (burst_beats_next == 9'd0) ? 8'd0 : burst_beats_next[7:0] - 8'd1;
+  assign m_axi_arvalid = (state == ST_AR) && (burst_beats_issue != 9'd0);
+  assign m_axi_arlen   = (burst_beats_issue == 9'd0) ? 8'd0 : burst_beats_issue[7:0] - 8'd1;
 
   assign m_axi_rready  = (state == ST_R) && m_axis_tready;
 
@@ -141,19 +143,44 @@ module ddr_stream_reader #(
       m_axi_araddr     <= '0;
       beats_remaining  <= '0;
       burst_beats_left <= '0;
+      burst_beats_issue<= '0;
       read_count       <= '0;
       ring_offset      <= '0;
+      prep_beats_remaining      <= '0;
+      prep_ring_available_beats <= '0;
+      prep_ring_beats_to_wrap   <= '0;
+      prep_ring_mode            <= 1'b0;
+      prep_ring_eof             <= 1'b0;
+      prep_ring_overrun         <= 1'b0;
+      prep_ring_size_valid      <= 1'b0;
+      ring_level       <= '0;
+      stream_status    <= '0;
       busy             <= 1'b0;
       done             <= 1'b0;
       error            <= 1'b0;
     end else begin
+      // Register host-visible ring status so AXI-Lite reads do not inherit the
+      // burst-length arithmetic critical path.
+      ring_level    <= ring_level_next;
+      stream_status <= stream_status_next;
+
       if (clear || stop) begin
         state            <= ST_IDLE;
         m_axi_araddr     <= '0;
         beats_remaining  <= '0;
         burst_beats_left <= '0;
+        burst_beats_issue<= '0;
         read_count       <= '0;
         ring_offset      <= '0;
+        prep_beats_remaining      <= '0;
+        prep_ring_available_beats <= '0;
+        prep_ring_beats_to_wrap   <= '0;
+        prep_ring_mode            <= 1'b0;
+        prep_ring_eof             <= 1'b0;
+        prep_ring_overrun         <= 1'b0;
+        prep_ring_size_valid      <= 1'b0;
+        ring_level       <= '0;
+        stream_status    <= '0;
         busy             <= 1'b0;
         done             <= 1'b0;
         error            <= 1'b0;
@@ -168,17 +195,54 @@ module ddr_stream_reader #(
               ring_offset     <= 64'd0;
               busy            <= 1'b1;
               error           <= final_partial_beat | !ring_size_valid;
-              state           <= ST_AR;
+              state           <= ST_PREP0;
             end
           end
-          ST_AR: begin
-            error <= error | ring_overrun | !ring_size_valid;
-            if (ring_mode && (burst_beats_next == 9'd0) && cfg_ring_eof) begin
+          ST_PREP0: begin
+            prep_beats_remaining      <= beats_remaining;
+            prep_ring_available_beats <= ring_available_beats;
+            prep_ring_beats_to_wrap   <= ring_beats_to_wrap;
+            prep_ring_mode            <= ring_mode;
+            prep_ring_eof             <= cfg_ring_eof;
+            prep_ring_overrun         <= ring_overrun;
+            prep_ring_size_valid      <= ring_size_valid;
+            state                     <= ST_PREP1;
+          end
+          ST_PREP1: begin
+            error <= error | prep_ring_overrun | !prep_ring_size_valid;
+            if (prep_ring_mode) begin
+              if ((prep_ring_available_beats == 64'd0) && prep_ring_eof) begin
+                burst_beats_issue <= 9'd0;
+                busy              <= 1'b0;
+                done              <= 1'b1;
+                state             <= ST_DONE;
+              end else if (prep_ring_available_beats == 64'd0) begin
+                burst_beats_issue <= 9'd0;
+                state             <= ST_PREP0;
+              end else if ((prep_ring_beats_to_wrap != 64'd0) &&
+                           (cap_burst_beats(prep_ring_beats_to_wrap) < cap_burst_beats(prep_ring_available_beats))) begin
+                burst_beats_issue <= cap_burst_beats(prep_ring_beats_to_wrap);
+                state             <= ST_AR;
+              end else begin
+                burst_beats_issue <= cap_burst_beats(prep_ring_available_beats);
+                state             <= ST_AR;
+              end
+            end else if (prep_beats_remaining == 64'd0) begin
+              burst_beats_issue <= 9'd0;
               busy  <= 1'b0;
               done  <= 1'b1;
               state <= ST_DONE;
+            end else begin
+              burst_beats_issue <= cap_burst_beats(prep_beats_remaining);
+              state             <= ST_AR;
+            end
+          end
+          ST_AR: begin
+            error <= error | prep_ring_overrun | !prep_ring_size_valid;
+            if (burst_beats_issue == 9'd0) begin
+              state <= ST_PREP0;
             end else if (m_axi_arvalid && m_axi_arready) begin
-              burst_beats_left <= burst_beats_next;
+              burst_beats_left <= burst_beats_issue;
               state            <= ST_R;
             end
           end
@@ -200,7 +264,7 @@ module ddr_stream_reader #(
                   done  <= 1'b1;
                   state <= ST_DONE;
                 end else begin
-                  state <= ST_AR;
+                  state <= ST_PREP0;
                 end
               end else begin
                 burst_beats_left <= burst_beats_left - 9'd1;
@@ -215,10 +279,11 @@ module ddr_stream_reader #(
               read_count       <= 64'd0;
               ring_offset      <= 64'd0;
               burst_beats_left <= '0;
+              burst_beats_issue<= '0;
               busy            <= 1'b1;
               done            <= 1'b0;
               error           <= final_partial_beat | !ring_size_valid;
-              state           <= ST_AR;
+              state           <= ST_PREP0;
             end
           end
           default: begin

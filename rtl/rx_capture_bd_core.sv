@@ -173,6 +173,7 @@ module rx_capture_core #(
   logic [31:0] wdata_q;
   logic [3:0] wstrb_q;
   logic do_write;
+  logic stats_clear_req_q;
 
   logic cfg_enable;
   logic cfg_capture_enable;
@@ -203,6 +204,8 @@ module rx_capture_core #(
   logic [63:0] stat_cap_bytes_q;
   logic [63:0] stat_axi_writes_q;
   logic [63:0] stat_axi_errors_q;
+  logic [6:0]  stat_rx_bytes_inc_q;
+  logic        stat_rx_bytes_inc_valid_q;
 
   logic [1:0] writer_state_q;
   logic aw_done_q;
@@ -341,6 +344,7 @@ module rx_capture_core #(
       awaddr_q           <= '0;
       aw_hold            <= 1'b0;
       w_hold             <= 1'b0;
+      stats_clear_req_q  <= 1'b0;
       wdata_q            <= 32'd0;
       wstrb_q            <= 4'd0;
       cfg_enable         <= 1'b0;
@@ -357,6 +361,8 @@ module rx_capture_core #(
       stat_cap_bytes_q   <= 64'd0;
       stat_axi_writes_q  <= 64'd0;
       stat_axi_errors_q  <= 64'd0;
+      stat_rx_bytes_inc_q <= 7'd0;
+      stat_rx_bytes_inc_valid_q <= 1'b0;
       writer_state_q     <= 2'd0;
       aw_done_q          <= 1'b0;
       w_done_q           <= 1'b0;
@@ -367,6 +373,24 @@ module rx_capture_core #(
       m_axi_wvalid       <= 1'b0;
       m_axi_bready       <= 1'b0;
     end else begin
+      stat_rx_bytes_inc_valid_q <= 1'b0;
+      stats_clear_req_q <= 1'b0;
+      if (stats_clear_req_q) begin
+        write_ptr_q         <= 32'd0;
+        capture_remaining_q <= 32'd0;
+        in_packet_q         <= 1'b0;
+        stat_rx_pkts_q      <= 64'd0;
+        stat_rx_bytes_q     <= 64'd0;
+        stat_rx_errs_q      <= 64'd0;
+        stat_cap_bytes_q    <= 64'd0;
+        stat_axi_writes_q   <= 64'd0;
+        stat_axi_errors_q   <= 64'd0;
+        stat_rx_bytes_inc_q <= 7'd0;
+        stat_rx_bytes_inc_valid_q <= 1'b0;
+      end else if (stat_rx_bytes_inc_valid_q) begin
+        stat_rx_bytes_q <= stat_rx_bytes_q + {57'd0, stat_rx_bytes_inc_q};
+      end
+
       s_axil_awready <= !aw_hold && !s_axil_bvalid;
       s_axil_wready  <= !w_hold && !s_axil_bvalid;
 
@@ -388,15 +412,7 @@ module rx_capture_core #(
               cfg_enable         <= wdata_q[0];
               cfg_capture_enable <= wdata_q[2];
               if (wdata_q[1]) begin
-                write_ptr_q         <= 32'd0;
-                capture_remaining_q <= 32'd0;
-                in_packet_q         <= 1'b0;
-                stat_rx_pkts_q      <= 64'd0;
-                stat_rx_bytes_q     <= 64'd0;
-                stat_rx_errs_q      <= 64'd0;
-                stat_cap_bytes_q    <= 64'd0;
-                stat_axi_writes_q   <= 64'd0;
-                stat_axi_errors_q   <= 64'd0;
+                stats_clear_req_q <= 1'b1;
               end
             end
           end
@@ -444,7 +460,8 @@ module rx_capture_core #(
         s_axil_rvalid <= 1'b0;
       end
 
-      case (writer_state_q)
+      if (!stats_clear_req_q) begin
+        case (writer_state_q)
         2'd0: begin
           if (fifo_tvalid && fifo_tready) begin
             automatic logic [31:0] rem_before;
@@ -459,7 +476,8 @@ module rx_capture_core #(
             // still tell software how many bytes in each beat were meaningful.
             m_axi_wdata <= fifo_tdata;
             m_axi_wstrb <= {AXIS_KEEP_W_P{1'b1}};
-            stat_rx_bytes_q <= stat_rx_bytes_q + {57'd0, beat_bytes};
+            stat_rx_bytes_inc_q <= beat_bytes;
+            stat_rx_bytes_inc_valid_q <= 1'b1;
             if (fifo_tlast) begin
               stat_rx_pkts_q <= stat_rx_pkts_q + 64'd1;
               if (fifo_tuser) begin
@@ -514,7 +532,8 @@ module rx_capture_core #(
           end
         end
         default: writer_state_q <= 2'd0;
-      endcase
+        endcase
+      end
     end
   end
 endmodule

@@ -1,0 +1,8 @@
+--- clear tx ---
+--- dynamic ring from 500k-packet pcap stream ---
+Traceback (most recent call last):
+  File "/home/user/traffic_replay_software/xdma_stream_ring.py", line 345, in <module>
+    main()
+  File "/home/user/traffic_replay_software/xdma_stream_ring.py", line 252, in main
+    raise RuntimeError(f"ring feed timeout after {feed_timeout:.3f}s")
+RuntimeError: ring feed timeout after 240.000s

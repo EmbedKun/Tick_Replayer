@@ -1,0 +1,378 @@
+Copyright 1986-2020 Xilinx, Inc. All Rights Reserved.
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2020.2 (lin64) Build 3064766 Wed Nov 18 09:12:47 MST 2020
+| Date         : Sat Jun 27 23:11:18 2026
+| Host         : FNIL-2022DEC-GPU-3 running 64-bit Ubuntu 20.04.6 LTS
+| Command      : report_methodology -file traffic_replay_bd_wrapper_methodology_drc_routed.rpt -pb traffic_replay_bd_wrapper_methodology_drc_routed.pb -rpx traffic_replay_bd_wrapper_methodology_drc_routed.rpx
+| Design       : traffic_replay_bd_wrapper
+| Device       : xcu200-fsgd2104-2-e
+| Speed File   : -2
+| Design State : Fully Routed
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Report Methodology
+
+Table of Contents
+-----------------
+1. REPORT SUMMARY
+2. REPORT DETAILS
+
+1. REPORT SUMMARY
+-----------------
+            Netlist: netlist
+          Floorplan: design_1
+      Design limits: <entire design considered>
+             Max violations: <unlimited>
+             Violations found: 41
++-----------+------------------+------------------------------------------------------------+------------+
+| Rule      | Severity         | Description                                                | Violations |
++-----------+------------------+------------------------------------------------------------+------------+
+| TIMING-4  | Critical Warning | Invalid primary clock redefinition on a clock tree         | 1          |
+| TIMING-27 | Critical Warning | Invalid primary clock on hierarchical pin                  | 1          |
+| TIMING-54 | Critical Warning | Scoped false path or clock group constraint between clocks | 2          |
+| AVAL-324  | Warning          | Hard_blocks_needs_LOCs                                     | 6          |
+| LUTAR-1   | Warning          | LUT drives async reset alert                               | 25         |
+| TIMING-9  | Warning          | Unknown CDC Logic                                          | 1          |
+| TIMING-18 | Warning          | Missing input or output delay                              | 1          |
+| TIMING-28 | Warning          | Auto-derived clock referenced by a timing constraint       | 3          |
+| CLKC-56   | Advisory         | MMCME4 with global clock driver has no LOC                 | 1          |
++-----------+------------------+------------------------------------------------------------+------------+
+
+2. REPORT DETAILS
+-----------------
+TIMING-4#1 Critical Warning
+Invalid primary clock redefinition on a clock tree  
+Invalid clock redefinition on a clock tree. The primary clock traffic_replay_bd_i/cmac_init_clk_wiz/inst/clk_in1 is defined downstream of clock mmcm_clkout0 and overrides its insertion delay and/or waveform definition
+Related violations: <none>
+
+TIMING-27#1 Critical Warning
+Invalid primary clock on hierarchical pin  
+A primary clock traffic_replay_bd_i/cmac_init_clk_wiz/inst/clk_in1 is created on an inappropriate internal pin traffic_replay_bd_i/cmac_init_clk_wiz/inst/clk_in1. It is not recommended to create a primary clock on a hierarchical pin when its driver pin has a fanout connected to multiple clock pins
+Related violations: <none>
+
+TIMING-54#1 Critical Warning
+Scoped false path or clock group constraint between clocks  
+A scoped Clock Group timing constraint is set between clocks pcie_refclk_clk_p and pipe_clk (see constraint position 218 in the Timing Constraint window in Vivado IDE). It is not recommended to define such scoped constraints between clocks as the constraint impacts timing paths outside of the scope. 
+Related violations: <none>
+
+TIMING-54#2 Critical Warning
+Scoped false path or clock group constraint between clocks  
+A scoped Clock Group timing constraint is set between clocks pcie_refclk_clk_p and traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/phy_clk_i/bufg_gt_intclk/O (see constraint position 215 in the Timing Constraint window in Vivado IDE). It is not recommended to define such scoped constraints between clocks as the constraint impacts timing paths outside of the scope. 
+Related violations: <none>
+
+AVAL-324#1 Warning
+Hard_blocks_needs_LOCs  
+The hard block GTYE4_COMMON cell traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_common.gen_common_container[36].gen_enabled_common.gtye4_common_wrapper_inst/common_inst/gtye4_common_gen.GTYE4_COMMON_PRIM_INST is missing a valid LOC constraint for placement assignment, normally supplied by IP generation or manually assigned using the LOC property. Unguided placement of this block may cause problems in routing. Please set a valid LOC for this block to avoid these problem.
+Related violations: <none>
+
+AVAL-324#2 Warning
+Hard_blocks_needs_LOCs  
+The hard block GTYE4_COMMON cell traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_common.gen_common_container[35].gen_enabled_common.gtye4_common_wrapper_inst/common_inst/gtye4_common_gen.GTYE4_COMMON_PRIM_INST is missing a valid LOC constraint for placement assignment, normally supplied by IP generation or manually assigned using the LOC property. Unguided placement of this block may cause problems in routing. Please set a valid LOC for this block to avoid these problem.
+Related violations: <none>
+
+AVAL-324#3 Warning
+Hard_blocks_needs_LOCs  
+The hard block GTYE4_COMMON cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_common.gen_common_container[29].gen_enabled_common.gtye4_common_wrapper_inst/common_inst/gtye4_common_gen.GTYE4_COMMON_PRIM_INST is missing a valid LOC constraint for placement assignment, normally supplied by IP generation or manually assigned using the LOC property. Unguided placement of this block may cause problems in routing. Please set a valid LOC for this block to avoid these problem.
+Related violations: <none>
+
+AVAL-324#4 Warning
+Hard_blocks_needs_LOCs  
+The hard block GTYE4_COMMON cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_common.gen_common_container[30].gen_enabled_common.gtye4_common_wrapper_inst/common_inst/gtye4_common_gen.GTYE4_COMMON_PRIM_INST is missing a valid LOC constraint for placement assignment, normally supplied by IP generation or manually assigned using the LOC property. Unguided placement of this block may cause problems in routing. Please set a valid LOC for this block to avoid these problem.
+Related violations: <none>
+
+AVAL-324#5 Warning
+Hard_blocks_needs_LOCs  
+The hard block GTYE4_COMMON cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_common.gen_common_container[31].gen_enabled_common.gtye4_common_wrapper_inst/common_inst/gtye4_common_gen.GTYE4_COMMON_PRIM_INST is missing a valid LOC constraint for placement assignment, normally supplied by IP generation or manually assigned using the LOC property. Unguided placement of this block may cause problems in routing. Please set a valid LOC for this block to avoid these problem.
+Related violations: <none>
+
+AVAL-324#6 Warning
+Hard_blocks_needs_LOCs  
+The hard block GTYE4_COMMON cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_common.gen_common_container[32].gen_enabled_common.gtye4_common_wrapper_inst/common_inst/gtye4_common_gen.GTYE4_COMMON_PRIM_INST is missing a valid LOC constraint for placement assignment, normally supplied by IP generation or manually assigned using the LOC property. Unguided placement of this block may cause problems in routing. Please set a valid LOC for this block to avoid these problem.
+Related violations: <none>
+
+LUTAR-1#1 Warning
+LUT drives async reset alert  
+LUT cell dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_RD/U_RD_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_rdfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.gwrrd_rst_sync_stage[2].rrst_inst/ngwrdrst.grst.g7serrst.rd_rst_reg[2]_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_RD/U_RD_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_rdfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.rd_rst_reg_reg[0]/PRE,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_RD/U_RD_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_rdfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.rd_rst_reg_reg[1]/PRE
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_RD/U_RD_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_rdfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.rd_rst_reg_reg[2]/PRE. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#2 Warning
+LUT drives async reset alert  
+LUT cell dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_RD/U_RD_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_rdfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.gwrrd_rst_sync_stage[2].wrst_inst/ngwrdrst.grst.g7serrst.wr_rst_reg[2]_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_RD/U_RD_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_rdfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.wr_rst_reg_reg[0]/PRE,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_RD/U_RD_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_rdfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.wr_rst_reg_reg[1]/PRE
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_RD/U_RD_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_rdfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.wr_rst_reg_reg[2]/PRE. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#3 Warning
+LUT drives async reset alert  
+LUT cell dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_WR/U_WR_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_wrfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.gwrrd_rst_sync_stage[2].rrst_inst/ngwrdrst.grst.g7serrst.rd_rst_reg[2]_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_WR/U_WR_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_wrfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.rd_rst_reg_reg[0]/PRE,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_WR/U_WR_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_wrfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.rd_rst_reg_reg[1]/PRE
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_WR/U_WR_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_wrfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.rd_rst_reg_reg[2]/PRE. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#4 Warning
+LUT drives async reset alert  
+LUT cell dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_WR/U_WR_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_wrfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.gwrrd_rst_sync_stage[2].wrst_inst/ngwrdrst.grst.g7serrst.wr_rst_reg[2]_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_WR/U_WR_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_wrfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.wr_rst_reg_reg[0]/PRE,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_WR/U_WR_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_wrfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.wr_rst_reg_reg[1]/PRE
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.UUT_MASTER/U_ICON_INTERFACE/U_CMD6_WR/U_WR_FIFO/SUBCORE_FIFO.xsdbm_v3_0_0_wrfifo_inst/inst_fifo_gen/gconvfifo.rf/grf.rf/rstblk/ngwrdrst.grst.g7serrst.wr_rst_reg_reg[2]/PRE. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#5 Warning
+LUT drives async reset alert  
+LUT cell dbg_hub/inst/BSCANID.u_xsdbm_id/SWITCH_N_EXT_BSCAN.bscan_switch/m_bscan_sel[0]_INST_0, with 2 or more inputs, drives asynchronous preset/clear pin(s) dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.U_ICON/U_CMD/iTARGET_reg[10]/CLR,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.U_ICON/U_CMD/iTARGET_reg[11]/CLR,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.U_ICON/U_CMD/iTARGET_reg[12]/CLR,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.U_ICON/U_CMD/iTARGET_reg[13]/CLR,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.U_ICON/U_CMD/iTARGET_reg[14]/CLR,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.U_ICON/U_CMD/iTARGET_reg[15]/CLR,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.U_ICON/U_CMD/iTARGET_reg[6]/CLR,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.U_ICON/U_CMD/iTARGET_reg[7]/CLR,
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.U_ICON/U_CMD/iTARGET_reg[8]/CLR
+dbg_hub/inst/BSCANID.u_xsdbm_id/CORE_XSDB.U_ICON/U_CMD/iTARGET_reg[9]/CLR. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#6 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_0/inst/cmac_gtwiz_userclk_rx_inst/gen_gtwiz_userclk_rx_main.bufg_gt_usrclk_inst_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/cmac_0/inst/cmac_gtwiz_userclk_rx_inst/gen_gtwiz_userclk_rx_main.gtwiz_userclk_rx_active_meta_reg/CLR,
+traffic_replay_bd_i/cmac_0/inst/cmac_gtwiz_userclk_rx_inst/gen_gtwiz_userclk_rx_main.gtwiz_userclk_rx_active_sync_reg/CLR
+traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[36].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/BUFG_GT_SYNC/CLR. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#7 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_0/inst/cmac_gtwiz_userclk_tx_inst/gen_gtwiz_userclk_tx_main.bufg_gt_usrclk_inst_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/cmac_0/inst/cmac_gtwiz_userclk_tx_inst/gen_gtwiz_userclk_tx_main.gtwiz_userclk_tx_active_meta_reg/CLR,
+traffic_replay_bd_i/cmac_0/inst/cmac_gtwiz_userclk_tx_inst/gen_gtwiz_userclk_tx_main.gtwiz_userclk_tx_active_sync_reg/CLR
+traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[36].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/BUFG_GT_SYNC_1/CLR. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#8 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_0/inst/i_traffic_replay_bd_cmac_0_0_cmac_cdc_sync_core_drp_reset_rx_clk/usr_rx_reset_INST_0, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[0]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[1]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[2]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[3]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[4]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[5]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[0]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[1]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[2]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[3]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[4]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[5]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/wr_bin_reg[0]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/wr_bin_reg[1]/CLR,
+traffic_replay_bd_i/rx_cap_0/inst/core_i/rx_fifo_i/wr_bin_reg[2]/CLR
+ (the first 15 of 27 listed). The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#9 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_0/inst/i_traffic_replay_bd_cmac_0_0_cmac_cdc_sync_core_drp_reset_tx_clk/usr_tx_reset_INST_0, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/tx_axis_fifo_0/inst/out_count_reg[0]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_count_reg[1]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_count_reg[2]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_rd_ptr_reg[0]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_rd_ptr_reg[0]_rep/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_rd_ptr_reg[0]_rep__0/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_rd_ptr_reg[0]_rep__1/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_rd_ptr_reg[0]_rep__2/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_rd_ptr_reg[1]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_rd_ptr_reg[1]_rep/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_rd_ptr_reg[1]_rep__0/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_rd_ptr_reg[1]_rep__1/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_rd_ptr_reg[1]_rep__2/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_wr_ptr_reg[0]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_0/inst/out_wr_ptr_reg[1]/CLR
+ (the first 15 of 40 listed). The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#10 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_meta_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_meta_reg/PRE,
+traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_out_reg/PRE,
+traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_sync1_reg/PRE,
+traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_sync2_reg/PRE
+traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_sync3_reg/PRE. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#11 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_all_inst/rst_in_meta_reg/PRE,
+traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_all_inst/rst_in_out_reg/PRE,
+traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_all_inst/rst_in_sync1_reg/PRE,
+traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_all_inst/rst_in_sync2_reg/PRE
+traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_all_inst/rst_in_sync3_reg/PRE. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#12 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_1/inst/cmac_gtwiz_userclk_rx_inst/gen_gtwiz_userclk_rx_main.bufg_gt_usrclk_inst_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/cmac_1/inst/cmac_gtwiz_userclk_rx_inst/gen_gtwiz_userclk_rx_main.gtwiz_userclk_rx_active_meta_reg/CLR,
+traffic_replay_bd_i/cmac_1/inst/cmac_gtwiz_userclk_rx_inst/gen_gtwiz_userclk_rx_main.gtwiz_userclk_rx_active_sync_reg/CLR
+traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[35].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/BUFG_GT_SYNC/CLR. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#13 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_1/inst/cmac_gtwiz_userclk_tx_inst/gen_gtwiz_userclk_tx_main.bufg_gt_usrclk_inst_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/cmac_1/inst/cmac_gtwiz_userclk_tx_inst/gen_gtwiz_userclk_tx_main.gtwiz_userclk_tx_active_meta_reg/CLR,
+traffic_replay_bd_i/cmac_1/inst/cmac_gtwiz_userclk_tx_inst/gen_gtwiz_userclk_tx_main.gtwiz_userclk_tx_active_sync_reg/CLR
+traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[35].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/BUFG_GT_SYNC_1/CLR. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#14 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_1/inst/i_traffic_replay_bd_cmac_1_0_cmac_cdc_sync_core_drp_reset_rx_clk/usr_rx_reset_INST_0, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[0]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[1]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[2]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[3]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[4]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_1_reg[5]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[0]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[1]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[2]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[3]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[4]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/rd_gray_wclk_2_reg[5]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/wr_bin_reg[0]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/wr_bin_reg[1]/CLR,
+traffic_replay_bd_i/rx_cap_1/inst/core_i/rx_fifo_i/wr_bin_reg[2]/CLR
+ (the first 15 of 27 listed). The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#15 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_1/inst/i_traffic_replay_bd_cmac_1_0_cmac_cdc_sync_core_drp_reset_tx_clk/usr_tx_reset_INST_0, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/tx_axis_fifo_1/inst/out_count_reg[0]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_count_reg[1]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_count_reg[1]_replica/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_count_reg[2]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_count_reg[2]_replica/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_rd_ptr_reg[0]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_rd_ptr_reg[0]_rep/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_rd_ptr_reg[0]_rep__0/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_rd_ptr_reg[0]_rep__1/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_rd_ptr_reg[0]_rep__2/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_rd_ptr_reg[1]/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_rd_ptr_reg[1]_rep/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_rd_ptr_reg[1]_rep__0/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_rd_ptr_reg[1]_rep__1/CLR,
+traffic_replay_bd_i/tx_axis_fifo_1/inst/out_rd_ptr_reg[1]_rep__2/CLR
+ (the first 15 of 42 listed). The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#16 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_meta_i_1__0, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_meta_reg/PRE,
+traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_out_reg/PRE,
+traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_sync1_reg/PRE,
+traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_sync2_reg/PRE
+traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_rx_any_inst/rst_in_sync3_reg/PRE. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#17 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_all_inst/rst_in_meta_reg/PRE,
+traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_all_inst/rst_in_out_reg/PRE,
+traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_all_inst/rst_in_sync1_reg/PRE,
+traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_all_inst/rst_in_sync2_reg/PRE
+traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_reset_controller_internal.gen_single_instance.gtwiz_reset_inst/reset_synchronizer_gtwiz_reset_all_inst/rst_in_sync3_reg/PRE. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#18 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/plle_loop[0].gen_plle4.PLLE4_BASE_INST_OTHER_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/plle_loop[0].gen_plle4.PLLE4_BASE_INST_OTHER/RST,
+traffic_replay_bd_i/ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/plle_loop[1].gen_plle4.PLLE4_BASE_INST_OTHER/RST
+traffic_replay_bd_i/ddr4_0/inst/u_ddr4_mem_intfc/u_mig_ddr4_phy/inst/u_ddr4_phy_pll/plle_loop[2].gen_plle4.PLLE4_BASE_INST_OTHER/RST. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#19 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/intclk_rrst_n_r[4]_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/phy_rst_i/intclk_rrst_n_r_reg[0]/CLR,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/phy_rst_i/intclk_rrst_n_r_reg[1]/CLR,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/phy_rst_i/intclk_rrst_n_r_reg[2]/CLR,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/phy_rst_i/intclk_rrst_n_r_reg[3]/CLR
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/phy_rst_i/intclk_rrst_n_r_reg[4]/CLR. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#20 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[0].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_meta_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[0].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_meta_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[0].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_out_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[0].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_sync1_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[0].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_sync2_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[0].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_sync3_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[10].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_meta_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[10].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_out_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[10].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_sync1_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[10].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_sync2_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[10].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_sync3_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[11].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_meta_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[11].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_out_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[11].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_sync1_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[11].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_sync2_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_cpll_cal_gtye4.gen_cpll_cal_inst[11].gen_inst_cpll_cal.gtwizard_ultrascale_v1_7_9_gtye4_cpll_cal_inst/reset_synchronizer_resetin_tx_inst/rst_in_sync3_reg/PRE
+ (the first 15 of 80 listed). The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#21 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/phy_rst_i/bufg_gt_userclk_i_2, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_top_i/diablo_gt.diablo_gt_phy_wrapper/gt_wizard.gtwizard_top_i/traffic_replay_bd_xdma_0_0_pcie4_ip_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_xdma_0_0_pcie4_ip_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[32].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/BUFG_GT_SYNC_3/CLR. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#22 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_pcie_4_0_pipe_inst/pipe_tx_rate_ff[1]_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/as_mac_in_detect_ff1_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/as_mac_in_detect_ff_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/as_mac_in_detect_user_reg/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/pipe_tx_rate_ff_reg[0]/CLR,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/pipe_tx_rate_ff_reg[1]/CLR
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/speed_change_in_progress_reg/CLR. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#23 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_pcie_4_0_pipe_inst/user_lnk_up_cdc_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/user_lnk_up_cdc/arststages_ff_reg[0]/CLR
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/user_lnk_up_cdc/arststages_ff_reg[1]/CLR. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#24 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_pcie_4_0_pipe_inst/user_lnk_up_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/user_lnk_up_reg/CLR. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+LUTAR-1#25 Warning
+LUT drives async reset alert  
+LUT cell traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/traffic_replay_bd_xdma_0_0_pcie4_ip_pcie_4_0_pipe_inst/user_reset_cdc_i_1, with 2 or more inputs, drives asynchronous preset/clear pin(s) traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/user_reset_cdc/arststages_ff_reg[0]/PRE,
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/user_reset_cdc/arststages_ff_reg[1]/PRE
+traffic_replay_bd_i/xdma_0/inst/pcie4_ip_i/inst/user_reset_reg/PRE. The LUT may glitch and trigger an unexpected reset, even if it is a properly timed path.
+Related violations: <none>
+
+TIMING-9#1 Warning
+Unknown CDC Logic  
+One or more asynchronous Clock Domain Crossing has been detected between 2 clock domains through a set_false_path or a set_clock_groups or set_max_delay -datapath_only constraint but no double-registers logic synchronizer has been found on the side of the capture clock. It is recommended to run report_cdc for a complete and detailed CDC coverage. Please consider using XPM_CDC to avoid Critical severities
+Related violations: <none>
+
+TIMING-18#1 Warning
+Missing input or output delay  
+An output delay is missing on ddr4_sdram_c0_reset_n relative to clock(s) default_300mhz_clk0_clk_p
+Related violations: <none>
+
+TIMING-28#1 Warning
+Auto-derived clock referenced by a timing constraint  
+The auto-derived clock mmcm_clkout0 is referenced by name inside timing constraint (see constraint position 209 in the Timing Constraint window in Vivado IDE). It is recommended to reference an auto-derived clock by the pin name attached to the clock: get_clocks -of_objects [get_pins traffic_replay_bd_i/ddr4_0/inst/u_ddr4_infrastructure/gen_mmcme4.u_mmcme_adv_inst/CLKOUT0]
+Related violations: <none>
+
+TIMING-28#2 Warning
+Auto-derived clock referenced by a timing constraint  
+The auto-derived clock txoutclk_out[0] is referenced by name inside timing constraint (see constraint position 209 in the Timing Constraint window in Vivado IDE). It is recommended to reference an auto-derived clock by the pin name attached to the clock: get_clocks -of_objects [get_pins traffic_replay_bd_i/cmac_0/inst/traffic_replay_bd_cmac_0_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[36].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/gtye4_channel_gen.gen_gtye4_channel_inst[0].GTYE4_CHANNEL_PRIM_INST/TXOUTCLK]
+Related violations: <none>
+
+TIMING-28#3 Warning
+Auto-derived clock referenced by a timing constraint  
+The auto-derived clock txoutclk_out[0]_1 is referenced by name inside timing constraint (see constraint position 209 in the Timing Constraint window in Vivado IDE). It is recommended to reference an auto-derived clock by the pin name attached to the clock: get_clocks -of_objects [get_pins traffic_replay_bd_i/cmac_1/inst/traffic_replay_bd_cmac_1_0_gt_i/inst/gen_gtwizard_gtye4_top.traffic_replay_bd_cmac_1_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[35].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/gtye4_channel_gen.gen_gtye4_channel_inst[0].GTYE4_CHANNEL_PRIM_INST/TXOUTCLK]
+Related violations: <none>
+
+CLKC-56#1 Advisory
+MMCME4 with global clock driver has no LOC  
+The MMCME4_ADV cell traffic_replay_bd_i/cmac_init_clk_wiz/inst/mmcme4_adv_inst CLKIN1 or CLKIN2 pin is driven by global Clock buffer(s) traffic_replay_bd_i/ddr4_0/inst/u_ddr4_infrastructure/u_bufg_divClk and does not have a LOC constraint. It is recommended to LOC the MMCM and use the CLOCK_DEDICATED_ROUTE constraint on the net(s) driven by the global Clock buffer(s).
+Related violations: <none>
+
+

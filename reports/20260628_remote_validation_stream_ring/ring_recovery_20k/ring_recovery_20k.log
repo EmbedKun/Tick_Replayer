@@ -1,0 +1,45 @@
+{
+  "generator": "gen_synthetic_trace.py",
+  "descriptor_file": "/home/user/traffic_replay_validation/current/ring_recovery_20k/trace/desc.bin",
+  "data_file": "/home/user/traffic_replay_validation/current/ring_recovery_20k/trace/data.bin",
+  "descriptor_bytes": 64,
+  "data_beat_bytes": 64,
+  "tick_hz": 300000000,
+  "packet_count": 20000,
+  "gap_ticks": 480,
+  "frame_len": 1518,
+  "data_bytes_aligned": 30720000,
+  "total_frame_bytes": 30360000,
+  "max_frame_len": 1518
+}
+{
+  "generator": "trace_to_stream.py",
+  "source_manifest": "/home/user/traffic_replay_validation/current/ring_recovery_20k/trace/manifest.json",
+  "source_descriptor_file": "/home/user/traffic_replay_validation/current/ring_recovery_20k/trace/desc.bin",
+  "source_data_file": "/home/user/traffic_replay_validation/current/ring_recovery_20k/trace/data.bin",
+  "stream_file": "/home/user/traffic_replay_validation/current/ring_recovery_20k/trace/stream.bin",
+  "stream_bytes": 32000000,
+  "packet_count": 20000,
+  "total_frame_bytes": 30360000,
+  "data_beat_bytes": 64,
+  "input": {
+    "generator": "gen_synthetic_trace.py",
+    "descriptor_file": "/home/user/traffic_replay_validation/current/ring_recovery_20k/trace/desc.bin",
+    "data_file": "/home/user/traffic_replay_validation/current/ring_recovery_20k/trace/data.bin",
+    "descriptor_bytes": 64,
+    "data_beat_bytes": 64,
+    "tick_hz": 300000000,
+    "packet_count": 20000,
+    "gap_ticks": 480,
+    "frame_len": 1518,
+    "data_bytes_aligned": 30720000,
+    "total_frame_bytes": 30360000,
+    "max_frame_len": 1518
+  }
+}
+Traceback (most recent call last):
+  File "/home/user/traffic_replay_software/xdma_stream_ring.py", line 345, in <module>
+    main()
+  File "/home/user/traffic_replay_software/xdma_stream_ring.py", line 252, in main
+    raise RuntimeError(f"ring feed timeout after {feed_timeout:.3f}s")
+RuntimeError: ring feed timeout after 120.000s

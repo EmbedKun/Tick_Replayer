@@ -1,0 +1,14 @@
+{
+  "generator": "gen_synthetic_trace.py",
+  "descriptor_file": "/home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/desc.bin",
+  "data_file": "/home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/data.bin",
+  "descriptor_bytes": 64,
+  "data_beat_bytes": 64,
+  "tick_hz": 300000000,
+  "packet_count": 20000,
+  "gap_ticks": 480,
+  "frame_len": 1518,
+  "data_bytes_aligned": 30720000,
+  "total_frame_bytes": 30360000,
+  "max_frame_len": 1518
+}

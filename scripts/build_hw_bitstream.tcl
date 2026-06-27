@@ -12,6 +12,14 @@ if {[info exists ::env(TRAFFIC_REPLAY_VIVADO_JOBS)] && $::env(TRAFFIC_REPLAY_VIV
   set vivado_jobs $::env(TRAFFIC_REPLAY_VIVADO_JOBS)
 }
 
+set impl_strategy "Performance_ExplorePostRoutePhysOpt"
+if {[info exists ::env(TRAFFIC_REPLAY_IMPL_STRATEGY)] && $::env(TRAFFIC_REPLAY_IMPL_STRATEGY) ne ""} {
+  set impl_strategy $::env(TRAFFIC_REPLAY_IMPL_STRATEGY)
+}
+if {[catch {set_property strategy $impl_strategy [get_runs impl_1]} strategy_err]} {
+  puts "WARNING: failed to set implementation strategy $impl_strategy: $strategy_err"
+}
+
 launch_runs synth_1 -jobs $vivado_jobs
 wait_on_run synth_1
 set synth_status [get_property STATUS [get_runs synth_1]]

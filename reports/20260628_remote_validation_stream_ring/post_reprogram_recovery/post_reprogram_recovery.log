@@ -1,0 +1,116 @@
+--- finite 1518 x 2000 ---
+
+case frame_len=1518 packets=2000 stream_bytes=3200000
+result done=True tx_pkts=2000 tx_bytes=3036000 hw_gbps=96.820 load_gbps=7.200 late=2000 underrun=19932
+mode              : stream
+running           : no
+done              : yes
+late              : yes
+underrun          : yes
+cmac_link_up      : yes
+tx_gate_open      : yes
+force_link_up     : no
+force_tx_ready    : no
+fifo_level        : 0
+tx_packets        : 2000
+tx_bytes          : 3036000
+late_packets      : 2000
+underrun_packets  : 19932
+debug_status      : 0x00100215
+debug_axi         : 0x00002782
+debug_araddr      : 0x000000002030d400
+debug_rdata_low   : 0xb9b8b7b6
+debug_ticks       : 75257
+stream_ring_size  : 0
+stream_write_ptr  : 0
+stream_read_ptr   : 3200000
+stream_level      : 0
+stream_eof        : no
+stream_wait_empty : yes
+stream_overrun    : no
+stream_status     : 0x00000225
+--- ring 1518 x 20000 ---
+{
+  "generator": "gen_synthetic_trace.py",
+  "descriptor_file": "/home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/desc.bin",
+  "data_file": "/home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/data.bin",
+  "descriptor_bytes": 64,
+  "data_beat_bytes": 64,
+  "tick_hz": 300000000,
+  "packet_count": 20000,
+  "gap_ticks": 480,
+  "frame_len": 1518,
+  "data_bytes_aligned": 30720000,
+  "total_frame_bytes": 30360000,
+  "max_frame_len": 1518
+}
+{
+  "generator": "trace_to_stream.py",
+  "source_manifest": "/home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/manifest.json",
+  "source_descriptor_file": "/home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/desc.bin",
+  "source_data_file": "/home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/data.bin",
+  "stream_file": "/home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/stream.bin",
+  "stream_bytes": 32000000,
+  "packet_count": 20000,
+  "total_frame_bytes": 30360000,
+  "data_beat_bytes": 64,
+  "input": {
+    "generator": "gen_synthetic_trace.py",
+    "descriptor_file": "/home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/desc.bin",
+    "data_file": "/home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/data.bin",
+    "descriptor_bytes": 64,
+    "data_beat_bytes": 64,
+    "tick_hz": 300000000,
+    "packet_count": 20000,
+    "gap_ticks": 480,
+    "frame_len": 1518,
+    "data_bytes_aligned": 30720000,
+    "total_frame_bytes": 30360000,
+    "max_frame_len": 1518
+  }
+}
+stream_file       : /home/user/traffic_replay_validation/current/post_reprogram_recovery/ring_trace/stream.bin
+ring_base         : 0x20000000
+ring_size         : 8388608
+committed_bytes   : 32000000
+committed_packets : 20000
+completed         : True
+tx_packets        : 20000
+tx_bytes          : 30360000
+late_packets      : 17222
+underrun_packets  : 48032
+stream_status     : 0x000003a5
+final_level       : 0
+max_ring_level    : 4193600
+min_ring_free     : 3146432
+load_gbps         : 0.443
+hw_gbps           : 0.487
+load_seconds      : 0.577384
+wall_seconds      : 0.000002
+mode              : stream
+running           : no
+done              : yes
+late              : yes
+underrun          : yes
+cmac_link_up      : yes
+tx_gate_open      : yes
+force_link_up     : no
+force_tx_ready    : no
+fifo_level        : 0
+tx_packets        : 20000
+tx_bytes          : 30360000
+late_packets      : 17222
+underrun_packets  : 48032
+debug_status      : 0x00100215
+debug_axi         : 0x00000002
+debug_araddr      : 0x0000000020684800
+debug_rdata_low   : 0x9b9a9998
+debug_ticks       : 149629639
+stream_ring_size  : 8388608
+stream_write_ptr  : 32000000
+stream_read_ptr   : 32000000
+stream_level      : 0
+stream_eof        : yes
+stream_wait_empty : yes
+stream_overrun    : yes
+stream_status     : 0x000003a5

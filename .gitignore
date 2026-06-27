@@ -2,6 +2,7 @@
 .Xil/
 *.jou
 *.log
+!bitstreams/**/*.log
 *.str
 *.wdb
 *.pb
@@ -17,7 +18,9 @@ usage_statistics_webtalk.*
 
 # Local build outputs
 build/
-reports/
+reports/*
+!reports/20260628_remote_validation_stream_ring/
+!reports/20260628_remote_validation_stream_ring/**
 artifacts/
 trace_out/
 

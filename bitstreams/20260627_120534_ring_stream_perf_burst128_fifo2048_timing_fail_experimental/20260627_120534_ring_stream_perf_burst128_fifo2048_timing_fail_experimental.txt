@@ -1,0 +1,55 @@
+﻿Traffic Replay Bitstream Archive
+================================
+
+Name: ring_stream_perf_burst128_fifo2048_timing_fail_experimental
+Archive timestamp: 20260627_120534
+Repository: C:\Users\mkxue\Desktop\traffic_replay
+Git branch: main
+Git commit: 9733669158ac8a800e59edec249c75515227cd72
+Build root: D:\tr_build_ring_perf
+
+Bitstream file: traffic_replay_bd_wrapper.bit
+Bitstream size bytes: 38401031
+Bitstream SHA256: C6D27C464BB6925D44F4F74A4EFE65FD14DB639F5164ED923EE14C26C6006697
+Original bitstream path: D:\tr_build_ring_perf\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
+
+LTX file: traffic_replay_bd_wrapper.ltx
+LTX size bytes: 1061
+LTX SHA256: 59DAE6BD977EC12820E482CB1940D945B9A9AB01C07E1C08C76CC186282B814C
+
+Design summary
+--------------
+- Target board: Xilinx Alveo U200.
+- PCIe path: XDMA memory-mapped H2C/C2H plus AXI-Lite BAR control.
+- Replay path: DDR-backed preload/loop replay and DDR-backed stream-buffer replay.
+- Ethernet path: 100G CMAC/QSFP replay and capture datapaths.
+
+Verification notes
+------------------
+Experimental throughput build for DDR ring STREAM mode.
+
+RTL/software changes in this build:
+- DDR ring STREAM mode enabled in ddr_stream_reader / trace_replay_core / AXI-Lite registers.
+- Stream reader MAX_BURST_BEATS increased to 128.
+- Per-port STREAM_FIFO_DEPTH increased to 2048 beats (128 KiB at 512-bit AXI stream width).
+- Host ring loader writes configurable WATERMARK, default 4096 bytes.
+- Added synthetic PCAP generator, DDR readback checker, and hardware validation suite.
+
+Verification before bitstream:
+- XSim passed preload, finite stream, DDR stream-buffer, and DDR ring-stream replay tests.
+- Python host tools passed py_compile.
+- Vivado route_design completed with 0 routing errors and DRC before bitgen completed with 0 errors.
+
+Important timing note:
+- Post-route timing does NOT meet constraints.
+- Routed timing summary: WNS=-2.474 ns, TNS=-43036.031 ns, failing setup endpoints=77632.
+- Treat this archive as an experimental high-throughput bitstream for hardware bring-up and bottleneck exploration, not as a stable long-run release.
+
+Build details:
+- Build root: D:\tr_build_ring_perf
+- Vivado 2020.2, jobs=1, ILA disabled for this build.
+
+Operational reminder
+--------------------
+Keep this directory together with the matching repository commit.  The SHA256
+line above is the canonical integrity check before programming the FPGA.

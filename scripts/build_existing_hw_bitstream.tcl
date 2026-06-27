@@ -30,6 +30,13 @@ if {[info exists ::env(TRAFFIC_REPLAY_VIVADO_JOBS)] && $::env(TRAFFIC_REPLAY_VIV
 }
 
 open_project $project_file
+set impl_strategy "Performance_ExplorePostRoutePhysOpt"
+if {[info exists ::env(TRAFFIC_REPLAY_IMPL_STRATEGY)] && $::env(TRAFFIC_REPLAY_IMPL_STRATEGY) ne ""} {
+  set impl_strategy $::env(TRAFFIC_REPLAY_IMPL_STRATEGY)
+}
+if {[catch {set_property strategy $impl_strategy [get_runs impl_1]} strategy_err]} {
+  puts "WARNING: failed to set implementation strategy $impl_strategy: $strategy_err"
+}
 set wrapper_file [file join $build_dir $project_name.gen sources_1 bd $bd_name hdl ${bd_name}_wrapper.v]
 if {[file exists $wrapper_file] && [llength [get_files -quiet $wrapper_file]] == 0} {
   add_files -norecurse $wrapper_file

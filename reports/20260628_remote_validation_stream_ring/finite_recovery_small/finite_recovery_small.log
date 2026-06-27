@@ -1,0 +1,60 @@
+--- status before ---
+mode              : stream
+running           : no
+done              : no
+late              : no
+underrun          : no
+cmac_link_up      : yes
+tx_gate_open      : yes
+force_link_up     : no
+force_tx_ready    : no
+fifo_level        : 0
+tx_packets        : 0
+tx_bytes          : 0
+late_packets      : 0
+underrun_packets  : 0
+debug_status      : 0x00100010
+debug_axi         : 0x00000006
+debug_araddr      : 0x0000000000000000
+debug_rdata_low   : 0x1d1c1b1a
+debug_ticks       : 0
+stream_ring_size  : 8388608
+stream_write_ptr  : 0
+stream_read_ptr   : 0
+stream_level      : 0
+stream_eof        : no
+stream_wait_empty : yes
+stream_overrun    : no
+stream_status     : 0x00000280
+--- finite small ---
+
+case frame_len=1518 packets=2000 stream_bytes=3200000
+result done=False tx_pkts=0 tx_bytes=0 hw_gbps=0.000 load_gbps=7.381 late=0 underrun=0
+--- status after ---
+mode              : stream
+running           : no
+done              : no
+late              : no
+underrun          : no
+cmac_link_up      : yes
+tx_gate_open      : yes
+force_link_up     : no
+force_tx_ready    : no
+fifo_level        : 0
+tx_packets        : 0
+tx_bytes          : 0
+late_packets      : 0
+underrun_packets  : 0
+debug_status      : 0x00100010
+debug_axi         : 0x00000006
+debug_araddr      : 0x0000000000000000
+debug_rdata_low   : 0x020100ff
+debug_ticks       : 0
+stream_ring_size  : 0
+stream_write_ptr  : 0
+stream_read_ptr   : 0
+stream_level      : 0
+stream_eof        : no
+stream_wait_empty : yes
+stream_overrun    : no
+stream_status     : 0x00000200

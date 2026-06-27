@@ -92,6 +92,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--watermark", type=int_auto, default=4096)
     parser.add_argument("--tick-hz", type=int_auto, default=DEFAULT_TICK_HZ)
     parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument(
+        "--feed-timeout",
+        type=float,
+        default=0.0,
+        help="maximum seconds spent filling the ring before EOF; 0 uses --timeout",
+    )
     parser.add_argument("--force-link-up", action="store_true")
     parser.add_argument("--force-tx-ready", action="store_true")
     parser.add_argument("--no-wait", action="store_true")
@@ -160,7 +166,10 @@ def pwrite_ring(fd: int, data: bytes, ring_base: int, ring_size: int, write_coun
 
 
 def configure(user_fd: int, base: int, args: argparse.Namespace) -> None:
+    write32(user_fd, base + REG_CONTROL, 0x2)
+    time.sleep(0.001)
     write32(user_fd, base + REG_CONTROL, 0x4)
+    time.sleep(0.001)
     write32(user_fd, base + REG_MODE, MODE_STREAM)
     write64(user_fd, base + REG_DESC_BASE_LO, base + REG_DESC_BASE_HI, args.ring_base)
     write64(user_fd, base + REG_DATA_BASE_LO, base + REG_DATA_BASE_HI, 0)
@@ -183,6 +192,13 @@ def configure(user_fd: int, base: int, args: argparse.Namespace) -> None:
 
 def start_replay(user_fd: int, base: int) -> None:
     write32(user_fd, base + REG_CONTROL, 0x1)
+
+
+def stop_and_clear(user_fd: int, base: int) -> None:
+    write32(user_fd, base + REG_CONTROL, 0x2)
+    time.sleep(0.001)
+    write32(user_fd, base + REG_CONTROL, 0x4)
+    time.sleep(0.001)
 
 
 def wait_done(user_fd: int, base: int, timeout: float) -> tuple[bool, float]:
@@ -225,11 +241,16 @@ def main() -> None:
     max_level = 0
     min_free = args.ring_size
     load_start = time.perf_counter()
+    completed = False
+    feed_timeout = args.feed_timeout if args.feed_timeout > 0 else args.timeout
 
     try:
         configure(user_fd, reg_base, args)
         with stream_path.open("rb") as fh:
             while True:
+                if feed_timeout > 0 and time.perf_counter() - load_start > feed_timeout:
+                    raise RuntimeError(f"ring feed timeout after {feed_timeout:.3f}s")
+
                 if pending is None and not eof:
                     pending = read_record(fh)
                     if pending is None:
@@ -310,6 +331,11 @@ def main() -> None:
         print(f"hw_gbps           : {hw_gbps:.3f}")
         print(f"load_seconds      : {load_seconds:.6f}")
         print(f"wall_seconds      : {wall_seconds:.6f}")
+        if not completed and not args.no_wait:
+            stop_and_clear(user_fd, reg_base)
+    except BaseException:
+        stop_and_clear(user_fd, reg_base)
+        raise
     finally:
         os.close(h2c_fd)
         os.close(user_fd)

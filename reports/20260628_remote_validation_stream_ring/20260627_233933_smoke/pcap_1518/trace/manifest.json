@@ -1,0 +1,19 @@
+{
+  "pcap": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/udp_1518.pcap",
+  "descriptor_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace/desc.bin",
+  "data_file": "/home/user/traffic_replay_validation/current/20260627_233933_smoke/pcap_1518/trace/data.bin",
+  "descriptor_bytes": 64,
+  "data_beat_bytes": 64,
+  "tick_hz": 300000000,
+  "packet_count": 4096,
+  "data_bytes_aligned": 6291456,
+  "total_frame_bytes": 6217728,
+  "max_frame_len": 1518,
+  "first_timestamp_ns": 0,
+  "pcap_info": {
+    "version_major": 2,
+    "version_minor": 4,
+    "snaplen": 65535,
+    "network": 1
+  }
+}

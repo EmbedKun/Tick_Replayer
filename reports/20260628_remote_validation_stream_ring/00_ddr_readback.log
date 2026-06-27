@@ -1,0 +1,92 @@
+2026年 06月 27日 星期六 23:38:49 CST
+--- device nodes ---
+crw-rw-rw- 1 root root 505, 36 6月  27 23:36 /dev/xdma0_c2h_0
+crw-rw-rw- 1 root root 505,  1 6月  27 23:36 /dev/xdma0_control
+crw-rw-rw- 1 root root 505, 10 6月  27 23:36 /dev/xdma0_events_0
+crw-rw-rw- 1 root root 505, 11 6月  27 23:36 /dev/xdma0_events_1
+crw-rw-rw- 1 root root 505, 20 6月  27 23:36 /dev/xdma0_events_10
+crw-rw-rw- 1 root root 505, 21 6月  27 23:36 /dev/xdma0_events_11
+crw-rw-rw- 1 root root 505, 22 6月  27 23:36 /dev/xdma0_events_12
+crw-rw-rw- 1 root root 505, 23 6月  27 23:36 /dev/xdma0_events_13
+crw-rw-rw- 1 root root 505, 24 6月  27 23:36 /dev/xdma0_events_14
+crw-rw-rw- 1 root root 505, 25 6月  27 23:36 /dev/xdma0_events_15
+crw-rw-rw- 1 root root 505, 12 6月  27 23:36 /dev/xdma0_events_2
+crw-rw-rw- 1 root root 505, 13 6月  27 23:36 /dev/xdma0_events_3
+crw-rw-rw- 1 root root 505, 14 6月  27 23:36 /dev/xdma0_events_4
+crw-rw-rw- 1 root root 505, 15 6月  27 23:36 /dev/xdma0_events_5
+crw-rw-rw- 1 root root 505, 16 6月  27 23:36 /dev/xdma0_events_6
+crw-rw-rw- 1 root root 505, 17 6月  27 23:36 /dev/xdma0_events_7
+crw-rw-rw- 1 root root 505, 18 6月  27 23:36 /dev/xdma0_events_8
+crw-rw-rw- 1 root root 505, 19 6月  27 23:36 /dev/xdma0_events_9
+crw-rw-rw- 1 root root 505, 32 6月  27 23:36 /dev/xdma0_h2c_0
+crw-rw-rw- 1 root root 505,  0 6月  27 23:36 /dev/xdma0_user
+crw-rw-rw- 1 root root 505,  2 6月  27 23:36 /dev/xdma0_xvc
+--- lspci ---
+01:00.0 Memory controller [0580]: Xilinx Corporation Device [10ee:903f]
+--- initial status port0 ---
+mode              : preload
+running           : no
+done              : no
+late              : no
+underrun          : no
+cmac_link_up      : yes
+tx_gate_open      : yes
+force_link_up     : no
+force_tx_ready    : no
+fifo_level        : 0
+tx_packets        : 0
+tx_bytes          : 0
+late_packets      : 0
+underrun_packets  : 0
+debug_status      : 0x00100020
+debug_axi         : 0x00000002
+debug_araddr      : 0x0000000000000000
+debug_rdata_low   : 0x00000000
+debug_ticks       : 0
+stream_ring_size  : 0
+stream_write_ptr  : 0
+stream_read_ptr   : 0
+stream_level      : 0
+stream_eof        : no
+stream_wait_empty : yes
+stream_overrun    : no
+stream_status     : 0x00000200
+--- initial status port1 ---
+mode              : preload
+running           : no
+done              : no
+late              : no
+underrun          : no
+cmac_link_up      : yes
+tx_gate_open      : yes
+force_link_up     : no
+force_tx_ready    : no
+fifo_level        : 0
+tx_packets        : 0
+tx_bytes          : 0
+late_packets      : 0
+underrun_packets  : 0
+debug_status      : 0x00100020
+debug_axi         : 0x00000002
+debug_araddr      : 0x0000000000000000
+debug_rdata_low   : 0x00000000
+debug_ticks       : 0
+stream_ring_size  : 0
+stream_write_ptr  : 0
+stream_read_ptr   : 0
+stream_level      : 0
+stream_eof        : no
+stream_wait_empty : yes
+stream_overrun    : no
+stream_status     : 0x00000200
+--- DDR readback ---
+PASS addr=0x00000000 size=4096 repeat=0 h2c=0.579Gbps c2h=0.852Gbps
+PASS addr=0x00100000 size=65536 repeat=0 h2c=7.820Gbps c2h=3.670Gbps
+PASS addr=0x10000000 size=1048576 repeat=0 h2c=14.258Gbps c2h=5.590Gbps
+PASS addr=0x00000000 size=4096 repeat=1 h2c=0.773Gbps c2h=0.358Gbps
+PASS addr=0x00100000 size=65536 repeat=1 h2c=8.082Gbps c2h=16.077Gbps
+PASS addr=0x10000000 size=1048576 repeat=1 h2c=14.299Gbps c2h=7.003Gbps
+PASS addr=0x00000000 size=4096 repeat=2 h2c=0.795Gbps c2h=0.107Gbps
+PASS addr=0x00100000 size=65536 repeat=2 h2c=8.045Gbps c2h=6.630Gbps
+PASS addr=0x10000000 size=1048576 repeat=2 h2c=13.933Gbps c2h=7.032Gbps
+SUMMARY cases=3 repeat=3 checked_bytes=3354624 aggregate_rw=0.086Gbps

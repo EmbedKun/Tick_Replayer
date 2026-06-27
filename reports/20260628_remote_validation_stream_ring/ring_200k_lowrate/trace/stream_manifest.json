@@ -1,0 +1,25 @@
+{
+  "generator": "trace_to_stream.py",
+  "source_manifest": "/home/user/traffic_replay_validation/current/ring_200k_lowrate/trace/manifest.json",
+  "source_descriptor_file": "/home/user/traffic_replay_validation/current/ring_200k_lowrate/trace/desc.bin",
+  "source_data_file": "/home/user/traffic_replay_validation/current/ring_200k_lowrate/trace/data.bin",
+  "stream_file": "/home/user/traffic_replay_validation/current/ring_200k_lowrate/trace/stream.bin",
+  "stream_bytes": 320000000,
+  "packet_count": 200000,
+  "total_frame_bytes": 303600000,
+  "data_beat_bytes": 64,
+  "input": {
+    "generator": "gen_synthetic_trace.py",
+    "descriptor_file": "/home/user/traffic_replay_validation/current/ring_200k_lowrate/trace/desc.bin",
+    "data_file": "/home/user/traffic_replay_validation/current/ring_200k_lowrate/trace/data.bin",
+    "descriptor_bytes": 64,
+    "data_beat_bytes": 64,
+    "tick_hz": 300000000,
+    "packet_count": 200000,
+    "gap_ticks": 15000,
+    "frame_len": 1518,
+    "data_bytes_aligned": 307200000,
+    "total_frame_bytes": 303600000,
+    "max_frame_len": 1518
+  }
+}

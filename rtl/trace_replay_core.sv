@@ -167,6 +167,9 @@ module trace_replay_core #(
   logic        host_axis_tready;
   logic        host_axis_tlast;
 
+  logic        sel_stream_mode_comb;
+  logic        sel_ddr_mode_comb;
+  logic        stream_ddr_mode_comb;
   logic        sel_stream_mode;
   logic        sel_ddr_mode;
   logic        src_meta_valid;
@@ -198,9 +201,9 @@ module trace_replay_core #(
   logic [31:0] debug_status;
   logic [31:0] debug_axi;
 
-  assign sel_stream_mode = (cfg_mode == MODE_STREAM);
-  assign sel_ddr_mode    = (cfg_mode == MODE_PRELOAD) || (cfg_mode == MODE_LOOP);
-  assign stream_ddr_mode = sel_stream_mode && ((cfg_trace_bytes != 64'd0) || (cfg_stream_ring_size != 64'd0));
+  assign sel_stream_mode_comb = (cfg_mode == MODE_STREAM);
+  assign sel_ddr_mode_comb    = (cfg_mode == MODE_PRELOAD) || (cfg_mode == MODE_LOOP);
+  assign stream_ddr_mode_comb = sel_stream_mode_comb && ((cfg_trace_bytes != 64'd0) || (cfg_stream_ring_size != 64'd0));
   assign core_clear      = clear_pulse || stop_pulse;
   assign effective_link_up = link_up || cfg_force_link_up;
   assign core_enable     = replay_running && !pause && effective_link_up;
@@ -539,7 +542,14 @@ module trace_replay_core #(
       late_pkts      <= '0;
       underrun_pkts  <= '0;
       stream_prefetch_active <= 1'b0;
+      sel_stream_mode <= 1'b0;
+      sel_ddr_mode <= 1'b0;
+      stream_ddr_mode <= 1'b0;
     end else begin
+      sel_stream_mode <= sel_stream_mode_comb;
+      sel_ddr_mode <= sel_ddr_mode_comb;
+      stream_ddr_mode <= stream_ddr_mode_comb;
+
       if (clear_pulse) begin
         late_pkts     <= '0;
         underrun_pkts <= '0;
@@ -555,7 +565,7 @@ module trace_replay_core #(
 
       if (start_pulse) begin
         replay_running <= 1'b1;
-      end else if (stop_pulse || replay_done) begin
+      end else if (clear_pulse || stop_pulse || replay_done) begin
         replay_running <= 1'b0;
       end
 

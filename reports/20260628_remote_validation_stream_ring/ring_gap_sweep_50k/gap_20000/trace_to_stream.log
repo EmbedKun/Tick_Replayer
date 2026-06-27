@@ -1,0 +1,25 @@
+{
+  "generator": "trace_to_stream.py",
+  "source_manifest": "/home/user/traffic_replay_validation/current/ring_gap_sweep_50k/gap_20000/trace/manifest.json",
+  "source_descriptor_file": "/home/user/traffic_replay_validation/current/ring_gap_sweep_50k/gap_20000/trace/desc.bin",
+  "source_data_file": "/home/user/traffic_replay_validation/current/ring_gap_sweep_50k/gap_20000/trace/data.bin",
+  "stream_file": "/home/user/traffic_replay_validation/current/ring_gap_sweep_50k/gap_20000/trace/stream.bin",
+  "stream_bytes": 80000000,
+  "packet_count": 50000,
+  "total_frame_bytes": 75900000,
+  "data_beat_bytes": 64,
+  "input": {
+    "generator": "gen_synthetic_trace.py",
+    "descriptor_file": "/home/user/traffic_replay_validation/current/ring_gap_sweep_50k/gap_20000/trace/desc.bin",
+    "data_file": "/home/user/traffic_replay_validation/current/ring_gap_sweep_50k/gap_20000/trace/data.bin",
+    "descriptor_bytes": 64,
+    "data_beat_bytes": 64,
+    "tick_hz": 300000000,
+    "packet_count": 50000,
+    "gap_ticks": 20000,
+    "frame_len": 1518,
+    "data_bytes_aligned": 76800000,
+    "total_frame_bytes": 75900000,
+    "max_frame_len": 1518
+  }
+}
