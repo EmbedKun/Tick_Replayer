@@ -24,6 +24,11 @@ REG_START_LO = 0x0040
 REG_START_HI = 0x0044
 REG_RATE = 0x0048
 REG_DEBUG_CTRL = 0x0054
+REG_STREAM_WR_LO = 0x00A0
+REG_STREAM_WR_HI = 0x00A4
+REG_STREAM_RING_LO = 0x00B0
+REG_STREAM_RING_HI = 0x00B4
+REG_STREAM_CTRL = 0x00B8
 
 TX_PORT_BASE = {0: 0x00000, 1: 0x10000}
 MODE_STREAM = 1
@@ -127,6 +132,9 @@ def main() -> None:
         write64(user_fd, reg_base + REG_PKT_LO, reg_base + REG_PKT_HI, pkt_count)
         write64(user_fd, reg_base + REG_START_LO, reg_base + REG_START_HI, args.start_time)
         write32(user_fd, reg_base + REG_RATE, args.rate_q16_16)
+        write64(user_fd, reg_base + REG_STREAM_WR_LO, reg_base + REG_STREAM_WR_HI, 0)
+        write64(user_fd, reg_base + REG_STREAM_RING_LO, reg_base + REG_STREAM_RING_HI, 0)
+        write32(user_fd, reg_base + REG_STREAM_CTRL, 0)
         if args.force_link_up or args.clear_force_link_up or args.force_tx_ready or args.clear_force_tx_ready:
             debug = read32(user_fd, reg_base + REG_DEBUG_CTRL)
             if args.force_link_up:

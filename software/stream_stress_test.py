@@ -29,6 +29,11 @@ REG_START_LO = 0x0040
 REG_START_HI = 0x0044
 REG_RATE = 0x0048
 REG_DEBUG_CTRL = 0x0054
+REG_STREAM_WR_LO = 0x00A0
+REG_STREAM_WR_HI = 0x00A4
+REG_STREAM_RING_LO = 0x00B0
+REG_STREAM_RING_HI = 0x00B4
+REG_STREAM_CTRL = 0x00B8
 REG_TX_PKTS_LO = 0x0060
 REG_TX_PKTS_HI = 0x0064
 REG_TX_BYTES_LO = 0x0068
@@ -140,6 +145,9 @@ def configure_and_start(fd: int, base: int, args: argparse.Namespace, stream_byt
     write64(fd, base + REG_PKT_LO, base + REG_PKT_HI, packet_count)
     write64(fd, base + REG_START_LO, base + REG_START_HI, 0)
     write32(fd, base + REG_RATE, args.rate_q16_16)
+    write64(fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, 0)
+    write64(fd, base + REG_STREAM_RING_LO, base + REG_STREAM_RING_HI, 0)
+    write32(fd, base + REG_STREAM_CTRL, 0)
 
     debug = read32(fd, base + REG_DEBUG_CTRL)
     if args.force_link_up:

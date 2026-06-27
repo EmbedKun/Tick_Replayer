@@ -44,6 +44,16 @@ REG_DEBUG_AR_HI = 0x008C
 REG_DEBUG_RDATA = 0x0090
 REG_DEBUG_TICK_LO = 0x0094
 REG_DEBUG_TICK_HI = 0x0098
+REG_STREAM_WR_LO = 0x00A0
+REG_STREAM_WR_HI = 0x00A4
+REG_STREAM_RD_LO = 0x00A8
+REG_STREAM_RD_HI = 0x00AC
+REG_STREAM_RING_LO = 0x00B0
+REG_STREAM_RING_HI = 0x00B4
+REG_STREAM_CTRL = 0x00B8
+REG_STREAM_STATUS = 0x00BC
+REG_STREAM_LEVEL_LO = 0x00C0
+REG_STREAM_LEVEL_HI = 0x00C4
 
 TX_PORT_BASE = {0: 0x00000, 1: 0x10000}
 RX_PORT_BASE = {0: 0x20000, 1: 0x30000}
@@ -107,6 +117,16 @@ REG_NAMES = [
     ("DEBUG_RDATA", REG_DEBUG_RDATA),
     ("DEBUG_TICK_LO", REG_DEBUG_TICK_LO),
     ("DEBUG_TICK_HI", REG_DEBUG_TICK_HI),
+    ("STREAM_WR_LO", REG_STREAM_WR_LO),
+    ("STREAM_WR_HI", REG_STREAM_WR_HI),
+    ("STREAM_RD_LO", REG_STREAM_RD_LO),
+    ("STREAM_RD_HI", REG_STREAM_RD_HI),
+    ("STREAM_RING_LO", REG_STREAM_RING_LO),
+    ("STREAM_RING_HI", REG_STREAM_RING_HI),
+    ("STREAM_CTRL", REG_STREAM_CTRL),
+    ("STREAM_STATUS", REG_STREAM_STATUS),
+    ("STREAM_LEVEL_LO", REG_STREAM_LEVEL_LO),
+    ("STREAM_LEVEL_HI", REG_STREAM_LEVEL_HI),
 ]
 
 RX_REG_NAMES = [
@@ -178,6 +198,19 @@ def print_status(fd: int, base: int) -> None:
     print(f"debug_araddr      : 0x{read64(fd, base + REG_DEBUG_AR_LO, base + REG_DEBUG_AR_HI):016x}")
     print(f"debug_rdata_low   : 0x{read32(fd, base + REG_DEBUG_RDATA):08x}")
     print(f"debug_ticks       : {read64(fd, base + REG_DEBUG_TICK_LO, base + REG_DEBUG_TICK_HI)}")
+    stream_wr = read64(fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI)
+    stream_rd = read64(fd, base + REG_STREAM_RD_LO, base + REG_STREAM_RD_HI)
+    stream_ring = read64(fd, base + REG_STREAM_RING_LO, base + REG_STREAM_RING_HI)
+    stream_level = read64(fd, base + REG_STREAM_LEVEL_LO, base + REG_STREAM_LEVEL_HI)
+    stream_status = read32(fd, base + REG_STREAM_STATUS)
+    print(f"stream_ring_size  : {stream_ring}")
+    print(f"stream_write_ptr  : {stream_wr}")
+    print(f"stream_read_ptr   : {stream_rd}")
+    print(f"stream_level      : {stream_level}")
+    print(f"stream_eof        : {bool_word(bool(read32(fd, base + REG_STREAM_CTRL) & 0x1))}")
+    print(f"stream_wait_empty : {bool_word(bool(stream_status & (1 << 9)))}")
+    print(f"stream_overrun    : {bool_word(bool(stream_status & (1 << 8)))}")
+    print(f"stream_status     : 0x{stream_status:08x}")
 
 
 def print_rx_status(fd: int, base: int) -> None:

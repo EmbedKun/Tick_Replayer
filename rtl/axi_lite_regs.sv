@@ -40,6 +40,9 @@ module axi_lite_regs #(
   output logic [63:0]       cfg_start_time,
   output logic [31:0]       cfg_rate_q16_16,
   output logic [31:0]       cfg_watermark,
+  output logic [63:0]       cfg_stream_ring_size,
+  output logic [63:0]       cfg_stream_write_count,
+  output logic              cfg_stream_eof,
   output logic              cfg_force_link_up,
   output logic              cfg_force_tx_ready,
 
@@ -58,7 +61,10 @@ module axi_lite_regs #(
   input  logic [31:0]       stat_debug_axi,
   input  logic [63:0]       stat_debug_araddr,
   input  logic [31:0]       stat_debug_rdata_low,
-  input  logic [63:0]       stat_debug_ticks
+  input  logic [63:0]       stat_debug_ticks,
+  input  logic [63:0]       stat_stream_read_count,
+  input  logic [63:0]       stat_stream_level,
+  input  logic [31:0]       stat_stream_status
 );
   localparam logic [ADDR_W-1:0] REG_CONTROL      = 16'h0000;
   localparam logic [ADDR_W-1:0] REG_MODE         = 16'h0004;
@@ -96,6 +102,16 @@ module axi_lite_regs #(
   localparam logic [ADDR_W-1:0] REG_DEBUG_RDATA  = 16'h0090;
   localparam logic [ADDR_W-1:0] REG_DEBUG_TICK_LO= 16'h0094;
   localparam logic [ADDR_W-1:0] REG_DEBUG_TICK_HI= 16'h0098;
+  localparam logic [ADDR_W-1:0] REG_STREAM_WR_LO = 16'h00a0;
+  localparam logic [ADDR_W-1:0] REG_STREAM_WR_HI = 16'h00a4;
+  localparam logic [ADDR_W-1:0] REG_STREAM_RD_LO = 16'h00a8;
+  localparam logic [ADDR_W-1:0] REG_STREAM_RD_HI = 16'h00ac;
+  localparam logic [ADDR_W-1:0] REG_STREAM_RING_LO = 16'h00b0;
+  localparam logic [ADDR_W-1:0] REG_STREAM_RING_HI = 16'h00b4;
+  localparam logic [ADDR_W-1:0] REG_STREAM_CTRL  = 16'h00b8;
+  localparam logic [ADDR_W-1:0] REG_STREAM_STATUS= 16'h00bc;
+  localparam logic [ADDR_W-1:0] REG_STREAM_LEVEL_LO = 16'h00c0;
+  localparam logic [ADDR_W-1:0] REG_STREAM_LEVEL_HI = 16'h00c4;
 
   logic [ADDR_W-1:0] awaddr_q;
   logic [ADDR_W-1:0] araddr_q;
@@ -152,6 +168,9 @@ module axi_lite_regs #(
       cfg_start_time     <= '0;
       cfg_rate_q16_16    <= 32'h0001_0000;
       cfg_watermark      <= 32'd4096;
+      cfg_stream_ring_size <= '0;
+      cfg_stream_write_count <= '0;
+      cfg_stream_eof     <= 1'b0;
       cfg_force_link_up  <= 1'b0;
       cfg_force_tx_ready <= 1'b0;
     end else begin
@@ -178,6 +197,10 @@ module axi_lite_regs #(
             clear_pulse <= wdata_q[2] & wstrb_q[0];
             if (wstrb_q[0]) begin
               pause <= wdata_q[3];
+              if (wdata_q[2]) begin
+                cfg_stream_write_count <= '0;
+                cfg_stream_eof <= 1'b0;
+              end
             end
           end
           REG_MODE: begin
@@ -201,6 +224,15 @@ module axi_lite_regs #(
           REG_START_HI:     cfg_start_time[63:32] <= apply_wstrb(cfg_start_time[63:32], wdata_q, wstrb_q);
           REG_RATE:         cfg_rate_q16_16 <= apply_wstrb(cfg_rate_q16_16, wdata_q, wstrb_q);
           REG_WATERMARK:    cfg_watermark   <= apply_wstrb(cfg_watermark, wdata_q, wstrb_q);
+          REG_STREAM_WR_LO: cfg_stream_write_count[31:0] <= apply_wstrb(cfg_stream_write_count[31:0], wdata_q, wstrb_q);
+          REG_STREAM_WR_HI: cfg_stream_write_count[63:32] <= apply_wstrb(cfg_stream_write_count[63:32], wdata_q, wstrb_q);
+          REG_STREAM_RING_LO: cfg_stream_ring_size[31:0] <= apply_wstrb(cfg_stream_ring_size[31:0], wdata_q, wstrb_q);
+          REG_STREAM_RING_HI: cfg_stream_ring_size[63:32] <= apply_wstrb(cfg_stream_ring_size[63:32], wdata_q, wstrb_q);
+          REG_STREAM_CTRL: begin
+            if (wstrb_q[0]) begin
+              cfg_stream_eof <= wdata_q[0];
+            end
+          end
           REG_DEBUG_CTRL: begin
             if (wstrb_q[0]) begin
               cfg_force_link_up <= wdata_q[0];
@@ -257,6 +289,16 @@ module axi_lite_regs #(
           REG_DEBUG_RDATA: s_axil_rdata <= stat_debug_rdata_low;
           REG_DEBUG_TICK_LO:s_axil_rdata <= stat_debug_ticks[31:0];
           REG_DEBUG_TICK_HI:s_axil_rdata <= stat_debug_ticks[63:32];
+          REG_STREAM_WR_LO:s_axil_rdata <= cfg_stream_write_count[31:0];
+          REG_STREAM_WR_HI:s_axil_rdata <= cfg_stream_write_count[63:32];
+          REG_STREAM_RD_LO:s_axil_rdata <= stat_stream_read_count[31:0];
+          REG_STREAM_RD_HI:s_axil_rdata <= stat_stream_read_count[63:32];
+          REG_STREAM_RING_LO:s_axil_rdata <= cfg_stream_ring_size[31:0];
+          REG_STREAM_RING_HI:s_axil_rdata <= cfg_stream_ring_size[63:32];
+          REG_STREAM_CTRL: s_axil_rdata <= {31'd0, cfg_stream_eof};
+          REG_STREAM_STATUS:s_axil_rdata <= stat_stream_status;
+          REG_STREAM_LEVEL_LO:s_axil_rdata <= stat_stream_level[31:0];
+          REG_STREAM_LEVEL_HI:s_axil_rdata <= stat_stream_level[63:32];
           default:         s_axil_rdata <= 32'h0;
         endcase
       end else if (s_axil_rvalid && s_axil_rready) begin

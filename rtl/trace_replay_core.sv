@@ -70,6 +70,9 @@ module trace_replay_core #(
   logic [63:0] cfg_start_time;
   logic [31:0] cfg_rate_q16_16;
   logic [31:0] cfg_watermark;
+  logic [63:0] cfg_stream_ring_size;
+  logic [63:0] cfg_stream_write_count;
+  logic        cfg_stream_eof;
   logic        cfg_force_link_up;
   logic        cfg_force_tx_ready;
 
@@ -124,8 +127,12 @@ module trace_replay_core #(
   logic                   stream_ddr_busy;
   logic                   stream_ddr_done;
   logic                   stream_ddr_error;
+  logic [63:0]            stream_ddr_read_count;
+  logic [63:0]            stream_ddr_level;
+  logic [31:0]            stream_ddr_status;
   logic [3:0]             stream_ddr_state;
   logic                   stream_ddr_mode;
+  logic                   stream_ring_mode;
   logic                   stream_reader_start;
 
   localparam int STREAM_FIFO_DEPTH = 128;
@@ -141,6 +148,7 @@ module trace_replay_core #(
   logic [STREAM_FIFO_COUNT_W-1:0] stream_fifo_level;
   logic [STREAM_FIFO_COUNT_W-1:0] stream_fifo_watermark_beats;
   logic                   stream_prefetch_ready;
+  logic                   stream_prefetch_active;
   logic                   parser_enable;
 
   logic [AXIS_DATA_W-1:0] parser_axis_tdata;
@@ -193,7 +201,8 @@ module trace_replay_core #(
 
   assign sel_stream_mode = (cfg_mode == MODE_STREAM);
   assign sel_ddr_mode    = (cfg_mode == MODE_PRELOAD) || (cfg_mode == MODE_LOOP);
-  assign stream_ddr_mode = sel_stream_mode && (cfg_trace_bytes != 64'd0);
+  assign stream_ddr_mode = sel_stream_mode && ((cfg_trace_bytes != 64'd0) || (cfg_stream_ring_size != 64'd0));
+  assign stream_ring_mode = stream_ddr_mode && (cfg_stream_ring_size != 64'd0);
   assign core_clear      = clear_pulse || stop_pulse;
   assign effective_link_up = link_up || cfg_force_link_up;
   assign core_enable     = replay_running && !pause && effective_link_up;
@@ -226,7 +235,7 @@ module trace_replay_core #(
   assign parser_axis_tlast  = stream_ddr_mode ? stream_fifo_axis_tlast  : s_host_axis_tlast;
   assign stream_fifo_axis_tready = stream_ddr_mode ? parser_axis_tready : 1'b0;
   assign s_host_axis_tready     = stream_ddr_mode ? 1'b0 : parser_axis_tready;
-  assign stream_prefetch_ready  = !stream_ddr_mode || stream_ddr_done || (stream_fifo_level >= stream_fifo_watermark_beats);
+  assign stream_prefetch_ready  = !stream_ddr_mode || stream_ddr_done || stream_prefetch_active;
   assign parser_enable          = core_enable && sel_stream_mode && stream_prefetch_ready;
 
   assign src_meta_valid = sel_stream_mode ? host_meta_valid : ddr_meta_valid;
@@ -325,6 +334,9 @@ module trace_replay_core #(
     .cfg_start_time(cfg_start_time),
     .cfg_rate_q16_16(cfg_rate_q16_16),
     .cfg_watermark(cfg_watermark),
+    .cfg_stream_ring_size(cfg_stream_ring_size),
+    .cfg_stream_write_count(cfg_stream_write_count),
+    .cfg_stream_eof(cfg_stream_eof),
     .cfg_force_link_up(cfg_force_link_up),
     .cfg_force_tx_ready(cfg_force_tx_ready),
     .stat_running(replay_running),
@@ -342,7 +354,10 @@ module trace_replay_core #(
     .stat_debug_axi(debug_axi),
     .stat_debug_araddr(m_axi_araddr[63:0]),
     .stat_debug_rdata_low(m_axi_rdata[31:0]),
-    .stat_debug_ticks(now_ticks)
+    .stat_debug_ticks(now_ticks),
+    .stat_stream_read_count(stream_ddr_read_count),
+    .stat_stream_level(stream_ddr_level),
+    .stat_stream_status(stream_ddr_status)
   );
 
   ddr_trace_reader #(
@@ -401,6 +416,9 @@ module trace_replay_core #(
     .clear(clear_pulse),
     .cfg_stream_base(cfg_desc_base),
     .cfg_stream_bytes(cfg_trace_bytes),
+    .cfg_ring_size(cfg_stream_ring_size),
+    .cfg_ring_write_count(cfg_stream_write_count),
+    .cfg_ring_eof(cfg_stream_eof),
     .m_axi_arid(stream_m_axi_arid),
     .m_axi_araddr(stream_m_axi_araddr),
     .m_axi_arlen(stream_m_axi_arlen),
@@ -422,6 +440,9 @@ module trace_replay_core #(
     .busy(stream_ddr_busy),
     .done(stream_ddr_done),
     .error(stream_ddr_error),
+    .read_count(stream_ddr_read_count),
+    .ring_level(stream_ddr_level),
+    .stream_status(stream_ddr_status),
     .debug_state(stream_ddr_state)
   );
 
@@ -519,10 +540,20 @@ module trace_replay_core #(
       replay_running <= 1'b0;
       late_pkts      <= '0;
       underrun_pkts  <= '0;
+      stream_prefetch_active <= 1'b0;
     end else begin
       if (clear_pulse) begin
         late_pkts     <= '0;
         underrun_pkts <= '0;
+      end
+
+      if (core_clear || start_pulse || !stream_ddr_mode) begin
+        stream_prefetch_active <= 1'b0;
+      end else if (core_enable &&
+                   (stream_fifo_level >= stream_fifo_watermark_beats ||
+                    (stream_ring_mode && stream_fifo_level != '0) ||
+                    stream_ddr_done)) begin
+        stream_prefetch_active <= 1'b1;
       end
 
       if (start_pulse) begin
