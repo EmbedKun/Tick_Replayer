@@ -73,8 +73,13 @@ Implemented pieces:
 * `axi_lite_regs` exposes ring size, write pointer, read pointer, level, EOF,
   and stream status.
 * `trace_replay_core` feeds the existing stream parser from the DDR stream FIFO.
+  The current experimental build uses an 8192-beat XPM block-RAM prefetch FIFO
+  for large STREAM FIFOs.
 * `xdma_stream_ring.py` is the host loader for dynamic refill.  It commits only
   complete records and polls the FPGA read pointer before writing more.
+* `xdma_stream_ring_fast.cpp` is the higher-throughput C++ loader.  It uses a
+  producer/consumer pipeline, large record-aligned batches, and fewer copies
+  before issuing memory-mapped `XDMA H2C` writes.
 * `traffic_replay_cli.py status/regs` prints stream ring state.
 * `tb_trace_replay_core.sv` verifies that the FPGA emits one committed packet,
   waits for the host write pointer to advance, and then resumes.
@@ -87,6 +92,19 @@ PASS: DDR stream-buffer replay emitted 2 packets
 PASS: DDR ring-stream replay waited for host write pointer and emitted 2 packets
 PASS: DDR preload replay emitted 3 packets
 ```
+
+Current U200 hardware observations with
+`20260628_140628_stream_fast_bram_fifo8192_experimental`:
+
+* `XDMA H2C/C2H` DDR readback passed.
+* `STREAM` ring smoke passed with `1000` 1518-byte packets, `late=0`,
+  `underrun=0`.
+* Synthetic `pcap -> trace -> stream -> ring replay` passed with `10000`
+  packets and `underrun=0`.
+* C++ ring feeder no-late/no-underrun point for 1518-byte packets is currently
+  about `7.59Gbps`.
+* Finite STREAM buffer can push about `96.98Gbps` with 1518-byte packets, but
+  near-line-rate tests still assert `late_packets` and `underrun_packets`.
 
 ## Timing Precision
 
@@ -149,8 +167,9 @@ packets.  The most realistic path toward 100G is:
 * Reduce stream metadata overhead for small packets, for example by packing
   several small packet descriptors into one metadata beat.
 
-The next hardware step is to rebuild the U200 bitstream with ring mode enabled,
-run `xdma_stream_ring.py` with a ring smaller than the stream file, and measure:
+The next hardware step is to replace or bypass the memory-mapped `pwrite` feeder
+when the goal is sustained dynamic `100Gbps`.  The current measurement set to
+track is:
 
 ```text
 H2C refill throughput

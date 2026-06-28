@@ -208,8 +208,9 @@ def print_status(fd: int, base: int) -> None:
     print(f"stream_read_ptr   : {stream_rd}")
     print(f"stream_level      : {stream_level}")
     print(f"stream_eof        : {bool_word(bool(read32(fd, base + REG_STREAM_CTRL) & 0x1))}")
-    print(f"stream_wait_empty : {bool_word(bool(stream_status & (1 << 9)))}")
-    print(f"stream_overrun    : {bool_word(bool(stream_status & (1 << 8)))}")
+    print(f"stream_wait_empty : {bool_word(bool(stream_status & (1 << 11)))}")
+    print(f"stream_overrun    : {bool_word(bool(stream_status & (1 << 10)))}")
+    print(f"stream_size_valid : {bool_word(bool(stream_status & (1 << 9)))}")
     print(f"stream_status     : 0x{stream_status:08x}")
 
 

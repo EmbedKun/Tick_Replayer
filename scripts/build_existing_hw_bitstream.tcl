@@ -7,8 +7,6 @@ set_param general.maxThreads 1
 
 if {[info exists ::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)] && $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT) ne ""} {
   set hw_build_root [file normalize $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)]
-} elseif {[file exists D:/]} {
-  set hw_build_root [file normalize D:/tr_build]
 } else {
   set hw_build_root [file join $repo_dir build]
 }
@@ -20,7 +18,7 @@ set project_file [file join $build_dir ${project_name}.xpr]
 
 if {![file exists $project_file]} {
   puts "ERROR: hardware Vivado project not found at $project_file"
-  puts "Run scripts/run_vivado.ps1 -Action hwbd first."
+  puts "Run bash scripts/run_vivado.sh hwbd first."
   exit 1
 }
 

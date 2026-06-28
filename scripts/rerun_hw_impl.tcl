@@ -7,8 +7,6 @@ set_param general.maxThreads 1
 
 if {[info exists ::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)] && $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT) ne ""} {
   set hw_build_root [file normalize $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)]
-} elseif {[file exists D:/]} {
-  set hw_build_root [file normalize D:/tr_build]
 } else {
   set hw_build_root [file join $repo_dir build]
 }

@@ -14,6 +14,8 @@
   <code>PCAP replay</code>
 </p>
 
+<p><a href="README_CN.md">中文 README</a></p>
+
 </div>
 
 ## Overview
@@ -21,6 +23,12 @@
 `Tick Replayer` loads packet descriptors and payload data from a Linux host into
 FPGA `DDR4` through `PCIe XDMA`, then replays the traffic through 100G `CMAC`
 ports with descriptor-controlled inter-packet timing.
+
+The repository name, `Tick_Replayer`, comes from the unit that matters most in
+the system: the replay clock tick.  A pcap timestamp delta is converted into
+`gap_ticks`, and the FPGA scheduler releases each packet by comparing those tick
+counts against a replay-relative hardware timer.  In other words, the project is
+not only a packet player; it is a tick-accurate replay engine.
 
 The current design is a dual-port prototype.  `QSFP0` and `QSFP1` each have an
 independent transmit replay pipeline, and each receive side has a lightweight
@@ -69,9 +77,12 @@ intentionally excluded.
   * `LOOP`: `DDR4`-backed replay loop is wired in `RTL`.
   * `STREAM`: host writes either a finite stream buffer or a continuously
     refilled DDR ring through memory-mapped `XDMA H2C`; the FPGA reads complete
-    stream records and feeds the timestamp scheduler.
+    stream records and feeds the timestamp scheduler.  The repository includes
+    both a Python feeder and a higher-throughput C++ feeder for this mode.
 * Host-side Python tools for `pcap` conversion, `XDMA` loading, control registers,
   status registers, and RX capture configuration.
+* Host-side C++ `STREAM` ring feeder with asynchronous producer/consumer loading
+  and large batched `XDMA H2C` writes.
 * Verified `QSFP0` <-> `QSFP1` 100G optical loop with bidirectional `TX`/`RX`
   counters and `DDR4` ring readback.
 
@@ -186,6 +197,7 @@ The major IP and RTL blocks are:
 | `host_stream_parser` | Parses one 64-byte stream header beat followed by packet payload beats. |
 | `replay_scheduler` | Maintains a replay-relative tick counter and releases packets according to descriptor gap fields. |
 | `replay_tx_engine` | Converts scheduled payload beats into 512-bit `CMAC TX AXI-Stream` frames. |
+| `axis_sync_fifo` | Synchronous AXI-Stream prefetch FIFO.  Large replay FIFOs use Xilinx `XPM` block RAM to avoid oversized LUTRAM/register arrays. |
 | `axis_async_fifo` | Crosses between the `DDR4` UI clock and `CMAC` user clocks. |
 | `rx_capture_bd_core` | Per-port `RX` statistics and truncated `DDR4` ring capture. |
 | `CMAC0` / `CMAC1` | 100G Ethernet MACs connected to `QSFP0` and `QSFP1`. |
@@ -318,9 +330,9 @@ software/      Host-side pcap conversion, XDMA loader, and control CLI
 
 FPGA build host:
 
-* Windows host tested with `Vivado 2020.2`.
+* Linux host with `Vivado 2020.2`.
 * Xilinx licenses for `CMAC`, `XDMA`, `DDR4`, and related IP.
-* PowerShell environment capable of running the scripts in `scripts/`.
+* Bash shell and standard Linux development tools.
 
 Target machine:
 
@@ -334,34 +346,39 @@ Target machine:
 
 Create the Vivado hardware project:
 
-```powershell
-$env:TRAFFIC_REPLAY_HW_BUILD_ROOT="D:\tr_build_dual"
-$env:TRAFFIC_REPLAY_ENABLE_ILA="0"
-powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbd
+```bash
+source /tools/Xilinx/Vivado/2020.2/settings64.sh
+export TRAFFIC_REPLAY_HW_BUILD_ROOT=/home/user/tr_build_dual
+export TRAFFIC_REPLAY_ENABLE_ILA=0
+bash scripts/run_vivado.sh hwbd
 ```
 
-Open the project in Vivado GUI:
+Open the project in Vivado GUI when interactive inspection is needed:
 
-```powershell
-& D:\Xilinx\Vivado\2020.2\bin\vivado.bat D:\tr_build_dual\vivado_hw\traffic_replay_hw.xpr
+```bash
+vivado /home/user/tr_build_dual/vivado_hw/traffic_replay_hw.xpr
 ```
 
 Run implementation and write the bitstream:
 
-```powershell
-$env:TRAFFIC_REPLAY_HW_BUILD_ROOT="D:\tr_build_dual"
-$env:TRAFFIC_REPLAY_ENABLE_ILA="0"
-powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action hwbit_existing
+```bash
+source /tools/Xilinx/Vivado/2020.2/settings64.sh
+export TRAFFIC_REPLAY_HW_BUILD_ROOT=/home/user/tr_build_dual
+export TRAFFIC_REPLAY_ENABLE_ILA=0
+export TRAFFIC_REPLAY_VIVADO_JOBS=1
+bash scripts/run_vivado.sh hwbit_existing
 ```
 
 The generated bitstream is written under the selected build root:
 
 ```text
-%TRAFFIC_REPLAY_HW_BUILD_ROOT%\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit
+$TRAFFIC_REPLAY_HW_BUILD_ROOT/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.bit
 ```
 
-The latest verified build completed with bitgen `0 Errors`; the final timing
-summary met user constraints with WNS `+0.007 ns`.
+The latest archived experimental build completed bitstream generation with
+`0 Errors`, but it is not timing-clean.  See
+`bitstreams/20260628_140628_stream_fast_bram_fifo8192_experimental/README.txt`
+for the exact build notes and timing summary.
 
 ## Bitstream Archive
 
@@ -369,15 +386,15 @@ Important hardware images are archived under `bitstreams/`.  Each version should
 include the `.bit` file, the matching `.ltx` file when available, and a TXT note
 with the source commit, SHA256 hash, build root, and verification status.
 
-Archive a generated bitstream from PowerShell:
+Archive a generated bitstream:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\archive_bitstream.ps1 `
-  -Bitfile D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit `
-  -Ltx D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.ltx `
-  -Name pre_stream_dual_qsfp_loop_verified `
-  -BuildRoot D:\tr_build_dual `
-  -Notes "H2C/C2H DDR readback passed; TX0->RX1 and TX1->RX0 loopback passed."
+```bash
+bash scripts/archive_bitstream.sh \
+  --bitfile /home/user/tr_build_dual/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.bit \
+  --ltx /home/user/tr_build_dual/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.ltx \
+  --name pre_stream_dual_qsfp_loop_verified \
+  --build-root /home/user/tr_build_dual \
+  --notes "H2C/C2H DDR readback passed; TX0->RX1 and TX1->RX0 loopback passed."
 ```
 
 The archived TXT file is the audit trail for that hardware image.  Before
@@ -388,10 +405,10 @@ file.
 
 Program the U200 through the remote hardware server:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 `
-  -Action program `
-  -Bitfile "$env:TRAFFIC_REPLAY_HW_BUILD_ROOT\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit"
+```bash
+source /tools/Xilinx/Vivado/2020.2/settings64.sh
+bash scripts/run_vivado.sh program \
+  /home/user/tr_build_dual/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.bit
 ```
 
 After programming a PCIe endpoint through JTAG, the Linux host must rescan PCIe
@@ -494,11 +511,31 @@ sudo python3 /home/user/traffic_replay_software/xdma_stream_ring.py \
   --timeout 60
 ```
 
-`xdma_stream_ring.py` commits only complete packet records.  The loader polls
+Build and run the higher-throughput C++ feeder:
+
+```bash
+cd /home/user/traffic_replay_software
+make xdma_stream_ring_fast
+
+./xdma_stream_ring_fast \
+  --port 0 \
+  --manifest /home/user/trace_out/stream_manifest.json \
+  --ring-base 0x20000000 \
+  --ring-size 0x08000000 \
+  --prefill-bytes 0x04000000 \
+  --batch-bytes 0x02000000 \
+  --read-bytes 0x02000000 \
+  --queue-depth 4 \
+  --timeout 120 \
+  --feed-timeout 120
+```
+
+Both ring feeders commit only complete packet records.  The loader polls
 `STREAM_RD_PTR`, computes free space as `ring_size - (write_ptr - read_ptr)`,
 writes records through `/dev/xdma0_h2c_0`, and then advances `STREAM_WR_PTR`.
-This is the current host-side model for `host SSD -> host memory -> FPGA DDR
-ring -> replay scheduler`.
+This preserves replay precision because the FPGA scheduler still owns all packet
+release timing; host software only controls how quickly complete records become
+available in the DDR ring.
 
 Generate a synthetic trace for controlled testing:
 
@@ -609,10 +646,14 @@ evidence:
 Run a quick smoke pass after programming:
 
 ```bash
+cd /home/user/traffic_replay_software
+make xdma_stream_ring_fast
+
 sudo python3 /home/user/traffic_replay_software/hw_validation_suite.py \
   --profile smoke \
   --port 0 \
-  --rx-port 1
+  --rx-port 1 \
+  --ring-loader cpp
 ```
 
 Run a larger stress pass:
@@ -628,49 +669,55 @@ Use `--force-link-up` only for logic bring-up without an optical link.  Throughp
 and packet-loss numbers should be collected with a real `CMAC` link and without
 forcing downstream readiness.
 
-Latest hardware results are recorded in
-[`reports/20260628_remote_validation_stream_ring/`](reports/20260628_remote_validation_stream_ring/).
-The run used the archived bitstream
-`bitstreams/20260627_232530_remote_clearfix_stream_ring_test_bit/`, programmed
+Latest hardware results were collected with the archived bitstream
+`bitstreams/20260628_140628_stream_fast_bram_fifo8192_experimental/`, programmed
 onto the remote U200, with `QSFP0` and `QSFP1` connected by 100G fiber.
 
-Zero-gap finite-buffer `STREAM` sweep on TX0:
+Important notes for this build:
 
-| Frame bytes | Packets | Completed | TX packets | TX bytes | Replay Gbps | Load Gbps | Underrun count |
-| ---: | ---: | :---: | ---: | ---: | ---: | ---: | ---: |
-| `64` | `100000` | yes | `100000` | `6400000` | `38.388` | `7.232` | `0` |
-| `128` | `100000` | yes | `100000` | `12800000` | `61.409` | `10.036` | `0` |
-| `256` | `100000` | yes | `100000` | `25600000` | `77.289` | `10.389` | `73451` |
-| `512` | `100000` | yes | `100000` | `51200000` | `88.371` | `10.178` | `257062` |
-| `1024` | `100000` | yes | `100000` | `102400000` | `94.190` | `11.005` | `666357` |
-| `1518` | `100000` | yes | `100000` | `151800000` | `95.518` | `18.290` | `1068958` |
+* Bitstream generation completed with `0 Errors`.
+* Final timing is not clean: `WNS=-0.247 ns`, `TNS=-51.325 ns`.
+* `XDMA H2C/C2H` deterministic `DDR4` readback passed after programming.
+* `STREAM` ring smoke passed with `1000` packets, `1518`-byte frames,
+  `gap_ticks=30000`, `late=0`, and `underrun=0`.
+* Synthetic `pcap` -> trace -> stream -> DDR ring replay passed with `10000`
+  packets and `underrun=0`.
+* `QSFP0` -> `QSFP1` low-rate RX loopback observed `2000` packets on RX1.
 
-The current maximum measured finite-buffer replay rate is about `95.5Gbps` for
-1518-byte frames.  The run completed without packet-count loss, but zero-gap
-large-packet tests still report `underrun_packets`, so this should be viewed as
-a functional throughput result rather than a final precision result.
+C++ DDR-ring `STREAM` replay on TX0, `100000` packets, `1518`-byte frames:
 
-DDR ring `STREAM` was also hardware-tested.  A 200000-packet, 1518-byte,
-`gap_ticks=15000` run completed with matched TX counters and no late or underrun
-events.  A 50000-packet gap sweep found the fastest no-underrun point in this
-Python feeder setup at about `0.455Gbps`:
+| Gap ticks | Target replay Gbps | Completed | TX packets | Late packets | Underrun packets |
+| ---: | ---: | :---: | ---: | ---: | ---: |
+| `720` | `5.060` | yes | `100000` | `0` | `0` |
+| `600` | `6.072` | yes | `100000` | `0` | `0` |
+| `480` | `7.590` | yes | `100000` | `0` | `0` |
+| `360` | `10.120` | yes | `100000` | `24820` | `7940879` |
+| `300` | `12.144` | yes | `100000` | `56812` | `14888217` |
+| `240` | `14.893` | yes | `100000` | `76783` | `10944245` |
 
-| Gap ticks | Completed | TX packets | Replay Gbps | Late packets | Underrun packets |
-| ---: | :---: | ---: | ---: | ---: | ---: |
-| `20000` | yes | `50000` | `0.182` | `0` | `0` |
-| `15000` | yes | `50000` | `0.243` | `0` | `0` |
-| `12000` | yes | `50000` | `0.304` | `0` | `0` |
-| `10000` | yes | `50000` | `0.364` | `0` | `0` |
-| `8000` | yes | `50000` | `0.455` | `0` | `0` |
-| `6000` | yes | `50000` | `0.546` | `13770` | `29342` |
-| `4000` | yes | `50000` | `0.549` | `29974` | `68707` |
+The fastest no-late/no-underrun dynamic ring point measured in this build is
+about `7.59Gbps` for `1518`-byte frames.  The C++ feeder improves substantially
+over the earlier Python feeder, but the current memory-mapped `XDMA H2C`
+`pwrite` path still tops out around `10Gbps` for sustained ring refilling.
+
+Finite-buffer `STREAM` stress on TX0, `100000` packets, `1518`-byte frames:
+
+| Gap ticks | Completed | TX packets | TX bytes | Replay Gbps | Late packets | Underrun packets |
+| ---: | :---: | ---: | ---: | ---: | ---: | ---: |
+| `0` | yes | `100000` | `151800000` | `96.983` | `100000` | `1012270` |
+| `36` | yes | `100000` | `151800000` | `96.986` | `99989` | `1012317` |
+
+These finite-buffer runs show that the FPGA can push close to `100Gbps` with
+large packets, but the zero-gap and near-line-rate cases are throughput stress
+tests, not precision-clean replay tests.
 
 ## Verification
 
 Run `RTL` simulation:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_vivado.ps1 -Action sim
+```bash
+source /tools/Xilinx/Vivado/2020.2/settings64.sh
+bash scripts/run_vivado.sh sim
 ```
 
 The current `XSim` testbench covers:
@@ -684,19 +731,19 @@ The current `XSim` testbench covers:
 
 Run syntax checks for the host tools:
 
-```powershell
-python -m py_compile `
-  software\traffic_replay_cli.py `
-  software\xdma_load_trace.py `
-  software\xdma_stream_load.py `
-  software\xdma_stream_ring.py `
-  software\ddr_readback_check.py `
-  software\pcap2trace.py `
-  software\trace_to_stream.py `
-  software\gen_synthetic_pcap.py `
-  software\gen_synthetic_trace.py `
-  software\stream_stress_test.py `
-  software\hw_validation_suite.py
+```bash
+python3 -m py_compile \
+  software/traffic_replay_cli.py \
+  software/xdma_load_trace.py \
+  software/xdma_stream_load.py \
+  software/xdma_stream_ring.py \
+  software/ddr_readback_check.py \
+  software/pcap2trace.py \
+  software/trace_to_stream.py \
+  software/gen_synthetic_pcap.py \
+  software/gen_synthetic_trace.py \
+  software/stream_stress_test.py \
+  software/hw_validation_suite.py
 ```
 
 Run basic `XDMA` `DDR4` readback after programming:
@@ -745,14 +792,21 @@ The latest hardware smoke test proves:
 
 ## Current Limitations
 
-* The finite-buffer `STREAM` path now reaches about `95.5Gbps` for 1518-byte
-  zero-gap packets, but this is not yet a timing-clean production image and
-  large-packet zero-gap runs still report `underrun_packets`.
-* Dynamic DDR ring `STREAM` is functionally verified, but the current Python
-  memory-mapped `XDMA H2C` feeder limits no-underrun replay to about `0.45Gbps`
-  in the latest 1518-byte test.  Reaching 100G dynamic streaming needs a faster
-  host loader, larger batched DMA submission path, direct `XDMA`/`QDMA`
-  AXI4-Stream `H2C`, or a deeper FPGA-side buffering strategy.
+* The latest archived BRAM-FIFO STREAM build is functional but not timing-clean:
+  final implementation timing is `WNS=-0.247 ns`.
+* The finite-buffer `STREAM` path reaches about `96.98Gbps` for 1518-byte
+  packets, but near-line-rate tests still report `late_packets` and
+  `underrun_packets`.  This is a throughput stress result, not a final
+  precision replay result.
+* Dynamic DDR ring `STREAM` is functionally verified with the C++ feeder.  The
+  current no-late/no-underrun point is about `7.59Gbps` for 1518-byte packets.
+  The memory-mapped `XDMA H2C` `pwrite` path sustains roughly `10Gbps` in this
+  setup, so it cannot feed a `100Gbps` replay stream indefinitely.
+* True `100Gbps` dynamic replay needs a different ingestion architecture:
+  direct `XDMA`/`QDMA` `AXI4-Stream H2C`, larger kernel/user DMA batches,
+  a lower-copy host loader, and FPGA-side prefetch with multiple outstanding DDR
+  reads.  The current repository has the C++ memory-mapped feeder and deeper
+  BRAM prefetch FIFO; it does not yet replace the PCIe path with QDMA.
 * A 500000-packet finite-buffer long sweep exposed a replay-path recovery issue:
   after a timeout, normal `stop`/`clear` did not always restore TX operation.
   Reprogramming the same bitstream recovered the system.  The next RTL fix

@@ -71,6 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rx-ring-base", type=int_auto, default=0x3000_0000)
     parser.add_argument("--rx-ring-size", type=int_auto, default=0x0100_0000)
     parser.add_argument("--watermark", type=int_auto, default=4096)
+    parser.add_argument("--ring-loader", choices=["cpp", "python"], default="cpp")
     parser.add_argument("--skip-ddr", action="store_true")
     parser.add_argument("--skip-finite", action="store_true")
     parser.add_argument("--skip-ring", action="store_true")
@@ -246,29 +247,63 @@ def main() -> None:
             ],
             log_path,
         )
-        run_step(
-            "dynamic ddr ring stream replay",
-            [
-                args.python,
-                script("xdma_stream_ring.py"),
-                "--port",
-                str(args.port),
-                "--manifest",
-                str(ring_trace_dir / "stream_manifest.json"),
-                "--ring-base",
-                f"0x{args.ring_base:x}",
-                "--ring-size",
-                f"0x{cfg['ring_size']:x}",
-                "--prefill-bytes",
-                f"0x{cfg['prefill']:x}",
-                "--watermark",
-                str(args.watermark),
-                "--timeout",
-                str(cfg["timeout"]),
-            ]
-            + maybe_force_args(args),
-            log_path,
-        )
+        if args.ring_loader == "cpp":
+            fast_loader = SCRIPT_DIR / "xdma_stream_ring_fast"
+            batch_bytes = min(int(cfg["prefill"]), 32 * 1024 * 1024)
+            run_step(
+                "dynamic ddr ring stream replay cpp",
+                [
+                    str(fast_loader),
+                    "--port",
+                    str(args.port),
+                    "--manifest",
+                    str(ring_trace_dir / "stream_manifest.json"),
+                    "--ring-base",
+                    f"0x{args.ring_base:x}",
+                    "--ring-size",
+                    f"0x{cfg['ring_size']:x}",
+                    "--prefill-bytes",
+                    f"0x{cfg['prefill']:x}",
+                    "--batch-bytes",
+                    f"0x{batch_bytes:x}",
+                    "--read-bytes",
+                    f"0x{batch_bytes:x}",
+                    "--queue-depth",
+                    "4",
+                    "--watermark",
+                    str(args.watermark),
+                    "--timeout",
+                    str(cfg["timeout"]),
+                    "--feed-timeout",
+                    str(cfg["timeout"]),
+                ]
+                + maybe_force_args(args),
+                log_path,
+            )
+        else:
+            run_step(
+                "dynamic ddr ring stream replay python",
+                [
+                    args.python,
+                    script("xdma_stream_ring.py"),
+                    "--port",
+                    str(args.port),
+                    "--manifest",
+                    str(ring_trace_dir / "stream_manifest.json"),
+                    "--ring-base",
+                    f"0x{args.ring_base:x}",
+                    "--ring-size",
+                    f"0x{cfg['ring_size']:x}",
+                    "--prefill-bytes",
+                    f"0x{cfg['prefill']:x}",
+                    "--watermark",
+                    str(args.watermark),
+                    "--timeout",
+                    str(cfg["timeout"]),
+                ]
+                + maybe_force_args(args),
+                log_path,
+            )
 
     if not args.skip_rx:
         run_step("rx disable", cli + ["--port", str(args.rx_port), "rx-disable"], log_path)

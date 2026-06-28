@@ -134,7 +134,7 @@ module trace_replay_core #(
   logic                   stream_ddr_mode;
   logic                   stream_reader_start;
 
-  localparam int STREAM_FIFO_DEPTH = 2048;
+  localparam int STREAM_FIFO_DEPTH = 8192;
   localparam int STREAM_FIFO_COUNT_W = $clog2(STREAM_FIFO_DEPTH + 1);
   localparam logic [STREAM_FIFO_COUNT_W-1:0] STREAM_FIFO_DEPTH_LEVEL = STREAM_FIFO_DEPTH;
   localparam logic [STREAM_FIFO_COUNT_W-1:0] STREAM_FIFO_LEVEL_ONE = 1;

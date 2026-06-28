@@ -25,8 +25,6 @@ source_vivado_init xguifrmwork
 
 if {[info exists ::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)] && $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT) ne ""} {
   set hw_build_root [file normalize $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)]
-} elseif {[file exists D:/]} {
-  set hw_build_root [file normalize D:/tr_build]
 } else {
   set hw_build_root [file join $repo_dir build]
 }

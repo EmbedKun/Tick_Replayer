@@ -4,7 +4,8 @@
 *.tcl text eol=lf
 *.xdc text eol=lf
 *.py text eol=lf
-*.ps1 text eol=lf
+*.cpp text eol=lf
+Makefile text eol=lf
 *.md text eol=lf
 *.txt text eol=lf
 *.json text eol=lf
