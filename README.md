@@ -202,6 +202,12 @@ The major IP and RTL blocks are:
 | `rx_capture_bd_core` | Per-port `RX` statistics and truncated `DDR4` ring capture. |
 | `CMAC0` / `CMAC1` | 100G Ethernet MACs connected to `QSFP0` and `QSFP1`. |
 
+`TRAFFIC_REPLAY_PORT_COUNT=1` can be used for a single-interface debug build.
+This is a build-time cut: the generated block design omits `replay_core_1`,
+`rx_cap_1`, `tx_axis_fifo_1`, and `CMAC1`, and shrinks the related
+`SmartConnect` ports.  The default is `2`, which keeps the full dual-port
+prototype.
+
 Current `AXI-Lite` map:
 
 ```text
@@ -211,6 +217,9 @@ Current `AXI-Lite` map:
 0x30000 - 0x3ffff  RX1 capture/stat registers
 0x40000 - 0x4ffff  DDR4 controller control window
 ```
+
+In a single-interface build, only `TX0`, `RX0`, and the `DDR4` control window
+are populated; host commands should use `--port 0`.
 
 Per-port `STREAM` ring control registers live inside each TX replay register
 window:
@@ -350,6 +359,7 @@ Create the Vivado hardware project:
 source /tools/Xilinx/Vivado/2020.2/settings64.sh
 export TRAFFIC_REPLAY_HW_BUILD_ROOT=/home/user/tr_build_dual
 export TRAFFIC_REPLAY_ENABLE_ILA=0
+export TRAFFIC_REPLAY_PORT_COUNT=2
 bash scripts/run_vivado.sh hwbd
 ```
 
@@ -365,6 +375,7 @@ Run implementation and write the bitstream:
 source /tools/Xilinx/Vivado/2020.2/settings64.sh
 export TRAFFIC_REPLAY_HW_BUILD_ROOT=/home/user/tr_build_dual
 export TRAFFIC_REPLAY_ENABLE_ILA=0
+export TRAFFIC_REPLAY_PORT_COUNT=2
 export TRAFFIC_REPLAY_VIVADO_JOBS=1
 bash scripts/run_vivado.sh hwbit_existing
 ```
@@ -375,10 +386,21 @@ The generated bitstream is written under the selected build root:
 $TRAFFIC_REPLAY_HW_BUILD_ROOT/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.bit
 ```
 
-The latest archived experimental build completed bitstream generation with
-`0 Errors`, but it is not timing-clean.  See
-`bitstreams/20260628_140628_stream_fast_bram_fifo8192_experimental/README.txt`
-for the exact build notes and timing summary.
+For faster bring-up, generate a single-interface build:
+
+```bash
+source /tools/Xilinx/Vivado/2020.2/settings64.sh
+export TRAFFIC_REPLAY_HW_BUILD_ROOT=/home/user/tr_hw_300_oneport_bd
+export TRAFFIC_REPLAY_ENABLE_ILA=0
+export TRAFFIC_REPLAY_PORT_COUNT=1
+bash scripts/run_vivado.sh hwbd
+bash scripts/run_vivado.sh hwbit_existing
+```
+
+In this mode only `TX0`/`RX0` are present, and host commands should use
+`--port 0`.  The archived single-port debug build
+`bitstreams/20260629_185452_oneport_300mhz_timing_clean_tested/` met 300 MHz
+post-route timing and includes the matching test summary.
 
 ## Bitstream Archive
 
@@ -710,6 +732,24 @@ Finite-buffer `STREAM` stress on TX0, `100000` packets, `1518`-byte frames:
 These finite-buffer runs show that the FPGA can push close to `100Gbps` with
 large packets, but the zero-gap and near-line-rate cases are throughput stress
 tests, not precision-clean replay tests.
+
+Single-port preload timing-clean build:
+
+`bitstreams/20260629_185452_oneport_300mhz_timing_clean_tested/` was built with
+`TRAFFIC_REPLAY_PORT_COUNT=1`, programmed onto the remote U200, and validated
+with internal replay gating (`force_link_up` and `force_tx_ready`) because
+`CMAC1` is intentionally omitted in this debug image.
+
+| Test | Packets | Frame bytes | Gap ticks | Wire-est. Gbps | Late packets | Underrun packets |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Large-packet target-100G preload | `100000` | `1518` | `37` | `99.761` | `0` | `0` |
+| Large-packet max-drain preload | `100000` | `1518` | `0` | `138.323` | `100000` | `0` |
+| Small-packet max-drain preload | `100000` | `64` | `0` | `81.827` | `100000` | `0` |
+| Small-packet target-100G preload | `100000` | `64` | `2` | `88.949` | `81354` | `0` |
+
+The `gap=0` rows are internal drain-rate tests.  The large-packet `gap=37`
+result is the useful precision/throughput datapoint for this one-port build:
+it reaches the 100G line-rate target without `late` or `underrun`.
 
 ## Verification
 

@@ -138,6 +138,9 @@ module trace_replay_core #(
   localparam int STREAM_FIFO_COUNT_W = $clog2(STREAM_FIFO_DEPTH + 1);
   localparam logic [STREAM_FIFO_COUNT_W-1:0] STREAM_FIFO_DEPTH_LEVEL = STREAM_FIFO_DEPTH;
   localparam logic [STREAM_FIFO_COUNT_W-1:0] STREAM_FIFO_LEVEL_ONE = 1;
+  localparam int PRELOAD_WARMUP_CYCLES = 4096;
+  localparam int PRELOAD_WARMUP_CNT_W = $clog2(PRELOAD_WARMUP_CYCLES + 1);
+  localparam logic [PRELOAD_WARMUP_CNT_W-1:0] PRELOAD_WARMUP_CYCLES_LEVEL = PRELOAD_WARMUP_CYCLES;
 
   logic [AXIS_DATA_W-1:0] stream_fifo_axis_tdata;
   logic [AXIS_KEEP_W-1:0] stream_fifo_axis_tkeep;
@@ -189,6 +192,8 @@ module trace_replay_core #(
   logic [15:0] pkt_flags;
   logic        core_clear;
   logic        core_enable;
+  logic [PRELOAD_WARMUP_CNT_W-1:0] preload_warmup_count;
+  logic        preload_warmup_done;
   logic        effective_link_up;
   logic        tx_ready_effective;
   logic        ddr_reader_start;
@@ -206,10 +211,11 @@ module trace_replay_core #(
   assign stream_ddr_mode_comb = sel_stream_mode_comb && ((cfg_trace_bytes != 64'd0) || (cfg_stream_ring_size != 64'd0));
   assign core_clear      = clear_pulse || stop_pulse;
   assign effective_link_up = link_up || cfg_force_link_up;
-  assign core_enable     = replay_running && !pause && effective_link_up;
+  assign core_enable     = replay_running && !pause && effective_link_up &&
+                           (!sel_ddr_mode || preload_warmup_done);
   assign tx_ready_effective = m_tx_axis_tready || cfg_force_tx_ready;
-  assign ddr_reader_start = sel_ddr_mode && (start_pulse || (replay_running && !ddr_busy && !ddr_done && (cfg_pkt_count != 64'd0)));
-  assign stream_reader_start = stream_ddr_mode && (start_pulse || (replay_running && !stream_ddr_busy && !stream_ddr_done));
+  assign ddr_reader_start = sel_ddr_mode && start_pulse;
+  assign stream_reader_start = stream_ddr_mode && start_pulse;
   assign source_busy = sel_ddr_mode ? ddr_busy : (stream_ddr_mode ? stream_ddr_busy : 1'b0);
   assign source_done = sel_ddr_mode ? ddr_done : (stream_ddr_mode ? stream_ddr_done : 1'b0);
   assign source_error = sel_ddr_mode ? ddr_error : (stream_ddr_mode ? stream_ddr_error : 1'b0);
@@ -545,6 +551,8 @@ module trace_replay_core #(
       sel_stream_mode <= 1'b0;
       sel_ddr_mode <= 1'b0;
       stream_ddr_mode <= 1'b0;
+      preload_warmup_count <= '0;
+      preload_warmup_done <= 1'b0;
     end else begin
       sel_stream_mode <= sel_stream_mode_comb;
       sel_ddr_mode <= sel_ddr_mode_comb;
@@ -567,6 +575,18 @@ module trace_replay_core #(
         replay_running <= 1'b1;
       end else if (clear_pulse || stop_pulse || replay_done) begin
         replay_running <= 1'b0;
+      end
+
+      if (core_clear || start_pulse || !sel_ddr_mode_comb) begin
+        preload_warmup_count <= '0;
+        preload_warmup_done  <= !sel_ddr_mode_comb;
+      end else if (replay_running && sel_ddr_mode && !preload_warmup_done &&
+                   !pause && effective_link_up) begin
+        if (preload_warmup_count >= PRELOAD_WARMUP_CYCLES_LEVEL) begin
+          preload_warmup_done <= 1'b1;
+        end else begin
+          preload_warmup_count <= preload_warmup_count + {{(PRELOAD_WARMUP_CNT_W-1){1'b0}}, 1'b1};
+        end
       end
 
       if (scheduler_late) begin

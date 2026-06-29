@@ -1,0 +1,31 @@
+Tick Replayer one-port 300 MHz validation summary
+=================================================
+
+Build option
+------------
+TRAFFIC_REPLAY_PORT_COUNT=1
+
+Programmed board
+----------------
+Remote U200 through Vivado hardware server on 172.22.5.106:3121.
+
+Timing
+------
+Post-route timing met at 300 MHz.
+WNS=0.000 ns, TNS=0.000 ns, WHS=0.006 ns, THS=0.000 ns.
+
+Functional tests
+----------------
+1. XDMA H2C/C2H DDR readback passed at 0x00000000, 0x00100000, 0x10000000, 0x18000000.
+2. Preload smoke test passed: 3 x 64B, tx_packets=3, tx_bytes=192, late=0, underrun=0.
+3. Preload large-packet target-100G test passed: 100000 x 1518B, gap=37 ticks, wire_est_Gbps=99.761, late=0, underrun=0.
+4. Preload small-packet max-drain test: 100000 x 64B, gap=0, wire_est_Gbps=81.827, late expected for gap=0, underrun=0.
+5. Preload small-packet target-100G test: 100000 x 64B, gap=2, wire_est_Gbps=88.949, late=81354, underrun=0.
+
+Important caveat
+----------------
+This one-port bitstream disables CMAC1 to reduce compile/debug cost. Tests used force_link_up and force_tx_ready, so these are internal replay-core and XDMA/DDR validation results, not optical-loop validation results. Dual-port optical RX/TX validation should use TRAFFIC_REPLAY_PORT_COUNT=2.
+
+Clean source regeneration
+-------------------------
+A fresh TRAFFIC_REPLAY_PORT_COUNT=1 block-design generation was rerun after splitting optional QSFP1 constraints. The clean BD generation completed with no ERROR and no CRITICAL WARNING entries.

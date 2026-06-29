@@ -1,0 +1,22 @@
+[
+  {
+    "name": "100k_x_1518_gap37_target_100g",
+    "packets": 100000,
+    "bytes": 151800000,
+    "ticks": 3700027,
+    "l2_gbps": 98.46414634271588,
+    "wire_est_gbps": 99.7614341733182,
+    "late": 0,
+    "underrun": 0
+  },
+  {
+    "name": "100k_x_64_gap2_target_100g",
+    "packets": 100000,
+    "bytes": 6400000,
+    "ticks": 226646,
+    "l2_gbps": 67.7708849924552,
+    "wire_est_gbps": 88.94928655259744,
+    "late": 81354,
+    "underrun": 0
+  }
+]

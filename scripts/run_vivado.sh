@@ -18,6 +18,7 @@ Environment:
   XILINX_VIVADO                  Vivado installation root, for example /tools/Xilinx/Vivado/2020.2
   VIVADO_BIN                     Optional Vivado executable override
   TRAFFIC_REPLAY_HW_BUILD_ROOT   Optional build root, defaults to <repo>/build
+  TRAFFIC_REPLAY_PORT_COUNT      Optional hardware port count: 1 or 2, defaults to 2
   TRAFFIC_REPLAY_VIVADO_JOBS     Optional Vivado run job count
   TRAFFIC_REPLAY_IMPL_STRATEGY   Optional implementation strategy
 EOF

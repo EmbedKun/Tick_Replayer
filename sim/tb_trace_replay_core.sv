@@ -411,7 +411,7 @@ module tb_trace_replay_core;
     axil_write(16'h002c, 32'd0);
     axil_write(16'h0000, 32'd1);
 
-    for (int timeout = 0; timeout < 2000 && tx_pkt_count < 9; timeout++) begin
+    for (int timeout = 0; timeout < 10000 && tx_pkt_count < 9; timeout++) begin
       @(posedge clk);
     end
 

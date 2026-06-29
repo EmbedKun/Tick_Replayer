@@ -117,26 +117,8 @@ set_property LOC K6 [get_ports -quiet {qsfp0_4x_gtx_n[3]}]
 set_property LOC K11 [get_ports -quiet qsfp0_161mhz_clk_p]
 set_property LOC K10 [get_ports -quiet qsfp0_161mhz_clk_n]
 
-# QSFP1 4x25G lanes and 161.1328125 MHz MGT reference clock.
-set_property LOC U4 [get_ports -quiet {qsfp1_4x_grx_p[0]}]
-set_property LOC U3 [get_ports -quiet {qsfp1_4x_grx_n[0]}]
-set_property LOC U9 [get_ports -quiet {qsfp1_4x_gtx_p[0]}]
-set_property LOC U8 [get_ports -quiet {qsfp1_4x_gtx_n[0]}]
-set_property LOC T2 [get_ports -quiet {qsfp1_4x_grx_p[1]}]
-set_property LOC T1 [get_ports -quiet {qsfp1_4x_grx_n[1]}]
-set_property LOC T7 [get_ports -quiet {qsfp1_4x_gtx_p[1]}]
-set_property LOC T6 [get_ports -quiet {qsfp1_4x_gtx_n[1]}]
-set_property LOC R4 [get_ports -quiet {qsfp1_4x_grx_p[2]}]
-set_property LOC R3 [get_ports -quiet {qsfp1_4x_grx_n[2]}]
-set_property LOC R9 [get_ports -quiet {qsfp1_4x_gtx_p[2]}]
-set_property LOC R8 [get_ports -quiet {qsfp1_4x_gtx_n[2]}]
-set_property LOC P2 [get_ports -quiet {qsfp1_4x_grx_p[3]}]
-set_property LOC P1 [get_ports -quiet {qsfp1_4x_grx_n[3]}]
-set_property LOC P7 [get_ports -quiet {qsfp1_4x_gtx_p[3]}]
-set_property LOC P6 [get_ports -quiet {qsfp1_4x_gtx_n[3]}]
-
-set_property LOC P11 [get_ports -quiet qsfp1_161mhz_clk_p]
-set_property LOC P10 [get_ports -quiet qsfp1_161mhz_clk_n]
+# QSFP1 MGT lane and reference-clock constraints are in
+# traffic_replay_u200_qsfp1.xdc and are added only for dual-port builds.
 
 # DDR/UI logic and CMAC AXIS logic cross only through explicit async FIFOs.
 set_clock_groups -asynchronous -group [get_clocks -regexp -quiet {^mmcm_clkout0$}] -group [get_clocks -regexp -quiet {txoutclk.*}]

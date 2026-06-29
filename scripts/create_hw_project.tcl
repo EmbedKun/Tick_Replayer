@@ -31,6 +31,17 @@ if {[info exists ::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)] && $::env(TRAFFIC_REPLAY_H
 set build_dir [file join $hw_build_root vivado_hw]
 file mkdir $build_dir
 
+set traffic_replay_port_count 2
+if {[info exists ::env(TRAFFIC_REPLAY_PORT_COUNT)] && $::env(TRAFFIC_REPLAY_PORT_COUNT) ne ""} {
+  set traffic_replay_port_count $::env(TRAFFIC_REPLAY_PORT_COUNT)
+}
+if {![string is integer -strict $traffic_replay_port_count] || $traffic_replay_port_count < 1 || $traffic_replay_port_count > 2} {
+  puts "ERROR: TRAFFIC_REPLAY_PORT_COUNT must be 1 or 2"
+  exit 1
+}
+set enable_port1 [expr {$traffic_replay_port_count >= 2}]
+puts "Traffic replay hardware port count: $traffic_replay_port_count"
+
 set project_name traffic_replay_hw
 set bd_name traffic_replay_bd
 set part_name xcu200-fsgd2104-2-e
@@ -47,6 +58,13 @@ if {[file exists $hw_xdc]} {
   add_files -fileset constrs_1 $hw_xdc
   set_property used_in_synthesis false [get_files $hw_xdc]
   set_property used_in_implementation true [get_files $hw_xdc]
+}
+
+set hw_qsfp1_xdc [file join $repo_dir constraints traffic_replay_u200_qsfp1.xdc]
+if {$enable_port1 && [file exists $hw_qsfp1_xdc]} {
+  add_files -fileset constrs_1 $hw_qsfp1_xdc
+  set_property used_in_synthesis false [get_files $hw_qsfp1_xdc]
+  set_property used_in_implementation true [get_files $hw_qsfp1_xdc]
 }
 
 set rtl_files [list \
@@ -78,6 +96,14 @@ set const_idx 0
 set enable_debug_ila 0
 if {[info exists ::env(TRAFFIC_REPLAY_ENABLE_ILA)] && $::env(TRAFFIC_REPLAY_ENABLE_ILA) ne ""} {
   set enable_debug_ila $::env(TRAFFIC_REPLAY_ENABLE_ILA)
+}
+
+proc bd_pin_list {names} {
+  set pins [list]
+  foreach name $names {
+    lappend pins [get_bd_pins $name]
+  }
+  return $pins
 }
 
 proc add_const {name width value} {
@@ -221,9 +247,11 @@ proc connect_cmac_const_pins {cell} {
 }
 
 create_bd_cell -type module -reference traffic_replay_bd_core replay_core_0
-create_bd_cell -type module -reference traffic_replay_bd_core replay_core_1
 create_bd_cell -type module -reference rx_capture_bd_core rx_cap_0
-create_bd_cell -type module -reference rx_capture_bd_core rx_cap_1
+if {$enable_port1} {
+  create_bd_cell -type module -reference traffic_replay_bd_core replay_core_1
+  create_bd_cell -type module -reference rx_capture_bd_core rx_cap_1
+}
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:xdma xdma_0
 set_property -dict [list \
@@ -288,10 +316,12 @@ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect host_smc
 set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {1}] [get_bd_cells host_smc]
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect ddr_smc
-set_property -dict [list CONFIG.NUM_SI {5} CONFIG.NUM_MI {1}] [get_bd_cells ddr_smc]
+set ddr_smc_si_count [expr {$enable_port1 ? 5 : 3}]
+set_property -dict [list CONFIG.NUM_SI $ddr_smc_si_count CONFIG.NUM_MI {1}] [get_bd_cells ddr_smc]
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect ctrl_smc
-set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI {5}] [get_bd_cells ctrl_smc]
+set ctrl_smc_mi_count [expr {$enable_port1 ? 5 : 3}]
+set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI $ctrl_smc_mi_count] [get_bd_cells ctrl_smc]
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter xdma_to_ddr_cc
 set_property -dict [list CONFIG.PROTOCOL {AXI4} CONFIG.DATA_WIDTH {512} CONFIG.ADDR_WIDTH {64} CONFIG.ID_WIDTH {4}] [get_bd_cells xdma_to_ddr_cc]
@@ -303,7 +333,9 @@ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice ctrl_ddr_regslice
 set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.DATA_WIDTH {32}] [get_bd_cells ctrl_ddr_regslice]
 
 create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo_0
-create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo_1
+if {$enable_port1} {
+  create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo_1
+}
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz cmac_init_clk_wiz
 set_property -dict [list \
@@ -315,7 +347,11 @@ set_property -dict [list \
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_ddr
 create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset rst_cmac_init
-foreach rst_cell [list cmac0_tx_resetn_inv cmac0_rx_resetn_inv cmac1_tx_resetn_inv cmac1_rx_resetn_inv] {
+set cmac_reset_cells [list cmac0_tx_resetn_inv cmac0_rx_resetn_inv]
+if {$enable_port1} {
+  lappend cmac_reset_cells cmac1_tx_resetn_inv cmac1_rx_resetn_inv
+}
+foreach rst_cell $cmac_reset_cells {
   create_bd_cell -type ip -vlnv xilinx.com:ip:util_vector_logic $rst_cell
   set_property -dict [list CONFIG.C_SIZE {1} CONFIG.C_OPERATION {not}] [get_bd_cells $rst_cell]
 }
@@ -323,8 +359,10 @@ foreach rst_cell [list cmac0_tx_resetn_inv cmac0_rx_resetn_inv cmac1_tx_resetn_i
 create_bd_cell -type ip -vlnv xilinx.com:ip:cmac_usplus cmac_0
 configure_cmac_cell cmac_0 qsfp0_4x qsfp0_161mhz CMACE4_X0Y6 X1Y48~X1Y51
 
-create_bd_cell -type ip -vlnv xilinx.com:ip:cmac_usplus cmac_1
-configure_cmac_cell cmac_1 qsfp1_4x qsfp1_161mhz CMACE4_X0Y5 X1Y44~X1Y47
+if {$enable_port1} {
+  create_bd_cell -type ip -vlnv xilinx.com:ip:cmac_usplus cmac_1
+  configure_cmac_cell cmac_1 qsfp1_4x qsfp1_161mhz CMACE4_X0Y5 X1Y44~X1Y47
+}
 
 if {$enable_debug_ila} {
   create_bd_cell -type ip -vlnv xilinx.com:ip:xlslice cmac_tx_ila_tdata_low
@@ -358,8 +396,10 @@ try_board_intf ddr4_0/C0_SYS_CLK default_300mhz_clk0
 
 try_board_intf cmac_0/gt_serial_port qsfp0_4x
 try_board_intf cmac_0/gt_ref_clk qsfp0_161mhz
-try_board_intf cmac_1/gt_serial_port qsfp1_4x
-try_board_intf cmac_1/gt_ref_clk qsfp1_161mhz
+if {$enable_port1} {
+  try_board_intf cmac_1/gt_serial_port qsfp1_4x
+  try_board_intf cmac_1/gt_ref_clk qsfp1_161mhz
+}
 
 create_const_port qsfp0_modsell 1 0
 create_const_port qsfp0_resetl 1 1
@@ -378,52 +418,81 @@ connect_bd_net [get_bd_pins pcie_refclk_buf/IBUF_OUT] [get_bd_pins xdma_0/sys_cl
 connect_bd_net [get_bd_pins xdma_0/axi_aclk] [get_bd_pins host_smc/aclk] [get_bd_pins xdma_to_ddr_cc/s_axi_aclk] [get_bd_pins axil_ctrl_cc/s_axi_aclk]
 connect_bd_net [get_bd_pins xdma_0/axi_aresetn] [get_bd_pins host_smc/aresetn] [get_bd_pins xdma_to_ddr_cc/s_axi_aresetn] [get_bd_pins axil_ctrl_cc/s_axi_aresetn]
 
-connect_bd_net [get_bd_pins ddr4_0/c0_ddr4_ui_clk] \
-  [get_bd_pins ddr_smc/aclk] \
-  [get_bd_pins ctrl_smc/aclk] \
-  [get_bd_pins ctrl_ddr_regslice/aclk] \
-  [get_bd_pins xdma_to_ddr_cc/m_axi_aclk] \
-  [get_bd_pins axil_ctrl_cc/m_axi_aclk] \
-  [get_bd_pins replay_core_0/clk] \
-  [get_bd_pins replay_core_1/clk] \
-  [get_bd_pins rx_cap_0/clk] \
-  [get_bd_pins rx_cap_1/clk] \
-  [get_bd_pins tx_axis_fifo_0/s_clk] \
-  [get_bd_pins tx_axis_fifo_1/s_clk] \
-  [get_bd_pins cmac_init_clk_wiz/clk_in1] \
-  [get_bd_pins rst_ddr/slowest_sync_clk]
+set ddr_clk_pins [list \
+  ddr4_0/c0_ddr4_ui_clk \
+  ddr_smc/aclk \
+  ctrl_smc/aclk \
+  ctrl_ddr_regslice/aclk \
+  xdma_to_ddr_cc/m_axi_aclk \
+  axil_ctrl_cc/m_axi_aclk \
+  replay_core_0/clk \
+  rx_cap_0/clk \
+  tx_axis_fifo_0/s_clk \
+  cmac_init_clk_wiz/clk_in1 \
+  rst_ddr/slowest_sync_clk \
+]
+if {$enable_port1} {
+  lappend ddr_clk_pins replay_core_1/clk rx_cap_1/clk tx_axis_fifo_1/s_clk
+}
+connect_bd_net {*}[bd_pin_list $ddr_clk_pins]
 
 connect_bd_net [get_bd_pins ddr4_0/c0_ddr4_ui_clk_sync_rst] [get_bd_pins rst_ddr/ext_reset_in] [get_bd_pins cmac_init_clk_wiz/reset]
-connect_bd_net [get_bd_pins rst_ddr/peripheral_aresetn] \
-  [get_bd_pins ddr_smc/aresetn] \
-  [get_bd_pins ctrl_smc/aresetn] \
-  [get_bd_pins ctrl_ddr_regslice/aresetn] \
-  [get_bd_pins xdma_to_ddr_cc/m_axi_aresetn] \
-  [get_bd_pins axil_ctrl_cc/m_axi_aresetn] \
-  [get_bd_pins replay_core_0/resetn] \
-  [get_bd_pins replay_core_1/resetn] \
-  [get_bd_pins rx_cap_0/resetn] \
-  [get_bd_pins rx_cap_1/resetn] \
-  [get_bd_pins tx_axis_fifo_0/s_resetn] \
-  [get_bd_pins tx_axis_fifo_1/s_resetn] \
-  [get_bd_pins ddr4_0/c0_ddr4_aresetn]
+set ddr_resetn_pins [list \
+  rst_ddr/peripheral_aresetn \
+  ddr_smc/aresetn \
+  ctrl_smc/aresetn \
+  ctrl_ddr_regslice/aresetn \
+  xdma_to_ddr_cc/m_axi_aresetn \
+  axil_ctrl_cc/m_axi_aresetn \
+  replay_core_0/resetn \
+  rx_cap_0/resetn \
+  tx_axis_fifo_0/s_resetn \
+  ddr4_0/c0_ddr4_aresetn \
+]
+if {$enable_port1} {
+  lappend ddr_resetn_pins replay_core_1/resetn rx_cap_1/resetn tx_axis_fifo_1/s_resetn
+}
+connect_bd_net {*}[bd_pin_list $ddr_resetn_pins]
 
 connect_bd_net [get_bd_pins cmac_0/gt_txusrclk2] [get_bd_pins tx_axis_fifo_0/m_clk] [get_bd_pins rx_cap_0/rx_clk] [get_bd_pins cmac_0/rx_clk]
-connect_bd_net [get_bd_pins cmac_1/gt_txusrclk2] [get_bd_pins tx_axis_fifo_1/m_clk] [get_bd_pins rx_cap_1/rx_clk] [get_bd_pins cmac_1/rx_clk]
 connect_bd_net [get_bd_pins cmac_0/usr_tx_reset] [get_bd_pins cmac0_tx_resetn_inv/Op1]
 connect_bd_net [get_bd_pins cmac_0/usr_rx_reset] [get_bd_pins cmac0_rx_resetn_inv/Op1]
-connect_bd_net [get_bd_pins cmac_1/usr_tx_reset] [get_bd_pins cmac1_tx_resetn_inv/Op1]
-connect_bd_net [get_bd_pins cmac_1/usr_rx_reset] [get_bd_pins cmac1_rx_resetn_inv/Op1]
 connect_bd_net [get_bd_pins cmac0_tx_resetn_inv/Res] [get_bd_pins tx_axis_fifo_0/m_resetn]
-connect_bd_net [get_bd_pins cmac1_tx_resetn_inv/Res] [get_bd_pins tx_axis_fifo_1/m_resetn]
 connect_bd_net [get_bd_pins cmac0_rx_resetn_inv/Res] [get_bd_pins rx_cap_0/rx_resetn]
-connect_bd_net [get_bd_pins cmac1_rx_resetn_inv/Res] [get_bd_pins rx_cap_1/rx_resetn]
-connect_bd_net [get_bd_pins cmac_init_clk_wiz/clk_out1] [get_bd_pins cmac_0/init_clk] [get_bd_pins cmac_0/drp_clk] [get_bd_pins cmac_1/init_clk] [get_bd_pins cmac_1/drp_clk] [get_bd_pins rst_cmac_init/slowest_sync_clk]
+if {$enable_port1} {
+  connect_bd_net [get_bd_pins cmac_1/gt_txusrclk2] [get_bd_pins tx_axis_fifo_1/m_clk] [get_bd_pins rx_cap_1/rx_clk] [get_bd_pins cmac_1/rx_clk]
+  connect_bd_net [get_bd_pins cmac_1/usr_tx_reset] [get_bd_pins cmac1_tx_resetn_inv/Op1]
+  connect_bd_net [get_bd_pins cmac_1/usr_rx_reset] [get_bd_pins cmac1_rx_resetn_inv/Op1]
+  connect_bd_net [get_bd_pins cmac1_tx_resetn_inv/Res] [get_bd_pins tx_axis_fifo_1/m_resetn]
+  connect_bd_net [get_bd_pins cmac1_rx_resetn_inv/Res] [get_bd_pins rx_cap_1/rx_resetn]
+}
+set cmac_init_clk_pins [list \
+  cmac_init_clk_wiz/clk_out1 \
+  cmac_0/init_clk \
+  cmac_0/drp_clk \
+  rst_cmac_init/slowest_sync_clk \
+]
+if {$enable_port1} {
+  lappend cmac_init_clk_pins cmac_1/init_clk cmac_1/drp_clk
+}
+connect_bd_net {*}[bd_pin_list $cmac_init_clk_pins]
 connect_bd_net [get_bd_pins cmac_init_clk_wiz/locked] [get_bd_pins rst_cmac_init/dcm_locked]
 connect_bd_net [get_bd_pins rst_ddr/peripheral_reset] [get_bd_pins rst_cmac_init/ext_reset_in]
-connect_bd_net [get_bd_pins rst_cmac_init/peripheral_reset] [get_bd_pins cmac_0/sys_reset] [get_bd_pins cmac_0/core_tx_reset] [get_bd_pins cmac_0/core_rx_reset] [get_bd_pins cmac_0/core_drp_reset] [get_bd_pins cmac_1/sys_reset] [get_bd_pins cmac_1/core_tx_reset] [get_bd_pins cmac_1/core_rx_reset] [get_bd_pins cmac_1/core_drp_reset]
+set cmac_reset_pins [list \
+  rst_cmac_init/peripheral_reset \
+  cmac_0/sys_reset \
+  cmac_0/core_tx_reset \
+  cmac_0/core_rx_reset \
+  cmac_0/core_drp_reset \
+]
+if {$enable_port1} {
+  lappend cmac_reset_pins cmac_1/sys_reset cmac_1/core_tx_reset cmac_1/core_rx_reset cmac_1/core_drp_reset
+}
+connect_bd_net {*}[bd_pin_list $cmac_reset_pins]
 connect_bd_net [get_bd_pins cmac_0/stat_rx_aligned] [get_bd_pins replay_core_0/link_up] [get_bd_pins rx_cap_0/link_up]
-connect_bd_net [get_bd_pins cmac_1/stat_rx_aligned] [get_bd_pins replay_core_1/link_up] [get_bd_pins rx_cap_1/link_up]
+if {$enable_port1} {
+  connect_bd_net [get_bd_pins cmac_1/stat_rx_aligned] [get_bd_pins replay_core_1/link_up] [get_bd_pins rx_cap_1/link_up]
+}
 connect_const tx_axis_fifo_0/m_axis_tready 1 1
 connect_const tx_axis_fifo_1/m_axis_tready 1 1
 
@@ -443,40 +512,55 @@ connect_bd_intf_net [get_bd_intf_pins xdma_0/M_AXI] [get_bd_intf_pins host_smc/S
 connect_bd_intf_net [get_bd_intf_pins host_smc/M00_AXI] [get_bd_intf_pins xdma_to_ddr_cc/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins xdma_to_ddr_cc/M_AXI] [get_bd_intf_pins ddr_smc/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins replay_core_0/M_AXI] [get_bd_intf_pins ddr_smc/S01_AXI]
-connect_bd_intf_net [get_bd_intf_pins replay_core_1/M_AXI] [get_bd_intf_pins ddr_smc/S02_AXI]
-connect_bd_intf_net [get_bd_intf_pins rx_cap_0/M_AXI] [get_bd_intf_pins ddr_smc/S03_AXI]
-connect_bd_intf_net [get_bd_intf_pins rx_cap_1/M_AXI] [get_bd_intf_pins ddr_smc/S04_AXI]
+if {$enable_port1} {
+  connect_bd_intf_net [get_bd_intf_pins replay_core_1/M_AXI] [get_bd_intf_pins ddr_smc/S02_AXI]
+  connect_bd_intf_net [get_bd_intf_pins rx_cap_0/M_AXI] [get_bd_intf_pins ddr_smc/S03_AXI]
+  connect_bd_intf_net [get_bd_intf_pins rx_cap_1/M_AXI] [get_bd_intf_pins ddr_smc/S04_AXI]
+} else {
+  connect_bd_intf_net [get_bd_intf_pins rx_cap_0/M_AXI] [get_bd_intf_pins ddr_smc/S02_AXI]
+}
 connect_bd_intf_net [get_bd_intf_pins ddr_smc/M00_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI]
 
 connect_bd_intf_net [get_bd_intf_pins xdma_0/M_AXI_LITE] [get_bd_intf_pins axil_ctrl_cc/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins axil_ctrl_cc/M_AXI] [get_bd_intf_pins ctrl_smc/S00_AXI]
 connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M00_AXI] [get_bd_intf_pins replay_core_0/S_AXIL]
-connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M01_AXI] [get_bd_intf_pins replay_core_1/S_AXIL]
-connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M02_AXI] [get_bd_intf_pins rx_cap_0/S_AXIL]
-connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M03_AXI] [get_bd_intf_pins rx_cap_1/S_AXIL]
-connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M04_AXI] [get_bd_intf_pins ctrl_ddr_regslice/S_AXI]
+if {$enable_port1} {
+  connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M01_AXI] [get_bd_intf_pins replay_core_1/S_AXIL]
+  connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M02_AXI] [get_bd_intf_pins rx_cap_0/S_AXIL]
+  connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M03_AXI] [get_bd_intf_pins rx_cap_1/S_AXIL]
+  connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M04_AXI] [get_bd_intf_pins ctrl_ddr_regslice/S_AXI]
+} else {
+  connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M01_AXI] [get_bd_intf_pins rx_cap_0/S_AXIL]
+  connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M02_AXI] [get_bd_intf_pins ctrl_ddr_regslice/S_AXI]
+}
 connect_bd_intf_net [get_bd_intf_pins ctrl_ddr_regslice/M_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI_CTRL]
 
 connect_bd_intf_net [get_bd_intf_pins replay_core_0/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo_0/S_AXIS]
-connect_bd_intf_net [get_bd_intf_pins replay_core_1/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo_1/S_AXIS]
 connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo_0/M_AXIS] [get_bd_intf_pins cmac_0/axis_tx]
-connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo_1/M_AXIS] [get_bd_intf_pins cmac_1/axis_tx]
+if {$enable_port1} {
+  connect_bd_intf_net [get_bd_intf_pins replay_core_1/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo_1/S_AXIS]
+  connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo_1/M_AXIS] [get_bd_intf_pins cmac_1/axis_tx]
+}
 
 connect_bd_net [get_bd_pins cmac_0/rx_axis_tdata] [get_bd_pins rx_cap_0/s_rx_axis_tdata]
 connect_bd_net [get_bd_pins cmac_0/rx_axis_tkeep] [get_bd_pins rx_cap_0/s_rx_axis_tkeep]
 connect_bd_net [get_bd_pins cmac_0/rx_axis_tvalid] [get_bd_pins rx_cap_0/s_rx_axis_tvalid]
 connect_bd_net [get_bd_pins cmac_0/rx_axis_tlast] [get_bd_pins rx_cap_0/s_rx_axis_tlast]
 connect_bd_net [get_bd_pins cmac_0/rx_axis_tuser] [get_bd_pins rx_cap_0/s_rx_axis_tuser]
-connect_bd_net [get_bd_pins cmac_1/rx_axis_tdata] [get_bd_pins rx_cap_1/s_rx_axis_tdata]
-connect_bd_net [get_bd_pins cmac_1/rx_axis_tkeep] [get_bd_pins rx_cap_1/s_rx_axis_tkeep]
-connect_bd_net [get_bd_pins cmac_1/rx_axis_tvalid] [get_bd_pins rx_cap_1/s_rx_axis_tvalid]
-connect_bd_net [get_bd_pins cmac_1/rx_axis_tlast] [get_bd_pins rx_cap_1/s_rx_axis_tlast]
-connect_bd_net [get_bd_pins cmac_1/rx_axis_tuser] [get_bd_pins rx_cap_1/s_rx_axis_tuser]
+if {$enable_port1} {
+  connect_bd_net [get_bd_pins cmac_1/rx_axis_tdata] [get_bd_pins rx_cap_1/s_rx_axis_tdata]
+  connect_bd_net [get_bd_pins cmac_1/rx_axis_tkeep] [get_bd_pins rx_cap_1/s_rx_axis_tkeep]
+  connect_bd_net [get_bd_pins cmac_1/rx_axis_tvalid] [get_bd_pins rx_cap_1/s_rx_axis_tvalid]
+  connect_bd_net [get_bd_pins cmac_1/rx_axis_tlast] [get_bd_pins rx_cap_1/s_rx_axis_tlast]
+  connect_bd_net [get_bd_pins cmac_1/rx_axis_tuser] [get_bd_pins rx_cap_1/s_rx_axis_tuser]
+}
 
 connect_const ddr4_0/sys_rst 1 0
 connect_const xdma_0/usr_irq_req 1 0
 connect_cmac_const_pins cmac_0
-connect_cmac_const_pins cmac_1
+if {$enable_port1} {
+  connect_cmac_const_pins cmac_1
+}
 
 assign_bd_address
 
@@ -508,7 +592,11 @@ foreach seg $ddr_host_segs {
   }
 }
 
-foreach master [list replay_core_0 replay_core_1 rx_cap_0 rx_cap_1] {
+set ddr_core_masters [list replay_core_0 rx_cap_0]
+if {$enable_port1} {
+  lappend ddr_core_masters replay_core_1 rx_cap_1
+}
+foreach master $ddr_core_masters {
   set ddr_core_segs [get_bd_addr_segs -quiet $master/M_AXI/*]
   foreach seg $ddr_core_segs {
     if {[string match *ddr4_0* $seg]} {

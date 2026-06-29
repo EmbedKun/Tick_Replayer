@@ -1,0 +1,32 @@
+[
+  {
+    "name": "already_loaded_100k_x_1518_gap0",
+    "packets": 100000,
+    "bytes": 151800000,
+    "ticks": 2668528,
+    "l2_gbps": 136.52470575538274,
+    "wire_est_gbps": 138.32345023173826,
+    "late": 100000,
+    "underrun": 0
+  },
+  {
+    "name": "100k_x_64_gap0",
+    "packets": 100000,
+    "bytes": 6400000,
+    "ticks": 246373,
+    "l2_gbps": 62.34449391775884,
+    "wire_est_gbps": 81.82714826705849,
+    "late": 100000,
+    "underrun": 0
+  },
+  {
+    "name": "100k_x_1518_gap1200",
+    "packets": 100000,
+    "bytes": 151800000,
+    "ticks": 120000027,
+    "l2_gbps": 3.0359993169001536,
+    "wire_est_gbps": 3.0759993079001555,
+    "late": 0,
+    "underrun": 0
+  }
+]
