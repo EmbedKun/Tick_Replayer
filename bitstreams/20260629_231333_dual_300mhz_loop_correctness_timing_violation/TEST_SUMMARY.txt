@@ -1,0 +1,38 @@
+Tick Replayer dual-port loopback validation summary
+===================================================
+
+Build option
+------------
+TRAFFIC_REPLAY_PORT_COUNT=2
+TRAFFIC_REPLAY_ENABLE_ILA=0
+
+Timing
+------
+Bitstream generation completed, but timing is not clean.
+Final observed summary: WNS=-0.145 ns, TNS=-486.061 ns, WHS=0.006 ns, THS=0.000 ns.
+This archive is for debug evidence, not for release use.
+
+Bring-up
+--------
+1. Programmed remote U200 through Vivado hw_server.
+2. PCIe endpoint enumerated as 10ee:903f.
+3. XDMA device nodes recreated.
+4. DDR H2C/C2H readback passed.
+5. CMAC link_up was yes on port 0 and port 1 with the QSFP0/QSFP1 fiber connected.
+
+Loopback correctness
+--------------------
+PASS: TX0 -> RX1, 16 packets x 64B, full 64B sample compare, rx_errors=0.
+PASS: TX1 -> RX0, 16 packets x 64B, full 64B sample compare, rx_errors=0.
+PASS: TX0 -> RX1, 16 packets x 128B, full 128B sample compare, rx_errors=0.
+PASS: TX1 -> RX0, 16 packets x 128B, full 128B sample compare, rx_errors=0.
+FAIL/DEBUG: Long packets show RX errors and/or sample mismatch on hardware.
+The length sweep found 256B passes, while 512B and above are not clean.
+RTL ddr_trace_reader_perf and trace_replay_core_perf simulations passed, so the current evidence points to dual-port physical timing or a hardware-only long-packet boundary issue.
+
+Files
+-----
+dual_loop_correctness_results.json: first passing 64B/128B checks.
+dual_loop_correctness_extra_results.json: additional 128B and failed 1518B attempt.
+dual_loop_length_sweep_results.json: 256B..1518B sweep showing the long-packet failure envelope.
+reader_perf_sim.log and core_perf_sim.log: RTL/perf simulations passed.

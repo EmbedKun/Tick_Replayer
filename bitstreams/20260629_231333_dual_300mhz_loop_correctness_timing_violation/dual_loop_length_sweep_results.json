@@ -1,0 +1,110 @@
+[
+  {
+    "frame_len": 256,
+    "ok": true,
+    "tx_packets": 4,
+    "tx_bytes": 1024,
+    "tx_underrun": 0,
+    "rx_packets": 4,
+    "rx_bytes": 1024,
+    "rx_errors": 0,
+    "captured_bytes": 1024,
+    "sample_diff": null
+  },
+  {
+    "frame_len": 512,
+    "ok": false,
+    "tx_packets": 4,
+    "tx_bytes": 2048,
+    "tx_underrun": 0,
+    "rx_packets": 4,
+    "rx_bytes": 2048,
+    "rx_errors": 2,
+    "captured_bytes": 1024,
+    "sample_diff": null
+  },
+  {
+    "frame_len": 768,
+    "ok": false,
+    "tx_packets": 4,
+    "tx_bytes": 3072,
+    "tx_underrun": 0,
+    "rx_packets": 4,
+    "rx_bytes": 3072,
+    "rx_errors": 3,
+    "captured_bytes": 1024,
+    "sample_diff": 640
+  },
+  {
+    "frame_len": 1024,
+    "ok": false,
+    "tx_packets": 4,
+    "tx_bytes": 4096,
+    "tx_underrun": 0,
+    "rx_packets": 4,
+    "rx_bytes": 4096,
+    "rx_errors": 2,
+    "captured_bytes": 1024,
+    "sample_diff": 384
+  },
+  {
+    "frame_len": 1280,
+    "ok": false,
+    "tx_packets": 4,
+    "tx_bytes": 5120,
+    "tx_underrun": 0,
+    "rx_packets": 4,
+    "rx_bytes": 5184,
+    "rx_errors": 3,
+    "captured_bytes": 1024,
+    "sample_diff": 960
+  },
+  {
+    "frame_len": 1400,
+    "ok": false,
+    "tx_packets": 4,
+    "tx_bytes": 5600,
+    "tx_underrun": 0,
+    "rx_packets": 4,
+    "rx_bytes": 5608,
+    "rx_errors": 4,
+    "captured_bytes": 1024,
+    "sample_diff": 128
+  },
+  {
+    "frame_len": 1500,
+    "ok": false,
+    "tx_packets": 4,
+    "tx_bytes": 6000,
+    "tx_underrun": 0,
+    "rx_packets": 4,
+    "rx_bytes": 6064,
+    "rx_errors": 3,
+    "captured_bytes": 1024,
+    "sample_diff": null
+  },
+  {
+    "frame_len": 1514,
+    "ok": false,
+    "tx_packets": 4,
+    "tx_bytes": 6056,
+    "tx_underrun": 0,
+    "rx_packets": 4,
+    "rx_bytes": 6056,
+    "rx_errors": 3,
+    "captured_bytes": 1024,
+    "sample_diff": 128
+  },
+  {
+    "frame_len": 1518,
+    "ok": false,
+    "tx_packets": 4,
+    "tx_bytes": 6072,
+    "tx_underrun": 0,
+    "rx_packets": 4,
+    "rx_bytes": 6136,
+    "rx_errors": 3,
+    "captured_bytes": 1024,
+    "sample_diff": 896
+  }
+]

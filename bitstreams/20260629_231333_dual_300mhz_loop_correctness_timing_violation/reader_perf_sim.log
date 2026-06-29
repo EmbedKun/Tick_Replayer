@@ -1,0 +1,127 @@
+
+****** Vivado v2020.2 (64-bit)
+  **** SW Build 3064766 on Wed Nov 18 09:12:47 MST 2020
+  **** IP Build 3064653 on Wed Nov 18 14:17:31 MST 2020
+    ** Copyright 1986-2020 Xilinx, Inc. All Rights Reserved.
+
+source scripts/run_reader_perf_sim.tcl
+# set script_dir [file dirname [file normalize [info script]]]
+# set repo_dir [file normalize [file join $script_dir ..]]
+# set build_root [expr {[info exists ::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)] && $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT) ne "" ? [file normalize $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)] : [file join $repo_dir build]}]
+# set build_dir [file join $build_root reader_perf_sim]
+# file mkdir $build_dir
+# create_project -force traffic_replay_reader_perf $build_dir -part xcu200-fsgd2104-2-e
+# set_property target_language Verilog [current_project]
+# set_property simulator_language Mixed [current_project]
+# set rtl_files [list \
+#   [file join $repo_dir rtl traffic_replay_pkg.sv] \
+#   [file join $repo_dir rtl axis_sync_fifo.sv] \
+#   [file join $repo_dir rtl ddr_trace_reader.sv] \
+# ]
+# set sim_files [list \
+#   [file join $repo_dir sim tb_ddr_trace_reader_perf.sv] \
+# ]
+# add_files -fileset sources_1 $rtl_files
+# add_files -fileset sim_1 $sim_files
+# set_property file_type SystemVerilog [get_files [concat $rtl_files $sim_files]]
+# set_property top tb_ddr_trace_reader_perf [get_filesets sim_1]
+# set_property xsim.simulate.runtime {all} [get_filesets sim_1]
+# update_compile_order -fileset sources_1
+# update_compile_order -fileset sim_1
+# launch_simulation
+Command: launch_simulation 
+INFO: [Vivado 12-5682] Launching behavioral simulation in '/home/user/traffic_replay_remote_src/build/reader_perf_sim/traffic_replay_reader_perf.sim/sim_1/behav/xsim'
+INFO: [SIM-utils-51] Simulation object is 'sim_1'
+INFO: [USF-XSim-7] Finding pre-compiled libraries...
+INFO: [USF-XSim-11] File '/tools/Xilinx/Vivado/2020.2/data/xsim/xsim.ini' copied to run dir:'/home/user/traffic_replay_remote_src/build/reader_perf_sim/traffic_replay_reader_perf.sim/sim_1/behav/xsim'
+INFO: [SIM-utils-54] Inspecting design source files for 'tb_ddr_trace_reader_perf' in fileset 'sim_1'...
+INFO: [USF-XSim-97] Finding global include files...
+INFO: [USF-XSim-98] Fetching design files from 'sim_1'...
+INFO: [USF-XSim-2] XSim::Compile design
+INFO: [USF-XSim-61] Executing 'COMPILE and ANALYZE' step in '/home/user/traffic_replay_remote_src/build/reader_perf_sim/traffic_replay_reader_perf.sim/sim_1/behav/xsim'
+xvlog --incr --relax -L uvm -prj tb_ddr_trace_reader_perf_vlog.prj
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/home/user/traffic_replay_remote_src/rtl/axis_sync_fifo.sv" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module axis_sync_fifo
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/home/user/traffic_replay_remote_src/rtl/traffic_replay_pkg.sv" into library xil_defaultlib
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/home/user/traffic_replay_remote_src/rtl/ddr_trace_reader.sv" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module ddr_trace_reader
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/home/user/traffic_replay_remote_src/sim/tb_ddr_trace_reader_perf.sv" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module tb_ddr_trace_reader_perf
+INFO: [VRFC 10-2263] Analyzing Verilog file "/home/user/traffic_replay_remote_src/build/reader_perf_sim/traffic_replay_reader_perf.sim/sim_1/behav/xsim/glbl.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module glbl
+Waiting for jobs to finish...
+No pending jobs, compilation finished.
+INFO: [USF-XSim-69] 'compile' step finished in '1' seconds
+INFO: [USF-XSim-3] XSim::Elaborate design
+INFO: [USF-XSim-61] Executing 'ELABORATE' step in '/home/user/traffic_replay_remote_src/build/reader_perf_sim/traffic_replay_reader_perf.sim/sim_1/behav/xsim'
+xelab -wto a219b7fd7d5a498d9c23b48deb88066a --incr --debug typical --relax --mt 8 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_ddr_trace_reader_perf_behav xil_defaultlib.tb_ddr_trace_reader_perf xil_defaultlib.glbl -log elaborate.log
+Vivado Simulator 2020.2
+Copyright 1986-1999, 2001-2020 Xilinx, Inc. All Rights Reserved.
+Running: /tools/Xilinx/Vivado/2020.2/bin/unwrapped/lnx64.o/xelab -wto a219b7fd7d5a498d9c23b48deb88066a --incr --debug typical --relax --mt 8 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip -L xpm --snapshot tb_ddr_trace_reader_perf_behav xil_defaultlib.tb_ddr_trace_reader_perf xil_defaultlib.glbl -log elaborate.log 
+Using 8 slave threads.
+Starting static elaboration
+Pass Through NonSizing Optimizer
+Completed static elaboration
+Starting simulation data flow analysis
+Completed simulation data flow analysis
+Time Resolution for simulation is 1ps
+Compiling package xil_defaultlib.traffic_replay_pkg
+Compiling module xpm.xpm_cdc_sync_rst(INIT=0,INIT_SYN...
+Compiling module xpm.xpm_fifo_rst_default
+Compiling module xpm.xpm_fifo_reg_bit
+Compiling module xpm.xpm_counter_updn(COUNTER_WIDTH=1...
+Compiling module xpm.xpm_counter_updn(COUNTER_WIDTH=1...
+Compiling module xpm.xpm_memory_base(MEMORY_TYPE=1,ME...
+Compiling module xpm.xpm_counter_updn(COUNTER_WIDTH=2...
+Compiling module xpm.xpm_fifo_base(FIFO_MEMORY_TYPE=2...
+Compiling module xpm.xpm_fifo_axis(FIFO_MEMORY_TYPE="...
+Compiling module xil_defaultlib.axis_sync_fifo(KEEP_W=64,DEPTH=4...
+Compiling module xil_defaultlib.ddr_trace_reader_default
+Compiling module xil_defaultlib.tb_ddr_trace_reader_perf
+Compiling module xil_defaultlib.glbl
+Built simulation snapshot tb_ddr_trace_reader_perf_behav
+
+****** Webtalk v2020.2 (64-bit)
+  **** SW Build 3064766 on Wed Nov 18 09:12:47 MST 2020
+  **** IP Build 3064653 on Wed Nov 18 14:17:31 MST 2020
+    ** Copyright 1986-2020 Xilinx, Inc. All Rights Reserved.
+
+source /home/user/traffic_replay_remote_src/build/reader_perf_sim/traffic_replay_reader_perf.sim/sim_1/behav/xsim/xsim.dir/tb_ddr_trace_reader_perf_behav/webtalk/xsim_webtalk.tcl -notrace
+INFO: [Common 17-206] Exiting Webtalk at Mon Jun 29 23:10:38 2026...
+INFO: [USF-XSim-69] 'elaborate' step finished in '5' seconds
+INFO: [USF-XSim-4] XSim::Simulate design
+INFO: [USF-XSim-61] Executing 'SIMULATE' step in '/home/user/traffic_replay_remote_src/build/reader_perf_sim/traffic_replay_reader_perf.sim/sim_1/behav/xsim'
+INFO: [USF-XSim-98] *** Running xsim
+   with args "tb_ddr_trace_reader_perf_behav -key {Behavioral:sim_1:Functional:tb_ddr_trace_reader_perf} -tclbatch {tb_ddr_trace_reader_perf.tcl} -log {simulate.log}"
+INFO: [USF-XSim-8] Loading simulator feature
+Vivado Simulator 2020.2
+Time resolution is 1 ps
+source tb_ddr_trace_reader_perf.tcl
+## current_wave_config
+WARNING: Simulation object /tb_ddr_trace_reader_perf/case_name was not traceable in the design for the following reason:
+Vivado Simulator does not support tracing of System Verilog Dynamic Type object.
+PERF              1518B_latency64 pkt_len=1518 pkts=4096 latency=64 ar_stall_period=0 tready_stall_period=0
+  output: packets=4096 beats=98304 bytes=6217728 active_cycles=102669 l2=145.346Gbps axis=147.070Gbps
+  steady: warmup_pkts=256 beats=86016 bytes=5440512 cycles=89857 l2=145.311Gbps axis=147.034Gbps
+  axi_ar: total=527 desc=31 payload=496 desc_beats=4096 payload_beats=98304 payload_avg_burst=198.19
+PERF        1518B_latency128_ar75 pkt_len=1518 pkts=4096 latency=128 ar_stall_period=4 tready_stall_period=0
+  output: packets=4096 beats=98304 bytes=6217728 active_cycles=102669 l2=145.346Gbps axis=147.070Gbps
+  steady: warmup_pkts=256 beats=86016 bytes=5440512 cycles=89857 l2=145.311Gbps axis=147.034Gbps
+  axi_ar: total=527 desc=31 payload=496 desc_beats=4096 payload_beats=98304 payload_avg_burst=198.19
+PERF                64B_latency64 pkt_len=64 pkts=8192 latency=64 ar_stall_period=0 tready_stall_period=0
+  output: packets=8192 beats=8192 bytes=524288 active_cycles=16137 l2=77.976Gbps axis=77.976Gbps
+  steady: warmup_pkts=256 beats=7680 bytes=491520 cycles=15221 l2=77.501Gbps axis=77.501Gbps
+  axi_ar: total=140 desc=63 payload=77 desc_beats=8192 payload_beats=8192 payload_avg_burst=106.39
+PERF      256B_latency64_tready75 pkt_len=256 pkts=4096 latency=64 ar_stall_period=0 tready_stall_period=4
+  output: packets=4096 beats=16384 bytes=1048576 active_cycles=21845 l2=115.202Gbps axis=115.202Gbps
+  steady: warmup_pkts=256 beats=14336 bytes=917504 cycles=19114 l2=115.204Gbps axis=115.204Gbps
+  axi_ar: total=107 desc=31 payload=76 desc_beats=4096 payload_beats=16384 payload_avg_burst=215.58
+PASS: ddr_trace_reader pipeline correctness and throughput simulation completed
+$finish called at time : 816884782 ps : File "/home/user/traffic_replay_remote_src/sim/tb_ddr_trace_reader_perf.sv" Line 506
+run: Time (s): cpu = 00:00:02 ; elapsed = 00:00:11 . Memory (MB): peak = 2428.539 ; gain = 0.000 ; free physical = 106541 ; free virtual = 124099
+xsim: Time (s): cpu = 00:00:02 ; elapsed = 00:00:12 . Memory (MB): peak = 2428.539 ; gain = 55.840 ; free physical = 106541 ; free virtual = 124099
+INFO: [USF-XSim-96] XSim completed. Design snapshot 'tb_ddr_trace_reader_perf_behav' loaded.
+INFO: [USF-XSim-97] XSim simulation ran for all
+launch_simulation: Time (s): cpu = 00:00:07 ; elapsed = 00:00:18 . Memory (MB): peak = 2428.539 ; gain = 64.801 ; free physical = 106541 ; free virtual = 124099
+# quit
+INFO: [Common 17-206] Exiting Vivado at Mon Jun 29 23:10:52 2026...
