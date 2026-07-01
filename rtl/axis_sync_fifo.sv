@@ -23,145 +23,180 @@ module axis_sync_fifo #(
 
   output logic [$clog2(DEPTH+1)-1:0]   level
 );
-  generate
-    if (DEPTH >= 2048) begin : gen_xpm_axis_fifo
-      localparam int COUNT_W = $clog2(DEPTH + 1);
+  localparam int ADDR_W = (DEPTH <= 2) ? 1 : $clog2(DEPTH);
+  localparam int COUNT_W = $clog2(DEPTH + 1);
+  localparam int PAYLOAD_W = DATA_W + KEEP_W + 1;
+  localparam int RAM_READ_LATENCY = 2;
+  localparam int OUT_DEPTH = 4;
+  localparam int OUT_PTR_W = 2;
+  localparam int OUT_COUNT_W = 3;
+  localparam int READY_MARGIN_RAW = OUT_DEPTH + RAM_READ_LATENCY + 4;
+  localparam int READY_MARGIN = (DEPTH > READY_MARGIN_RAW) ? READY_MARGIN_RAW : 1;
 
-      logic [3:0]             reset_shift;
-      logic                   fifo_aresetn;
-      logic [KEEP_W-1:0]      unused_tstrb;
-      logic                   unused_prog_full;
-      logic                   unused_almost_full;
-      logic                   unused_prog_empty;
-      logic                   unused_almost_empty;
-      logic                   unused_sbiterr;
-      logic                   unused_dbiterr;
-      logic [COUNT_W-1:0]     wr_data_count;
-      logic [COUNT_W-1:0]     unused_rd_data_count;
-      logic                   unused_tid;
-      logic                   unused_tdest;
-      logic                   unused_tuser;
+  localparam logic [COUNT_W-1:0] DEPTH_LEVEL = DEPTH;
+  localparam logic [COUNT_W-1:0] ONE_LEVEL = {{(COUNT_W-1){1'b0}}, 1'b1};
+  localparam logic [COUNT_W-1:0] READY_LEVEL = DEPTH - READY_MARGIN;
+  localparam logic [ADDR_W-1:0] LAST_ADDR = DEPTH - 1;
+  localparam logic [OUT_COUNT_W-1:0] OUT_DEPTH_LEVEL = OUT_DEPTH;
 
-      always_ff @(posedge clk) begin
-        if (!rstn || clear) begin
-          reset_shift <= 4'b0000;
-        end else begin
-          reset_shift <= {reset_shift[2:0], 1'b1};
+  logic [ADDR_W-1:0] wr_ptr;
+  logic [ADDR_W-1:0] rd_ptr;
+  logic [COUNT_W-1:0] ram_count;
+  logic [RAM_READ_LATENCY-1:0] rd_valid_pipe;
+  logic [OUT_PTR_W-1:0] out_wr_ptr;
+  logic [OUT_PTR_W-1:0] out_rd_ptr;
+  logic [OUT_COUNT_W-1:0] out_count;
+  logic [PAYLOAD_W-1:0] out_mem [0:OUT_DEPTH-1];
+  logic [PAYLOAD_W-1:0] out_payload_reg;
+  logic                 out_valid_reg;
+  logic                 s_axis_tready_q;
+  logic [PAYLOAD_W-1:0] ram_dout;
+
+  logic [OUT_COUNT_W-1:0] outstanding_count;
+  logic [OUT_COUNT_W-1:0] buffered_count;
+  logic [COUNT_W-1:0] total_level;
+  logic wr_fire;
+  logic rd_issue;
+  logic ram_return_valid;
+  logic out_reg_ready;
+  logic out_pop;
+  logic out_fire;
+
+  function automatic logic [ADDR_W-1:0] inc_ptr(input logic [ADDR_W-1:0] ptr);
+    if (ptr == LAST_ADDR) begin
+      inc_ptr = '0;
+    end else begin
+      inc_ptr = ptr + {{(ADDR_W-1){1'b0}}, 1'b1};
+    end
+  endfunction
+
+  assign outstanding_count =
+    {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[0]} +
+    {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[1]};
+  assign buffered_count = outstanding_count + out_count;
+  assign total_level = ram_count +
+                       {{(COUNT_W-OUT_COUNT_W){1'b0}}, buffered_count} +
+                       {{(COUNT_W-1){1'b0}}, out_valid_reg};
+
+  assign s_axis_tready = s_axis_tready_q;
+  assign wr_fire = s_axis_tvalid && s_axis_tready;
+  assign rd_issue = (ram_count != '0) && (buffered_count < OUT_DEPTH_LEVEL);
+  assign ram_return_valid = rd_valid_pipe[RAM_READ_LATENCY-1];
+
+  assign out_reg_ready = !out_valid_reg || m_axis_tready;
+  assign out_pop = (out_count != '0) && out_reg_ready;
+  assign out_fire = out_valid_reg && m_axis_tready;
+
+  assign m_axis_tvalid = out_valid_reg;
+  assign {m_axis_tlast, m_axis_tkeep, m_axis_tdata} = out_payload_reg;
+  assign level = total_level;
+
+  xpm_memory_sdpram #(
+    .ADDR_WIDTH_A(ADDR_W),
+    .ADDR_WIDTH_B(ADDR_W),
+    .AUTO_SLEEP_TIME(0),
+    .BYTE_WRITE_WIDTH_A(PAYLOAD_W),
+    .CASCADE_HEIGHT(0),
+    .CLOCKING_MODE("common_clock"),
+    .ECC_MODE("no_ecc"),
+    .MEMORY_INIT_FILE("none"),
+    .MEMORY_INIT_PARAM("0"),
+    .MEMORY_OPTIMIZATION("true"),
+    .MEMORY_PRIMITIVE("block"),
+    .MEMORY_SIZE(PAYLOAD_W * DEPTH),
+    .MESSAGE_CONTROL(0),
+    .READ_DATA_WIDTH_B(PAYLOAD_W),
+    .READ_LATENCY_B(RAM_READ_LATENCY),
+    .READ_RESET_VALUE_B("0"),
+    .RST_MODE_A("SYNC"),
+    .RST_MODE_B("SYNC"),
+    .SIM_ASSERT_CHK(0),
+    .USE_EMBEDDED_CONSTRAINT(0),
+    .USE_MEM_INIT(0),
+    .USE_MEM_INIT_MMI(0),
+    .WAKEUP_TIME("disable_sleep"),
+    .WRITE_DATA_WIDTH_A(PAYLOAD_W),
+    .WRITE_MODE_B("no_change"),
+    .WRITE_PROTECT(1)
+  ) payload_ram (
+    .sleep(1'b0),
+    .clka(clk),
+    .ena(1'b1),
+    .wea(wr_fire),
+    .addra(wr_ptr),
+    .dina({s_axis_tlast, s_axis_tkeep, s_axis_tdata}),
+    .injectsbiterra(1'b0),
+    .injectdbiterra(1'b0),
+    .clkb(clk),
+    .rstb(1'b0),
+    .enb(1'b1),
+    .regceb(1'b1),
+    .addrb(rd_ptr),
+    .doutb(ram_dout),
+    .sbiterrb(),
+    .dbiterrb()
+  );
+
+  always_ff @(posedge clk) begin
+    if (!rstn) begin
+      wr_ptr <= '0;
+      rd_ptr <= '0;
+      ram_count <= '0;
+      rd_valid_pipe <= '0;
+      out_wr_ptr <= '0;
+      out_rd_ptr <= '0;
+      out_count <= '0;
+      out_payload_reg <= '0;
+      out_valid_reg <= 1'b0;
+      s_axis_tready_q <= 1'b0;
+    end else begin
+      if (clear) begin
+        wr_ptr <= '0;
+        rd_ptr <= '0;
+        ram_count <= '0;
+        rd_valid_pipe <= '0;
+        out_wr_ptr <= '0;
+        out_rd_ptr <= '0;
+        out_count <= '0;
+        out_payload_reg <= '0;
+        out_valid_reg <= 1'b0;
+        s_axis_tready_q <= 1'b0;
+      end else begin
+        rd_valid_pipe <= {rd_valid_pipe[RAM_READ_LATENCY-2:0], rd_issue};
+        s_axis_tready_q <= (total_level <= READY_LEVEL);
+
+        if (wr_fire) begin
+          wr_ptr <= inc_ptr(wr_ptr);
         end
-      end
-
-      assign fifo_aresetn = reset_shift[3];
-      assign level = wr_data_count;
-
-      xpm_fifo_axis #(
-        .CLOCKING_MODE("common_clock"),
-        .FIFO_MEMORY_TYPE("block"),
-        .PACKET_FIFO("false"),
-        .FIFO_DEPTH(DEPTH),
-        .TDATA_WIDTH(DATA_W),
-        .TID_WIDTH(1),
-        .TDEST_WIDTH(1),
-        .TUSER_WIDTH(1),
-        .SIM_ASSERT_CHK(0),
-        .CASCADE_HEIGHT(0),
-        .ECC_MODE("no_ecc"),
-        .RELATED_CLOCKS(0),
-        .USE_ADV_FEATURES("0404"),
-        .WR_DATA_COUNT_WIDTH(COUNT_W),
-        .RD_DATA_COUNT_WIDTH(COUNT_W),
-        .PROG_FULL_THRESH(DEPTH - 8),
-        .PROG_EMPTY_THRESH(8),
-        .CDC_SYNC_STAGES(2)
-      ) fifo_i (
-        .s_aresetn(fifo_aresetn),
-        .s_aclk(clk),
-        .m_aclk(clk),
-
-        .s_axis_tvalid(s_axis_tvalid),
-        .s_axis_tready(s_axis_tready),
-        .s_axis_tdata(s_axis_tdata),
-        .s_axis_tstrb(s_axis_tkeep),
-        .s_axis_tkeep(s_axis_tkeep),
-        .s_axis_tlast(s_axis_tlast),
-        .s_axis_tid(1'b0),
-        .s_axis_tdest(1'b0),
-        .s_axis_tuser(1'b0),
-
-        .m_axis_tvalid(m_axis_tvalid),
-        .m_axis_tready(m_axis_tready),
-        .m_axis_tdata(m_axis_tdata),
-        .m_axis_tstrb(unused_tstrb),
-        .m_axis_tkeep(m_axis_tkeep),
-        .m_axis_tlast(m_axis_tlast),
-        .m_axis_tid(unused_tid),
-        .m_axis_tdest(unused_tdest),
-        .m_axis_tuser(unused_tuser),
-
-        .prog_full_axis(unused_prog_full),
-        .wr_data_count_axis(wr_data_count),
-        .almost_full_axis(unused_almost_full),
-        .prog_empty_axis(unused_prog_empty),
-        .rd_data_count_axis(unused_rd_data_count),
-        .almost_empty_axis(unused_almost_empty),
-
-        .injectsbiterr_axis(1'b0),
-        .injectdbiterr_axis(1'b0),
-        .sbiterr_axis(unused_sbiterr),
-        .dbiterr_axis(unused_dbiterr)
-      );
-    end else begin : gen_reg_axis_fifo
-      localparam int ADDR_W = $clog2(DEPTH);
-      localparam int COUNT_W = $clog2(DEPTH + 1);
-      localparam logic [COUNT_W-1:0] DEPTH_LEVEL = DEPTH;
-      localparam logic [COUNT_W-1:0] LEVEL_ONE = 1;
-
-      logic [DATA_W-1:0] data_mem [DEPTH];
-      logic [KEEP_W-1:0] keep_mem [DEPTH];
-      logic              last_mem [DEPTH];
-      logic [ADDR_W-1:0] wr_ptr;
-      logic [ADDR_W-1:0] rd_ptr;
-      logic              write_en;
-      logic              read_en;
-
-      assign s_axis_tready = (level != DEPTH_LEVEL);
-      assign m_axis_tvalid = (level != '0);
-      assign write_en      = s_axis_tvalid && s_axis_tready;
-      assign read_en       = m_axis_tvalid && m_axis_tready;
-
-      assign m_axis_tdata = data_mem[rd_ptr];
-      assign m_axis_tkeep = keep_mem[rd_ptr];
-      assign m_axis_tlast = last_mem[rd_ptr];
-
-      always_ff @(posedge clk) begin
-        if (!rstn) begin
-          wr_ptr <= '0;
-          rd_ptr <= '0;
-          level  <= '0;
-        end else begin
-          if (clear) begin
-            wr_ptr <= '0;
-            rd_ptr <= '0;
-            level  <= '0;
-          end else begin
-            if (write_en) begin
-              data_mem[wr_ptr] <= s_axis_tdata;
-              keep_mem[wr_ptr] <= s_axis_tkeep;
-              last_mem[wr_ptr] <= s_axis_tlast;
-              wr_ptr           <= wr_ptr + {{(ADDR_W-1){1'b0}}, 1'b1};
-            end
-
-            if (read_en) begin
-              rd_ptr <= rd_ptr + {{(ADDR_W-1){1'b0}}, 1'b1};
-            end
-
-            unique case ({write_en, read_en})
-              2'b10: level <= level + LEVEL_ONE;
-              2'b01: level <= level - LEVEL_ONE;
-              default: level <= level;
-            endcase
-          end
+        if (rd_issue) begin
+          rd_ptr <= inc_ptr(rd_ptr);
         end
+
+        unique case ({wr_fire, rd_issue})
+          2'b10: ram_count <= ram_count + ONE_LEVEL;
+          2'b01: ram_count <= ram_count - ONE_LEVEL;
+          default: ram_count <= ram_count;
+        endcase
+
+        if (out_pop) begin
+          out_payload_reg <= out_mem[out_rd_ptr];
+          out_valid_reg <= 1'b1;
+          out_rd_ptr <= out_rd_ptr + {{(OUT_PTR_W-1){1'b0}}, 1'b1};
+        end else if (out_fire) begin
+          out_valid_reg <= 1'b0;
+        end
+
+        if (ram_return_valid) begin
+          out_mem[out_wr_ptr] <= ram_dout;
+          out_wr_ptr <= out_wr_ptr + {{(OUT_PTR_W-1){1'b0}}, 1'b1};
+        end
+
+        unique case ({ram_return_valid, out_pop})
+          2'b10: out_count <= out_count + {{(OUT_COUNT_W-1){1'b0}}, 1'b1};
+          2'b01: out_count <= out_count - {{(OUT_COUNT_W-1){1'b0}}, 1'b1};
+          default: out_count <= out_count;
+        endcase
       end
     end
-  endgenerate
+  end
 endmodule

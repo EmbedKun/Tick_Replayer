@@ -56,6 +56,7 @@ intentionally excluded.
 * [Host Tools](#host-tools)
 * [Stream Mode and Stress Testing](#stream-mode-and-stress-testing)
 * [Hardware Validation Suite](#hardware-validation-suite)
+* [Preload Mode Status](#preload-mode-status)
 * [Verification](#verification)
 * [Current Limitations](#current-limitations)
 
@@ -691,9 +692,10 @@ Use `--force-link-up` only for logic bring-up without an optical link.  Throughp
 and packet-loss numbers should be collected with a real `CMAC` link and without
 forcing downstream readiness.
 
-Latest hardware results were collected with the archived bitstream
-`bitstreams/20260628_140628_stream_fast_bram_fifo8192_experimental/`, programmed
-onto the remote U200, with `QSFP0` and `QSFP1` connected by 100G fiber.
+STREAM-mode hardware results in this section were collected with the archived
+bitstream `bitstreams/20260628_140628_stream_fast_bram_fifo8192_experimental/`,
+programmed onto the remote U200, with `QSFP0` and `QSFP1` connected by 100G
+fiber.
 
 Important notes for this build:
 
@@ -750,6 +752,42 @@ with internal replay gating (`force_link_up` and `force_tx_ready`) because
 The `gap=0` rows are internal drain-rate tests.  The large-packet `gap=37`
 result is the useful precision/throughput datapoint for this one-port build:
 it reaches the 100G line-rate target without `late` or `underrun`.
+
+## Preload Mode Status
+
+The current dual-port preload work is documented in
+[`docs/preload.md`](docs/preload.md).  This is the first dual-port build where
+the replay scheduler, DDR reader, TX path, CMAC link, and RX counter path were
+tested together over a real `QSFP0` <-> `QSFP1` 100G optical loop.
+
+The archived image is:
+
+```text
+bitstreams/20260701_203500_dual_preload_gap38_mixed_timing_violation/
+```
+
+Bit generation completed, but the image is still experimental because
+post-route timing is slightly negative: `WNS=-0.018ns`, `TNS=-0.228ns`, with
+`21` failing setup endpoints.
+
+Key results:
+
+![Preload validation terminal summary](docs/images/preload_20260701_terminal.png)
+
+| Test | Packets | Gap ticks | TX packets | RX packets | Late | Underrun | Wire-est. Gbps | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `1518B` sweep best pass | `20000` | `38` | `20000` | `20000` | `0` | `0` | `97.386` | RX error counter still reports `1255`. |
+| `1518B` over-rate boundary | `20000` | `37` | `2103` | `2083` | `0` | `0` | timeout | Downstream `tready` backpressure stalls the replay core. |
+| `64B` sweep best pass | `200000` | `3` | `200000` | `200000` | `0` | `0` | `70.400` | Clean RX error counter, but below 100G. |
+| `64B` over-rate boundary | `200000` | `2` | `502` | invalid | `0` | `0` | timeout | `gap=2` requests about `105.6Gbps` wire rate. |
+| Mixed sizes | `120000` | per-packet | `120000` | `120000` | `0` | `0` | `96.158` | Schedule error is only `+11` ticks; RX errors still `128`. |
+
+The important architectural conclusion is that large-packet preload replay is
+now close to the physical 100G limit and mixed-packet scheduling is accurate.
+The two remaining blockers are not host loading speed, because preload removes
+the host from the timed transmit window.  They are the residual dual-port timing
+violation and real CMAC-side datapath cleanup: RX errors must go to zero, and
+over-rate tests need a BAR-controlled soft reset for the full TX datapath.
 
 ## Verification
 
@@ -809,7 +847,7 @@ Run the three-packet DDR preload trace over both directions:
 
 ![Three-packet trace result](docs/images/three_packet_trace.png)
 
-The latest hardware smoke test proves:
+Hardware smoke tests to date prove:
 
 * Host `H2C`/`C2H` DMA can read and write `DDR4`.
 * `AXI-Lite` register access works through the `XDMA` user `BAR`.
@@ -821,7 +859,9 @@ The latest hardware smoke test proves:
   the reader consumes committed bytes, waits while the Host producer pointer is
   unchanged, then resumes when software advances `STREAM_WR_PTR`.
 * `QSFP0` and `QSFP1` `CMAC` links come up over the 100G optical loop.
-* `TX0` -> `RX1` and `TX1` -> `RX0` both preserve packet count and byte count.
+* `TX0` -> `RX1` and `TX1` -> `RX0` both preserve packet count in the passing
+  loopback tests.  Large-packet and mixed-packet RX byte/error counters still
+  need cleanup, as documented in [`docs/preload.md`](docs/preload.md).
 * Multi-beat packets up to at least 256 bytes are not split after the `FIFO`
   read-latency fix.
 * `RX` capture writes a readable recent-packet window into `DDR4`.
@@ -832,7 +872,19 @@ The latest hardware smoke test proves:
 
 ## Current Limitations
 
-* The latest archived BRAM-FIFO STREAM build is functional but not timing-clean:
+* The latest dual-port preload image is functional but still experimental:
+  post-route physopt timing is `WNS=-0.018 ns`, `TNS=-0.228 ns`.
+* Large-packet preload replay reaches `97.386Gbps` wire-estimated throughput at
+  `1518B`, `gap=38`, with no `late` or `underrun`, but the RX error counter is
+  not clean yet.
+* Minimum-size `64B` preload replay is stable at `gap=3`, which is about
+  `70.400Gbps` wire-estimated throughput.  The current integer tick scheduler
+  and one-packet-per-tick release model cannot represent the average spacing
+  needed for 100G minimum-size packets without a scheduler architecture change.
+* Over-rate preload tests can fill the downstream TX async FIFO/CMAC side and
+  stall with `m_tx_axis_tready=0`.  `stop`/`clear` reset the replay core but do
+  not yet reset the whole per-port TX datapath.
+* The archived BRAM-FIFO STREAM build is functional but not timing-clean:
   final implementation timing is `WNS=-0.247 ns`.
 * The finite-buffer `STREAM` path reaches about `96.98Gbps` for 1518-byte
   packets, but near-line-rate tests still report `late_packets` and

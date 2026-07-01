@@ -1,0 +1,94 @@
+=== lbus adapter ===
+
+****** Vivado v2020.2 (64-bit)
+  **** SW Build 3064766 on Wed Nov 18 09:12:47 MST 2020
+  **** IP Build 3064653 on Wed Nov 18 14:17:31 MST 2020
+    ** Copyright 1986-2020 Xilinx, Inc. All Rights Reserved.
+
+source scripts/run_lbus_adapter_sim.tcl
+# set script_dir [file dirname [file normalize [info script]]]
+# set repo_dir [file normalize [file join $script_dir ..]]
+# create_project -force traffic_replay_lbus_adapter_sim [file join $repo_dir build sim_lbus_adapters] -part xcu200-fsgd2104-2-e
+# set_property target_language Verilog [current_project]
+# set_property simulator_language Mixed [current_project]
+# add_files -fileset sim_1 [list \
+#   [file join $repo_dir rtl axis_to_lbus_512.sv] \
+#   [file join $repo_dir rtl lbus_to_axis_512.sv] \
+#   [file join $repo_dir sim tb_lbus_adapters.sv] \
+# ]
+# set_property file_type SystemVerilog [get_files [list \
+#   [file join $repo_dir rtl axis_to_lbus_512.sv] \
+#   [file join $repo_dir rtl lbus_to_axis_512.sv] \
+#   [file join $repo_dir sim tb_lbus_adapters.sv] \
+# ]]
+# set_property top tb_lbus_adapters [get_filesets sim_1]
+# set_property xsim.simulate.runtime {all} [get_filesets sim_1]
+# update_compile_order -fileset sim_1
+# launch_simulation
+Command: launch_simulation
+INFO: [Vivado 12-5682] Launching behavioral simulation in '/home/user/traffic_replay_remote_src/build/sim_lbus_adapters/traffic_replay_lbus_adapter_sim.sim/sim_1/behav/xsim'
+INFO: [SIM-utils-51] Simulation object is 'sim_1'
+INFO: [SIM-utils-54] Inspecting design source files for 'tb_lbus_adapters' in fileset 'sim_1'...
+INFO: [USF-XSim-97] Finding global include files...
+INFO: [USF-XSim-98] Fetching design files from 'sim_1'...
+INFO: [USF-XSim-2] XSim::Compile design
+INFO: [USF-XSim-61] Executing 'COMPILE and ANALYZE' step in '/home/user/traffic_replay_remote_src/build/sim_lbus_adapters/traffic_replay_lbus_adapter_sim.sim/sim_1/behav/xsim'
+xvlog --incr --relax -L uvm -prj tb_lbus_adapters_vlog.prj
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/home/user/traffic_replay_remote_src/rtl/axis_to_lbus_512.sv" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module axis_to_lbus_512
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/home/user/traffic_replay_remote_src/rtl/lbus_to_axis_512.sv" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module lbus_to_axis_512
+INFO: [VRFC 10-2263] Analyzing SystemVerilog file "/home/user/traffic_replay_remote_src/sim/tb_lbus_adapters.sv" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module tb_lbus_adapters
+INFO: [VRFC 10-2263] Analyzing Verilog file "/home/user/traffic_replay_remote_src/build/sim_lbus_adapters/traffic_replay_lbus_adapter_sim.sim/sim_1/behav/xsim/glbl.v" into library xil_defaultlib
+INFO: [VRFC 10-311] analyzing module glbl
+Waiting for jobs to finish...
+No pending jobs, compilation finished.
+INFO: [USF-XSim-69] 'compile' step finished in '1' seconds
+INFO: [USF-XSim-3] XSim::Elaborate design
+INFO: [USF-XSim-61] Executing 'ELABORATE' step in '/home/user/traffic_replay_remote_src/build/sim_lbus_adapters/traffic_replay_lbus_adapter_sim.sim/sim_1/behav/xsim'
+xelab -wto c3fe38ce5d904283b2506c3f4995b9b5 --incr --debug typical --relax --mt 8 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip --snapshot tb_lbus_adapters_behav xil_defaultlib.tb_lbus_adapters xil_defaultlib.glbl -log elaborate.log
+Vivado Simulator 2020.2
+Copyright 1986-1999, 2001-2020 Xilinx, Inc. All Rights Reserved.
+Running: /tools/Xilinx/Vivado/2020.2/bin/unwrapped/lnx64.o/xelab -wto c3fe38ce5d904283b2506c3f4995b9b5 --incr --debug typical --relax --mt 8 -L xil_defaultlib -L uvm -L unisims_ver -L unimacro_ver -L secureip --snapshot tb_lbus_adapters_behav xil_defaultlib.tb_lbus_adapters xil_defaultlib.glbl -log elaborate.log
+Using 8 slave threads.
+Starting static elaboration
+Pass Through NonSizing Optimizer
+Completed static elaboration
+Starting simulation data flow analysis
+Completed simulation data flow analysis
+Time Resolution for simulation is 1ps
+Compiling module xil_defaultlib.axis_to_lbus_512_default
+Compiling module xil_defaultlib.lbus_to_axis_512_default
+Compiling module xil_defaultlib.tb_lbus_adapters
+Compiling module xil_defaultlib.glbl
+Built simulation snapshot tb_lbus_adapters_behav
+
+****** Webtalk v2020.2 (64-bit)
+  **** SW Build 3064766 on Wed Nov 18 09:12:47 MST 2020
+  **** IP Build 3064653 on Wed Nov 18 14:17:31 MST 2020
+    ** Copyright 1986-2020 Xilinx, Inc. All Rights Reserved.
+
+source /home/user/traffic_replay_remote_src/build/sim_lbus_adapters/traffic_replay_lbus_adapter_sim.sim/sim_1/behav/xsim/xsim.dir/tb_lbus_adapters_behav/webtalk/xsim_webtalk.tcl -notrace
+INFO: [Common 17-206] Exiting Webtalk at Wed Jul  1 20:34:00 2026...
+INFO: [USF-XSim-69] 'elaborate' step finished in '3' seconds
+INFO: [USF-XSim-4] XSim::Simulate design
+INFO: [USF-XSim-61] Executing 'SIMULATE' step in '/home/user/traffic_replay_remote_src/build/sim_lbus_adapters/traffic_replay_lbus_adapter_sim.sim/sim_1/behav/xsim'
+INFO: [USF-XSim-98] *** Running xsim
+   with args "tb_lbus_adapters_behav -key {Behavioral:sim_1:Functional:tb_lbus_adapters} -tclbatch {tb_lbus_adapters.tcl} -log {simulate.log}"
+INFO: [USF-XSim-8] Loading simulator feature
+Vivado Simulator 2020.2
+Time resolution is 1 ps
+source tb_lbus_adapters.tcl
+## current_wave_config
+WARNING: [Wavedata 42-489] Can't add object "/tb_lbus_adapters/exp_data" to the wave window because it has 2097152 bits, which exceeds the display limit of 65536 bits.  To change the display limit, use the command "set_property display_limit <new limit> [current_wave_config]".
+WARNING: [Wavedata 42-489] Can't add object "/tb_lbus_adapters/exp_keep" to the wave window because it has 262144 bits, which exceeds the display limit of 65536 bits.  To change the display limit, use the command "set_property display_limit <new limit> [current_wave_config]".
+PASS: LBUS adapters preserve AXIS payload, keep, last, and error metadata under backpressure
+PASS: LBUS adapter full-rate 64B burst outputs=1024 span_cycles=1024
+$finish called at time : 3516950 ps : File "/home/user/traffic_replay_remote_src/sim/tb_lbus_adapters.sv" Line 356
+INFO: [USF-XSim-96] XSim completed. Design snapshot 'tb_lbus_adapters_behav' loaded.
+INFO: [USF-XSim-97] XSim simulation ran for all
+launch_simulation: Time (s): cpu = 00:00:04 ; elapsed = 00:00:06 . Memory (MB): peak = 2429.508 ; gain = 64.801 ; free physical = 73280 ; free virtual = 123248
+# close_sim
+INFO: [Simtcl 6-16] Simulation closed
+INFO: [Common 17-206] Exiting Vivado at Wed Jul  1 20:34:04 2026...

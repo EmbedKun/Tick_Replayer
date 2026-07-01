@@ -24,5 +24,12 @@ Archived versions currently kept in this repository:
 
   20260627_014343_stream_prefetch_lutram_fifo_dual_qsfp_impl
     Restored LUTRAM stream-prefetch FIFO image.  Vivado implementation and
-    bitgen completed successfully with routed timing met.  This is the current
+    bitgen completed successfully with routed timing met.  This is a
     hardware-tested STREAM mode image.
+
+  20260701_203500_dual_preload_gap38_mixed_timing_violation
+    Dual-port PRELOAD experimental image.  Bitgen completed, but timing is
+    slightly negative (WNS=-0.018 ns).  QSFP0->QSFP1 loopback reached
+    97.386Gbps wire-estimated throughput for 1518B packets at gap=38 and
+    96.158Gbps for a mixed-size trace with only +11 tick schedule error.
+    RX error counters and over-rate recovery still need RTL cleanup.

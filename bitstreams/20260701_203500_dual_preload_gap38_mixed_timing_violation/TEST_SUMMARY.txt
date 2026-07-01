@@ -1,0 +1,67 @@
+PRELOAD loopback test summary
+=============================
+
+Date
+----
+2026-07-01
+
+Setup
+-----
+Remote U200 host with QSFP0 and QSFP1 connected by 100G fiber.
+Tests transmitted on port 0 and measured RX counters on port 1.
+
+Basic checks
+------------
+XDMA driver/devices were present after PCIe rescan and driver reload.
+DDR H2C/C2H deterministic readback passed.
+Both CMAC links reported up.
+
+Simulation status before hardware
+---------------------------------
+  run_reader_perf_sim.tcl      PASS
+  run_core_perf_sim.tcl        PASS
+  run_dual_core_perf_sim.tcl   PASS
+  run_lbus_adapter_sim.tcl     PASS
+  run_axis_sync_fifo_sim.tcl   PASS
+  run_axis_async_fifo_sim.tcl  PASS
+
+1518-byte preload sweep
+-----------------------
+Packets: 20000
+
+  gap=42 PASS  tx=20000 rx=20000 late=0 underrun=0 wire24=88.111G rx_err=11334
+  gap=40 PASS  tx=20000 rx=20000 late=0 underrun=0 wire24=92.517G rx_err=9429
+  gap=38 PASS  tx=20000 rx=20000 late=0 underrun=0 wire24=97.386G rx_err=1255
+  gap=37 FAIL  tx=2103  rx=2083  late=0 underrun=0 stalled with downstream TX backpressure
+
+64-byte preload sweep
+---------------------
+Packets: 200000
+
+  gap=5 PASS  tx=200000 rx=200000 late=0 underrun=0 wire24=42.240G rx_err=0
+  gap=4 PASS  tx=200000 rx=200000 late=0 underrun=0 wire24=52.800G rx_err=0
+  gap=3 PASS  tx=200000 rx=200000 late=0 underrun=0 wire24=70.400G rx_err=0
+  gap=2 FAIL  tx=502    rx invalid after stall; target rate is about 105.6G wire
+
+Mixed packet preload
+--------------------
+Packets: 120000
+Sizes: 64, 1518, 128, 1024, 256, 512 bytes, equal count
+
+  PASS tx=120000 rx=120000 late=0 underrun=0
+  ideal_ticks=1820000 measured_ticks=1820011
+  L2=92.360G wire24=96.158G rx_err=128
+
+Interpretation
+--------------
+Large-packet preload replay is close to the physical 100G target and the
+timestamp scheduler is accurate for mixed packet sizes.  Small-packet replay is
+limited by the current integer tick, one-packet-per-tick scheduler: gap=2
+overdrives the link and gap=3 is stable but only about 70.4G wire estimate.
+
+Remaining blockers
+------------------
+  * post-route timing is slightly negative: WNS=-0.018 ns
+  * RX error counters are nonzero for large/mixed packet loopback
+  * over-rate tests can stall on downstream TX tready backpressure
+  * stop/clear does not yet reset the full per-port TX datapath

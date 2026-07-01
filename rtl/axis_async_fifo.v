@@ -72,15 +72,20 @@ module axis_async_fifo #
   (* ASYNC_REG = "TRUE" *) reg [PTR_W-1:0] wr_gray_rclk_2 = {PTR_W{1'b0}};
 
   reg wr_full = 1'b0;
+  reg wr_ready_reg = 1'b0;
   reg [READ_PIPE_LEN-1:0] rd_valid_pipe = {READ_PIPE_LEN{1'b0}};
   reg [OUT_PTR_W-1:0] out_wr_ptr = {OUT_PTR_W{1'b0}};
   reg [OUT_PTR_W-1:0] out_rd_ptr = {OUT_PTR_W{1'b0}};
   reg [OUT_COUNT_W-1:0] out_count = {OUT_COUNT_W{1'b0}};
   reg [PAYLOAD_W-1:0] out_mem [0:OUT_DEPTH-1];
+  reg [PAYLOAD_W-1:0] out_payload_reg = {PAYLOAD_W{1'b0}};
+  reg out_valid_reg = 1'b0;
 
   wire wr_fire = s_axis_tvalid && s_axis_tready;
   wire rd_empty_now = rd_gray == wr_gray_rclk_2;
-  wire out_pop = (out_count != {OUT_COUNT_W{1'b0}}) && m_axis_tready;
+  wire out_reg_ready = !out_valid_reg || m_axis_tready;
+  wire out_pop = (out_count != {OUT_COUNT_W{1'b0}}) && out_reg_ready;
+  wire out_fire = out_valid_reg && m_axis_tready;
   wire ram_return_valid = rd_valid_pipe[READ_PIPE_LEN-1];
   wire [OUT_COUNT_W-1:0] outstanding_count =
     {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[0]} +
@@ -98,10 +103,10 @@ module axis_async_fifo #
     rd_gray_wclk_2[PTR_W-3:0]
   };
 
-  assign s_axis_tready = s_resetn && !wr_full;
-  assign m_axis_tvalid = m_resetn && (out_count != {OUT_COUNT_W{1'b0}});
+  assign s_axis_tready = wr_ready_reg;
+  assign m_axis_tvalid = out_valid_reg;
 
-  assign {m_axis_tuser, m_axis_tlast, m_axis_tkeep, m_axis_tdata} = out_mem[out_rd_ptr];
+  assign {m_axis_tuser, m_axis_tlast, m_axis_tkeep, m_axis_tdata} = out_payload_reg;
 
   xpm_memory_sdpram #(
     .ADDR_WIDTH_A(DEPTH_LOG2),
@@ -133,7 +138,7 @@ module axis_async_fifo #
   ) payload_ram (
     .sleep(1'b0),
     .clka(s_clk),
-    .ena(wr_fire),
+    .ena(1'b1),
     .wea(wr_fire),
     .addra(wr_bin[DEPTH_LOG2-1:0]),
     .dina({s_axis_tuser, s_axis_tlast, s_axis_tkeep, s_axis_tdata}),
@@ -141,7 +146,7 @@ module axis_async_fifo #
     .injectdbiterra(1'b0),
     .clkb(m_clk),
     .rstb(1'b0),
-    .enb(rd_issue),
+    .enb(1'b1),
     .regceb(1'b1),
     .addrb(rd_bin[DEPTH_LOG2-1:0]),
     .doutb(ram_dout),
@@ -156,10 +161,12 @@ module axis_async_fifo #
       rd_gray_wclk_1 <= {PTR_W{1'b0}};
       rd_gray_wclk_2 <= {PTR_W{1'b0}};
       wr_full <= 1'b0;
+      wr_ready_reg <= 1'b0;
     end else begin
       rd_gray_wclk_1 <= rd_gray;
       rd_gray_wclk_2 <= rd_gray_wclk_1;
       wr_full <= wr_full_next;
+      wr_ready_reg <= !wr_full_next;
 
       if (wr_fire) begin
         wr_bin <= wr_bin_next;
@@ -178,6 +185,8 @@ module axis_async_fifo #
       out_wr_ptr <= {OUT_PTR_W{1'b0}};
       out_rd_ptr <= {OUT_PTR_W{1'b0}};
       out_count <= {OUT_COUNT_W{1'b0}};
+      out_payload_reg <= {PAYLOAD_W{1'b0}};
+      out_valid_reg <= 1'b0;
     end else begin
       wr_gray_rclk_1 <= wr_gray;
       wr_gray_rclk_2 <= wr_gray_rclk_1;
@@ -189,7 +198,11 @@ module axis_async_fifo #
       end
 
       if (out_pop) begin
+        out_payload_reg <= out_mem[out_rd_ptr];
+        out_valid_reg <= 1'b1;
         out_rd_ptr <= out_rd_ptr + {{(OUT_PTR_W-1){1'b0}}, 1'b1};
+      end else if (out_fire) begin
+        out_valid_reg <= 1'b0;
       end
 
       if (ram_return_valid) begin
