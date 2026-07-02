@@ -1,0 +1,25 @@
+user@FNIL-2022DEC-GPU-3:~$ python3 /home/user/traffic_replay_remote_src/software/loopback_rx_verify.py --tx-port 0 --rx-port 1 --packet-count 64 --frame-len 128 --gap-ticks 2000 --rx-ring-base 0x32000000 --rx-ring-size 0x00100000 --work-dir /tmp/tr_realshot_loop_known_issue --timeout 30 
+tx_port           : 0
+rx_port           : 1
+frame_len         : 128
+gap_ticks         : 2000
+packet_count      : 64
+completed         : True
+wall_seconds      : 0.005088
+tx_packets        : 64
+drop_packets      : 0
+late_packets      : 0
+stall_events      : 0
+rx_packets        : 64
+rx_bytes          : 8208
+rx_errors         : 4
+captured_bytes    : 4096
+axi_writes        : 64
+axi_errors        : 0
+write_ptr         : 4096
+rx_status         : 0x00000028
+checked_samples   : 64
+sample_mismatches : 0
+FAIL: loopback RX verification failed
+user@FNIL-2022DEC-GPU-3:~$ echo $?
+1

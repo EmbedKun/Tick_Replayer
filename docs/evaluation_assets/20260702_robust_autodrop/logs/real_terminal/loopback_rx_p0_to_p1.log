@@ -1,0 +1,25 @@
+user@FNIL-2022DEC-GPU-3:~$ python3 /home/user/traffic_replay_remote_src/software/loopback_rx_verify.py --tx-port 0 --rx-port 1 --packet-count 32 --frame-len 64 --gap-ticks 10000 --rx-ring-base 0x32000000 --rx-ring-size 0x00100000 --work-dir /tmp/tr_realshot_loop_p0_to_p1 --timeout 30 
+tx_port           : 0
+rx_port           : 1
+frame_len         : 64
+gap_ticks         : 10000
+packet_count      : 32
+completed         : True
+wall_seconds      : 0.005087
+tx_packets        : 32
+drop_packets      : 0
+late_packets      : 0
+stall_events      : 0
+rx_packets        : 32
+rx_bytes          : 2048
+rx_errors         : 0
+captured_bytes    : 2048
+axi_writes        : 32
+axi_errors        : 0
+write_ptr         : 2048
+rx_status         : 0x00000028
+checked_samples   : 32
+sample_mismatches : 0
+PASS: TX/RX loopback sample payloads match
+user@FNIL-2022DEC-GPU-3:~$ echo $?
+0

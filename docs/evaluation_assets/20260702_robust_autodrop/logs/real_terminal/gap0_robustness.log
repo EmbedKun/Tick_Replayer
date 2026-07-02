@@ -1,0 +1,6 @@
+user@FNIL-2022DEC-GPU-3:~$ python3 /home/user/traffic_replay_remote_src/software/preload_stress_test.py --port 0 --packet-count 100000 --case 64:0 --case 1518:0 --work-dir /tmp/tr_realshot_gap0 --csv /home/user/traffic_replay_remote_src/bitstreams/20260702_113125_dual_preload_autodrop_wns_minus003_accepted/evaluation_logs/real_terminal/gap0_robustness.csv --timeout 30 
+case frame_len=64 gap=0 done=True tx=100000 drop=95561 delivered_est=4439 late=100000 underrun=0 stall=32 l2=2.862Gbps wire=3.935Gbps load=8.159Gbps
+case frame_len=1518 gap=0 done=True tx=100000 drop=100000 delivered_est=0 late=100000 underrun=0 stall=65 l2=0.000Gbps wire=0.000Gbps load=12.100Gbps
+wrote /home/user/traffic_replay_remote_src/bitstreams/20260702_113125_dual_preload_autodrop_wns_minus003_accepted/evaluation_logs/real_terminal/gap0_robustness.csv
+user@FNIL-2022DEC-GPU-3:~$ echo $?
+0

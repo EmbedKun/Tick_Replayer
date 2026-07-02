@@ -1,0 +1,17 @@
+user@FNIL-2022DEC-GPU-3:~$ python3 /home/user/traffic_replay_remote_src/software/preload_precision_check.py --port 0 --packet-count 50000 --pattern 64:3\,1518:38 --max-abs-tick-error 64 --work-dir /tmp/tr_realshot_precision --timeout 60 
+port              : 0
+pattern           : 64:3,1518:38
+packet_count      : 50000
+completed         : True
+tx_packets        : 50000
+late_packets      : 0
+underrun_packets  : 0
+drop_packets      : 0
+stall_events      : 0
+expected_ticks    : 1025000
+debug_ticks       : 1025027
+tick_error        : 27
+wall_seconds      : 0.005080
+PASS: scheduler debug_ticks matches descriptor gap_ticks budget
+user@FNIL-2022DEC-GPU-3:~$ echo $?
+0

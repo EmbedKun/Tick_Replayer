@@ -20,7 +20,7 @@
 docs/evaluation_assets/20260702_robust_autodrop/logs/
 ```
 
-命令行截图保存于：
+真实终端命令行截图保存于：
 
 ```text
 docs/evaluation_assets/20260702_robust_autodrop/screenshots/
@@ -38,7 +38,7 @@ docs/evaluation_assets/20260702_robust_autodrop/screenshots/
 | PRELOAD mixed | 通过 | `64B gap=3` 与 `1518B gap=38` 交错，`100000` 包，约 `95.413Gbps wire` |
 | 调度 tick 精度 | 通过 | `50000` mixed 包，`expected_ticks=1025000`，`debug_ticks=1025027`，误差 `27 ticks` |
 | TX/RX 低速回环内容 | 通过 | `64B` 包双向回环，RX sample ring 读回 payload 匹配，`rx_errors=0` |
-| TX/RX 较快/多 beat 回环 | 部分通过 | `128B gap=2000` payload 匹配，但 `rx_errors=8`，需要继续查 RX adapter/error 语义 |
+| TX/RX 较快/多 beat 回环 | 部分通过 | `128B gap=2000` payload 匹配，但 `rx_errors` 非零；本轮真实终端复跑为 `rx_errors=4`，需要继续查 RX adapter/error 语义 |
 | `gap=0` 鲁棒性 | 通过鲁棒性，不通过无损回放 | 系统能结束且计数 drop/stall，不会死机；这是过载保护，不是正确回放速率 |
 | 15 分钟压力测试 | 通过 | `900.186s`、`472` 轮、`0` 失败，双端口交替 mixed no-drop |
 
@@ -66,9 +66,9 @@ python3 software/traffic_replay_cli.py --port 0 auto-drop on
 | `DROP_PKTS/DROP_BEATS/STALL_EVT` | 自动丢弃和 stall watchdog 计数 |
 | `DEBUG_STATUS` | replay core 内部状态，包括 `m_tx_axis_tready/tvalid` 等 |
 
-![环境枚举](docs/evaluation_assets/20260702_robust_autodrop/screenshots/00_environment.png)
+![环境枚举真实终端](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_environment.png)
 
-![控制平面](docs/evaluation_assets/20260702_robust_autodrop/screenshots/01_control_plane.png)
+![控制平面真实终端](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_control_plane.png)
 
 ## 4. H2C/C2H DDR 读回校验
 
@@ -89,7 +89,7 @@ python3 software/ddr_readback_check.py \
 - FPGA DDR 到 Host 的 XDMA C2H 路径可用。
 - 多地址范围读写没有发现错位或数据损坏。
 
-![H2C/C2H DDR 回读](docs/evaluation_assets/20260702_robust_autodrop/screenshots/02_h2c_c2h_ddr.png)
+![H2C/C2H DDR 回读真实终端](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_h2c_c2h_ddr.png)
 
 ## 5. PRELOAD 大包/小包回放
 
@@ -120,9 +120,11 @@ python3 software/preload_stress_test.py \
 | port1 | `64B gap=3` | `drop=0 late=0 underrun=0 stall=0` | `51.199Gbps` | `70.398Gbps` |
 | port1 | `1518B gap=38` | `drop=0 late=0 underrun=0 stall=0` | `95.872Gbps` | `97.388Gbps` |
 
-![port0 大包/小包](docs/evaluation_assets/20260702_robust_autodrop/screenshots/03_preload_small_large_p0.png)
+真实命令行截图：
 
-![port1 大包/小包](docs/evaluation_assets/20260702_robust_autodrop/screenshots/04_preload_small_large_p1.png)
+![port0 大包/小包真实命令行](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_preload_small_large_port0.png)
+
+![port1 大包/小包真实命令行](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_preload_small_large_port1.png)
 
 ## 6. Mixed 大小包吞吐测试
 
@@ -153,7 +155,9 @@ wire=95.413Gbps
 
 这个测试是真正交错生成 descriptor/data，不是把大包和小包拆成两组分别跑。当前 mixed 场景下，PRELOAD 能稳定接近 100G 线速，但还不是严格 100G。
 
-![mixed preload](docs/evaluation_assets/20260702_robust_autodrop/screenshots/05_preload_mixed_p0.png)
+真实命令行截图：
+
+![mixed preload 真实命令行](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_preload_mixed_port0.png)
 
 ## 7. 调度精确度测试
 
@@ -183,7 +187,7 @@ stall_events      : 0
 
 严格意义上的“线侧发包间隔精度”还需要 RX 侧 timestamp 或 ILA 对 CMAC TX/RX 端信号采样。目前 RX capture ring 只保存截断 payload 和统计计数，还不能直接给出每个包的到达 tick。
 
-![调度 tick 精度](docs/evaluation_assets/20260702_robust_autodrop/screenshots/06b_scheduler_precision.png)
+![调度 tick 精度真实终端](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_scheduler_precision.png)
 
 ## 8. TX/RX 数据通路正确性
 
@@ -218,13 +222,13 @@ python3 software/loopback_rx_verify.py \
 
 这说明两个方向的 CMAC TX/RX、光纤链路、RX sample ring 写 DDR、C2H 读回校验链路都通了。
 
-![TX0 到 RX1 回环](docs/evaluation_assets/20260702_robust_autodrop/screenshots/07b_loopback_rx_p0_to_p1.png)
+![TX0 到 RX1 回环真实终端](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_loopback_rx_p0_to_p1.png)
 
-![TX1 到 RX0 回环](docs/evaluation_assets/20260702_robust_autodrop/screenshots/07c_loopback_rx_p1_to_p0.png)
+![TX1 到 RX0 回环真实终端](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_loopback_rx_p1_to_p0.png)
 
-补充现象：`128B gap=2000`、`64` 包的较快/多 beat 回环中，payload 前 `64B` 全部匹配，但 `rx_errors=8`。这说明数据内容路径是通的，但 RX LBUS/AXIS adapter 对多 beat 或较快 capture 的 error 标志处理还需要继续定位。
+补充现象：`128B gap=2000`、`64` 包的较快/多 beat 回环中，payload 前 `64B` 全部匹配，但 `rx_errors` 非零；本轮真实终端复跑为 `rx_errors=4`，此前也观察到过 `rx_errors=8`。这说明数据内容路径是通的，但 RX LBUS/AXIS adapter 对多 beat 或较快 capture 的 error 标志处理还需要继续定位。
 
-![RX 已知问题复现](docs/evaluation_assets/20260702_robust_autodrop/screenshots/07_loopback_rx_verify.png)
+![RX 已知问题复现真实终端](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_loopback_rx_known_issue.png)
 
 ## 9. `gap=0` 鲁棒性测试
 
@@ -242,7 +246,7 @@ python3 software/preload_stress_test.py \
 
 | 包长 | 结果 |
 | --- | --- |
-| `64B gap=0` | `done=True`，`tx=100000`，`drop=98761`，`late=100000`，`stall=31` |
+| `64B gap=0` | `done=True`，`tx=100000`，`drop=95561`，`late=100000`，`stall=32` |
 | `1518B gap=0` | `done=True`，`tx=100000`，`drop=100000`，`late=100000`，`stall=65` |
 
 这个测试的目标不是无损回放，而是验证过载时系统是否会卡死。当前结果说明：
@@ -251,9 +255,9 @@ python3 software/preload_stress_test.py \
 - watchdog/auto-drop 可以把过载转成可观测计数。
 - `gap=0` 后端口可能进入持续 backpressure 状态，后续严肃 no-drop 测试建议重新 clear 或重新烧录作为干净基线。
 
-![gap=0 鲁棒性](docs/evaluation_assets/20260702_robust_autodrop/screenshots/08_gap0_robustness.png)
+![gap=0 鲁棒性真实终端](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_gap0_robustness.png)
 
-![gap=0 后状态](docs/evaluation_assets/20260702_robust_autodrop/screenshots/09_post_gap0_status.png)
+![gap=0 后状态真实终端](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_post_gap0_status.png)
 
 ## 10. 15 分钟压力测试
 
@@ -288,13 +292,13 @@ l2=92.599Gbps wire=95.408Gbps
 
 说明：这是 repeated PRELOAD stress，不是一整条 15 分钟连续 100G trace。它主要验证长期重复装载、start/clear、双端口交替、调度器和 TX 输出路径不会随时间退化。
 
-![15 分钟压力测试](docs/evaluation_assets/20260702_robust_autodrop/screenshots/10_stress_15min_summary.png)
+![15 分钟压力测试真实终端](docs/evaluation_assets/20260702_robust_autodrop/screenshots/real_terminal_stress_15min_summary.png)
 
 ## 11. 当前已知问题
 
 1. 当前 bitstream timing 是“接受版”，不是完全 clean timing：`WNS=-0.003 ns`。这几个皮秒很小，但从工程管理角度仍应标记为 timing violation build。
 2. `gap=0` 是严重过载输入，当前设计会通过 auto-drop 退出并统计，而不是无损回放。这个行为符合鲁棒性目标，但不代表支持 `gap=0` 无损 100G。
-3. RX capture 在低速 `64B` 双向回环下内容校验通过；但 `128B gap=2000` 测试出现 `rx_errors=8`，虽然 sample payload 匹配。后续应重点检查 `lbus_to_axis_512` 对 `err/eop/mty` 的解释、CMAC RX error 信号语义，以及 RX capture 对多 beat 包的统计。
+3. RX capture 在低速 `64B` 双向回环下内容校验通过；但 `128B gap=2000` 测试出现 `rx_errors` 非零，本轮真实终端复跑为 `rx_errors=4`，虽然 sample payload 匹配。后续应重点检查 `lbus_to_axis_512` 对 `err/eop/mty` 的解释、CMAC RX error 信号语义，以及 RX capture 对多 beat 包的统计。
 4. 当前 RX 侧没有 per-packet timestamp，因此还不能用 RX 侧直接测量每个包的真实到达间隔。要做严格调度精度闭环，应在 RX sample descriptor 中加入 `rx_tick`、`frame_len`、`flags`、`payload_hash/seq_id`。
 
 ## 12. 后续建议

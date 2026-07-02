@@ -1,0 +1,12 @@
+user@FNIL-2022DEC-GPU-3:~$ python3 /home/user/traffic_replay_remote_src/software/ddr_readback_check.py --repeat 2 --case 0x00000000:0x1000 --case 0x00100000:0x10000 --case 0x10000000:0x100000 --case 0x18000000:0x800000 
+PASS addr=0x00000000 size=4096 repeat=0 h2c=0.402Gbps c2h=0.769Gbps
+PASS addr=0x00100000 size=65536 repeat=0 h2c=5.434Gbps c2h=4.204Gbps
+PASS addr=0x10000000 size=1048576 repeat=0 h2c=13.795Gbps c2h=5.739Gbps
+PASS addr=0x18000000 size=8388608 repeat=0 h2c=14.700Gbps c2h=5.262Gbps
+PASS addr=0x00000000 size=4096 repeat=1 h2c=0.450Gbps c2h=0.051Gbps
+PASS addr=0x00100000 size=65536 repeat=1 h2c=5.433Gbps c2h=12.097Gbps
+PASS addr=0x10000000 size=1048576 repeat=1 h2c=44.118Gbps c2h=7.031Gbps
+PASS addr=0x18000000 size=8388608 repeat=1 h2c=17.871Gbps c2h=5.944Gbps
+SUMMARY cases=4 repeat=2 checked_bytes=19013632 aggregate_rw=0.087Gbps
+user@FNIL-2022DEC-GPU-3:~$ echo $?
+0

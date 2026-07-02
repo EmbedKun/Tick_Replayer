@@ -1,0 +1,93 @@
+user@FNIL-2022DEC-GPU-3:~$ bash -lc grep\ -E\ \'\^\(=====\ stress\ summary\ =====\|end_date:\|elapsed_seconds:\|iterations:\|failures:\|---\ final\ TX\ status\ port\|drop_packets\|late_packets\|underrun_packets\|stall_events\|mixed\ port=\)\'\ /home/user/traffic_replay_remote_src/bitstreams/20260702_113125_dual_preload_autodrop_wns_minus003_accepted/evaluation_logs/10_stress_15min.log\ \|\ tail\ -90 
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.001Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.097Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.330Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.932Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.662Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.988Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.903Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.149Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.249Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.381Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.470Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.601Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.130Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.165Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.976Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.458Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.499Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.240Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.591Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.394Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.447Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.067Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.778Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.315Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.235Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.398Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.473Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.341Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.544Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.878Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.487Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.793Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.804Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.018Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.933Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.769Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.536Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.014Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.304Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.306Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.628Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.492Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.229Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.331Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.621Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.164Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.125Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.065Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.169Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.888Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.159Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.333Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.193Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.726Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.181Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.511Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.173Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.063Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.055Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.639Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.868Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.979Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.537Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.642Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.298Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.218Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.108Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.776Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.420Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=7.926Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.331Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.763Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.206Gbps
+mixed port=0 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=9.032Gbps
+mixed port=1 pattern=64:3,1518:38 packets=20000 done=True tx=20000 drop=0 late=0 underrun=0 stall=0 ticks=410027 expected_ticks=410000 tick_error=27 l2=92.599Gbps wire=95.408Gbps load=8.200Gbps
+===== stress summary =====
+end_date: 2026-07-02 12:07:28
+elapsed_seconds: 900.186
+iterations: 472
+failures: 0
+--- final TX status port 0 ---
+late_packets      : 0
+underrun_packets  : 0
+drop_packets      : 0
+stall_events      : 0
+--- final TX status port 1 ---
+late_packets      : 0
+underrun_packets  : 0
+drop_packets      : 0
+stall_events      : 0
+user@FNIL-2022DEC-GPU-3:~$ echo $?
+0

@@ -1,0 +1,57 @@
+user@FNIL-2022DEC-GPU-3:~$ bash -lc lspci\ -nn\ -d\ 10ee:\;\ echo\;\ lspci\ -s\ 01:00.0\ -vvv\ \|\ sed\ -n\ \'1\,55p\'\;\ echo\;\ ls\ -l\ /dev/xdma\*\ \|\ sed\ -n\ \'1\,24p\'\;\ echo\;\ dmesg\ \|\ grep\ -i\ xdma\ \|\ tail\ -18 
+01:00.0 Memory controller [0580]: Xilinx Corporation Device [10ee:903f]
+
+01:00.0 Memory controller: Xilinx Corporation Device 903f
+	Subsystem: Xilinx Corporation Device 0007
+	Control: I/O- Mem+ BusMaster+ SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx-
+	Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
+	Latency: 0
+	Interrupt: pin A routed to IRQ 469
+	Region 0: Memory at fa900000 (32-bit, non-prefetchable) [size=1M]
+	Region 1: Memory at faa00000 (32-bit, non-prefetchable) [size=64K]
+	Capabilities: <access denied>
+	Kernel driver in use: xdma
+
+
+crw-rw-rw- 1 root root 505, 36 7月   2 12:29 /dev/xdma0_c2h_0
+crw-rw-rw- 1 root root 505,  1 7月   2 12:29 /dev/xdma0_control
+crw-rw-rw- 1 root root 505, 10 7月   2 12:29 /dev/xdma0_events_0
+crw-rw-rw- 1 root root 505, 11 7月   2 12:29 /dev/xdma0_events_1
+crw-rw-rw- 1 root root 505, 20 7月   2 12:29 /dev/xdma0_events_10
+crw-rw-rw- 1 root root 505, 21 7月   2 12:29 /dev/xdma0_events_11
+crw-rw-rw- 1 root root 505, 22 7月   2 12:29 /dev/xdma0_events_12
+crw-rw-rw- 1 root root 505, 23 7月   2 12:29 /dev/xdma0_events_13
+crw-rw-rw- 1 root root 505, 24 7月   2 12:29 /dev/xdma0_events_14
+crw-rw-rw- 1 root root 505, 25 7月   2 12:29 /dev/xdma0_events_15
+crw-rw-rw- 1 root root 505, 12 7月   2 12:29 /dev/xdma0_events_2
+crw-rw-rw- 1 root root 505, 13 7月   2 12:29 /dev/xdma0_events_3
+crw-rw-rw- 1 root root 505, 14 7月   2 12:29 /dev/xdma0_events_4
+crw-rw-rw- 1 root root 505, 15 7月   2 12:29 /dev/xdma0_events_5
+crw-rw-rw- 1 root root 505, 16 7月   2 12:29 /dev/xdma0_events_6
+crw-rw-rw- 1 root root 505, 17 7月   2 12:29 /dev/xdma0_events_7
+crw-rw-rw- 1 root root 505, 18 7月   2 12:29 /dev/xdma0_events_8
+crw-rw-rw- 1 root root 505, 19 7月   2 12:29 /dev/xdma0_events_9
+crw-rw-rw- 1 root root 505, 32 7月   2 12:29 /dev/xdma0_h2c_0
+crw-rw-rw- 1 root root 505,  0 7月   2 12:29 /dev/xdma0_user
+crw-rw-rw- 1 root root 505,  2 7月   2 12:29 /dev/xdma0_xvc
+
+[605702.723278] xdma:identify_bars: 2 BARs: config 1, user 0, bypass -1.
+[605702.723438] xdma:pci_keep_intx_enabled: 0000:01:00.0: clear INTX_DISABLE, 0x406 -> 0x6.
+[605702.723479] xdma:probe_one: 0000:01:00.0 xdma0, pdev 0x0000000056d8e69e, xdev 0x00000000184d0837, 0x000000003fb53aaf, usr 16, ch 1,1.
+[605702.726410] xdma:cdev_xvc_init: xcdev 0x0000000068a10b18, bar 0, offset 0x40000.
+[608053.552632] xdma:remove_one: pdev 0x0000000056d8e69e, xdev 0x00000000184d0837, 0x000000003fb53aaf.
+[608053.552642] xdma:xpdev_free: xpdev 0x00000000184d0837, destroy_interfaces, xdev 0x000000003fb53aaf.
+[608053.553986] xdma:xpdev_free: xpdev 0x00000000184d0837, xdev 0x000000003fb53aaf xdma_device_close.
+[608058.701170] xdma:xdma_mod_init: Xilinx XDMA Reference Driver xdma v2020.2.2
+[608058.701177] xdma:xdma_mod_init: desc_blen_max: 0xfffffff/268435455, timeout: h2c 10 c2h 10 sec.
+[608058.701303] xdma:xdma_device_open: xdma device 0000:01:00.0, 0x00000000227d9f93.
+[608058.701319] xdma 0000:01:00.0: enabling device (0000 -> 0002)
+[608058.701594] xdma:map_single_bar: BAR0 at 0xfa900000 mapped at 0x0000000042705c59, length=1048576(/1048576)
+[608058.701624] xdma:map_single_bar: BAR1 at 0xfaa00000 mapped at 0x000000003f013efa, length=65536(/65536)
+[608058.701631] xdma:map_bars: config bar 1, pos 1.
+[608058.701635] xdma:identify_bars: 2 BARs: config 1, user 0, bypass -1.
+[608058.701768] xdma:pci_keep_intx_enabled: 0000:01:00.0: clear INTX_DISABLE, 0x406 -> 0x6.
+[608058.701801] xdma:probe_one: 0000:01:00.0 xdma0, pdev 0x00000000227d9f93, xdev 0x00000000b9ce05da, 0x0000000014bd7eda, usr 16, ch 1,1.
+[608058.705347] xdma:cdev_xvc_init: xcdev 0x00000000f618f55e, bar 0, offset 0x40000.
+user@FNIL-2022DEC-GPU-3:~$ echo $?
+0
