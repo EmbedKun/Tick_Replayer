@@ -1,0 +1,19 @@
+===== 06b_scheduler_precision_fixed =====
+date: 2026-07-02 11:51:32 CST
+host: FNIL-2022DEC-GPU-3
+$ bash -lc python3\ /home/user/traffic_replay_remote_src/software/preload_precision_check.py\ --port\ 0\ --packet-count\ 50000\ --pattern\ 64:3\,1518:38\ --max-abs-tick-error\ 64\ --work-dir\ /tmp/tr_eval_precision_fixed\ --timeout\ 60
+port              : 0
+pattern           : 64:3,1518:38
+packet_count      : 50000
+completed         : True
+tx_packets        : 50000
+late_packets      : 0
+underrun_packets  : 0
+drop_packets      : 0
+stall_events      : 0
+expected_ticks    : 1025000
+debug_ticks       : 1025027
+tick_error        : 27
+wall_seconds      : 0.005088
+PASS: scheduler debug_ticks matches descriptor gap_ticks budget
+[exit=0 elapsed=4s]

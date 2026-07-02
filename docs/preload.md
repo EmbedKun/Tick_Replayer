@@ -104,7 +104,7 @@ Offsets below are relative to each `TX` window.
 | `0x0048` | `RATE` | RW | Reserved Q16.16 rate field.  Current preload tests use descriptor gaps directly. |
 | `0x004c` | `WATERMARK` | RW | Stream prefetch watermark. |
 | `0x0050` | `FIFO_LEVEL` | RO | Internal stream FIFO level. |
-| `0x0054` | `DEBUG_CTRL` | RW | bit 0 `force_link_up`, bit 1 `force_tx_ready`.  These are debug-only controls. |
+| `0x0054` | `DEBUG_CTRL` | RW | bit 0 `force_link_up`, bit 1 `force_tx_ready`, bit 2 `auto_tx_drop`.  `auto_tx_drop` is enabled after reset so a long downstream stall drains as counted best-effort drops instead of hanging the replay core. |
 | `0x0060` | `TX_PKTS_LO` | RO | Transmitted packet count low word. |
 | `0x0064` | `TX_PKTS_HI` | RO | Transmitted packet count high word. |
 | `0x0068` | `TX_BYTES_LO` | RO | Transmitted frame byte count low word. |
@@ -130,6 +130,12 @@ Offsets below are relative to each `TX` window.
 | `0x00bc` | `STREAM_STATUS` | RO | Stream reader status/debug bits. |
 | `0x00c0` | `STREAM_LEVEL_LO` | RO | Stream ring fill level low word. |
 | `0x00c4` | `STREAM_LEVEL_HI` | RO | Stream ring fill level high word. |
+| `0x00c8` | `DROP_PKTS_LO` | RO | Best-effort dropped packet count low word. |
+| `0x00cc` | `DROP_PKTS_HI` | RO | Best-effort dropped packet count high word. |
+| `0x00d0` | `DROP_BEATS_LO` | RO | Best-effort dropped AXIS beat count low word. |
+| `0x00d4` | `DROP_BEATS_HI` | RO | Best-effort dropped AXIS beat count high word. |
+| `0x00d8` | `STALL_EVT_LO` | RO | Long downstream stall event count low word. |
+| `0x00dc` | `STALL_EVT_HI` | RO | Long downstream stall event count high word. |
 
 The current `DEBUG_STATUS` bit assignment is:
 
@@ -155,11 +161,15 @@ The current `DEBUG_STATUS` bit assignment is:
 | `20` | TX AXIS ready from the downstream FIFO/CMAC path. |
 | `21` | DDR reader start pulse. |
 | `22` | `force_tx_ready` debug override. |
+| `23` | `auto_tx_drop_active`; downstream stalled long enough that the core is draining as counted drops. |
+| `24` | `auto_tx_drop` enable bit. |
 
-In the July 1 over-rate tests, stalls were diagnosed by this register: the
-replay core had payload and valid TX data, but bit 20 (`m_tx_axis_tready`) was
-low, meaning the downstream TX FIFO/CMAC side was backpressuring the replay
-core.
+In over-rate tests, stalls are diagnosed by this register: the replay core has
+valid TX data, but bit 20 (`m_tx_axis_tready`) stays low.  With
+`auto_tx_drop=1`, a watchdog turns this condition into counted `DROP_*` and
+`STALL_EVT_*` increments so the core can finish the trace.  Throughput and
+correctness tests must still require `drop_packets=0`; the drop path is only a
+robustness guardrail for overload or link-side faults.
 
 ### RX Capture Registers
 
@@ -197,12 +207,14 @@ The preload software stack is intentionally small:
 2. `xdma_load_trace.py` writes descriptors and payloads through
    `/dev/xdma0_h2c_0`, then programs the selected TX BAR window.
 3. `traffic_replay_cli.py` provides `start`, `stop`, `clear`, `status`,
-   `regs`, `debug-tx-ready`, and per-port access.
+   `regs`, `debug-tx-ready`, `auto-drop`, and per-port access.
 4. `ddr_readback_check.py` verifies basic host-to-DDR and DDR-to-host access
    through `/dev/xdma0_h2c_0` and `/dev/xdma0_c2h_0`.
-5. `hw_validation_suite.py` remains the common smoke/stress wrapper, while the
-   July 1 tests used focused preload sweep scripts to isolate scheduler and TX
-   datapath behavior.
+5. `preload_stress_test.py` generates synthetic preload traces, loads them into
+   DDR, and records `late`, `underrun`, `drop`, and `stall` counters for both
+   no-drop and over-rate robustness sweeps.
+6. `hw_validation_suite.py` remains the common smoke/stress wrapper and now
+   includes preload scheduled no-drop and preload over-rate robustness phases.
 
 The host must only use `force_link_up` and `force_tx_ready` for bring-up.  Final
 throughput or precision numbers must be collected with a real CMAC link and
@@ -234,6 +246,14 @@ CMAC:
   memory ports to shorten count/ready-to-BRAM-enable paths.
 * `axis_to_lbus_512` now uses local synchronized reset in the CMAC transmit
   clock domain to reduce high-fanout reset timing pressure.
+* The AXI-Stream FIFO in front of each CMAC path is configured as a 1024-beat
+  BRAM FIFO, and the local `axis_to_lbus_512` FIFO is configured to 32 beats.
+  This absorbs short gap-2/gap-3 burst imbalance without immediately
+  backpressuring the scheduler.
+* A TX stall watchdog watches `m_tx_axis_tvalid && !m_tx_axis_tready`.  After a
+  sustained stall it enables a counted best-effort drain path.  This preserves
+  system liveness under over-rate tests; exact replay validation must check that
+  the drop counters remain zero.
 
 The design still does not implement the full future target of many independent
 outstanding DDR reads with separate descriptor and payload AXI channels.  It has
@@ -278,6 +298,18 @@ Archived evidence:
   `docs/images/preload_20260701_terminal.png`
 
 ![Preload validation terminal summary](images/preload_20260701_terminal.png)
+
+### July 2 Robustness RTL Tests
+
+The replay-core performance testbench now includes a forced long `tready` stall
+case with a shortened simulation watchdog.  The core drains a 512-packet trace
+with `tx_pkts=512`, `drop_pkts=112`, `drop_beats=112`, and
+`stall_events=1`.  This verifies that an overload no longer leaves the core
+permanently running with a stuck downstream ready signal.
+
+The same testbench still passes the 1518-byte, 64-byte gap-0, and 64-byte
+gap-2 core-throughput cases with `drop_pkts=0`.  Dual-core preload simulation
+also still passes for two concurrent TX cores.
 
 ### 1518-Byte Packet Sweep
 
@@ -342,16 +374,17 @@ full data-integrity pass.
 
 ## Major Remaining Preload Issues
 
-* Timing is still slightly negative (`WNS=-0.018 ns`), so the archived image is
-  experimental.
+* The July 2 robustness RTL has passed simulation and stub synthesis.  A fresh
+  full U200 place/route run is required before this version can be called timing
+  clean.
 * Large-packet and mixed-packet loopback runs preserve packet count, but RX error
   counters are not zero and RX byte counts can differ from TX bytes.  The likely
   area is the `CMAC` RX LBUS-to-AXIS adapter or the RX capture interpretation of
   `mty`, `eop`, and error signals.
-* Over-rate tests can leave the TX async FIFO/CMAC side backpressured.  Normal
-  `stop`/`clear` resets the replay core state but does not yet provide a strong
-  per-port soft reset for the whole TX datapath.  Reprogramming recovers the
-  path; the next RTL fix should add a BAR-controlled datapath reset.
+* Over-rate tests are now expected to finish through the best-effort drop path
+  when `auto_tx_drop=1`.  This avoids a hung test, but it is not a valid
+  lossless replay result.  The next RTL cleanup should still add a BAR-controlled
+  soft reset for the whole per-port TX datapath.
 * 64-byte packets cannot reach 100G with the current integer `gap_ticks` and
   one-packet-per-tick scheduler.  `gap=2` overdrives the link; `gap=3` is stable
   but only about `70.4Gbps` wire estimate.
@@ -360,6 +393,34 @@ full data-integrity pass.
 * `force_tx_ready` is diagnostic only.  It can drain internal replay counters
   while bypassing real downstream readiness, so it must not be used for physical
   throughput results.
+
+## RX-Side Replay Precision Checking
+
+The current RX capture block counts packets, bytes, errors, and can store
+truncated recent packets in DDR.  That is enough to prove basic loopback
+activity, but it is not enough to measure replay timing precision.  A precision
+checker should add a compact RX sample descriptor for each packet:
+
+| Field | Purpose |
+| --- | --- |
+| `rx_tick` | Hardware timestamp captured at packet start or end. |
+| `frame_len` | Length observed by CMAC RX. |
+| `rx_flags` | Link/error/truncation flags. |
+| `payload_hash` | Hash or CRC of sampled bytes to match the transmitted packet. |
+| `seq_id` | Optional sequence value embedded by the synthetic trace generator. |
+
+For QSFP0-to-QSFP1 loopback, absolute latency includes CMAC and optical path
+delay, so the robust comparison is delta-based: compare
+`rx_tick[i] - rx_tick[i-1]` against descriptor `gap_ticks[i]`.  The first
+packet establishes the fixed latency baseline; subsequent packet deltas give
+jitter, late/early histograms, drops, and reordering.  For DUT testing, the same
+logic should compare per-flow sequence IDs and inter-arrival deltas after the
+DUT's filtering behavior is accounted for.
+
+The cleanest implementation is to share the replay 300 MHz tick counter with RX
+capture through a CDC synchronizer, or to timestamp in the CMAC RX clock domain
+and calibrate that clock against the replay tick.  The first option makes host
+analysis simpler because TX descriptors and RX samples use the same tick unit.
 
 ## Next Work
 

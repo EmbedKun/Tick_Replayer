@@ -5,7 +5,8 @@ import traffic_replay_pkg::*;
 module trace_replay_core #(
   parameter int AXIL_ADDR_W = 16,
   parameter int AXI_ADDR_W_P = AXI_ADDR_W,
-  parameter int AXI_ID_W_P   = AXI_ID_W
+  parameter int AXI_ID_W_P   = AXI_ID_W,
+  parameter int TX_STALL_WATCHDOG_CYCLES_P = 4096
 ) (
   input  logic                     clk,
   input  logic                     rstn,
@@ -75,6 +76,7 @@ module trace_replay_core #(
   logic        cfg_stream_eof;
   logic        cfg_force_link_up;
   logic        cfg_force_tx_ready;
+  logic        cfg_auto_tx_drop;
 
   logic        replay_running;
   logic        ddr_busy;
@@ -86,6 +88,9 @@ module trace_replay_core #(
   logic [63:0] tx_bytes;
   logic [63:0] late_pkts;
   logic [63:0] underrun_pkts;
+  logic [63:0] drop_pkts;
+  logic [63:0] drop_beats;
+  logic [63:0] stall_events;
   logic [63:0] now_ticks;
 
   logic        ddr_meta_valid;
@@ -141,6 +146,9 @@ module trace_replay_core #(
   localparam int PRELOAD_WARMUP_CYCLES = 4096;
   localparam int PRELOAD_WARMUP_CNT_W = $clog2(PRELOAD_WARMUP_CYCLES + 1);
   localparam logic [PRELOAD_WARMUP_CNT_W-1:0] PRELOAD_WARMUP_CYCLES_LEVEL = PRELOAD_WARMUP_CYCLES;
+  localparam int TX_STALL_WATCHDOG_CYCLES = (TX_STALL_WATCHDOG_CYCLES_P < 2) ? 2 : TX_STALL_WATCHDOG_CYCLES_P;
+  localparam int TX_STALL_CNT_W = $clog2(TX_STALL_WATCHDOG_CYCLES + 1);
+  localparam logic [TX_STALL_CNT_W-1:0] TX_STALL_WATCHDOG_LEVEL = TX_STALL_WATCHDOG_CYCLES;
 
   logic [AXIS_DATA_W-1:0] stream_fifo_axis_tdata;
   logic [AXIS_KEEP_W-1:0] stream_fifo_axis_tkeep;
@@ -196,6 +204,11 @@ module trace_replay_core #(
   logic        preload_warmup_done;
   logic        effective_link_up;
   logic        tx_ready_effective;
+  logic        tx_backpressured;
+  logic        auto_tx_drop_active;
+  logic        auto_tx_drop_start;
+  logic        auto_tx_drop_fire;
+  logic [TX_STALL_CNT_W-1:0] tx_stall_count;
   logic        ddr_reader_start;
   logic        source_busy;
   logic        source_done;
@@ -213,7 +226,14 @@ module trace_replay_core #(
   assign effective_link_up = link_up || cfg_force_link_up;
   assign core_enable     = replay_running && !pause && effective_link_up &&
                            (!sel_ddr_mode || preload_warmup_done);
-  assign tx_ready_effective = m_tx_axis_tready || cfg_force_tx_ready;
+  assign tx_backpressured = core_enable && m_tx_axis_tvalid && !m_tx_axis_tready &&
+                            !cfg_force_tx_ready;
+  assign auto_tx_drop_start = cfg_auto_tx_drop && tx_backpressured &&
+                              (tx_stall_count >= TX_STALL_WATCHDOG_LEVEL);
+  assign auto_tx_drop_fire = auto_tx_drop_active && m_tx_axis_tvalid &&
+                             !m_tx_axis_tready;
+  assign tx_ready_effective = m_tx_axis_tready || cfg_force_tx_ready ||
+                              auto_tx_drop_active;
   assign ddr_reader_start = sel_ddr_mode && start_pulse;
   assign stream_reader_start = stream_ddr_mode && start_pulse;
   assign source_busy = sel_ddr_mode ? ddr_busy : (stream_ddr_mode ? stream_ddr_busy : 1'b0);
@@ -260,7 +280,9 @@ module trace_replay_core #(
   assign ddr_axis_tready  = sel_ddr_mode    ? src_axis_tready : 1'b0;
 
   assign debug_status = {
-    9'd0,
+    7'd0,
+    cfg_auto_tx_drop,
+    auto_tx_drop_active,
     cfg_force_tx_ready,
     ddr_reader_start,
     m_tx_axis_tready,
@@ -346,6 +368,7 @@ module trace_replay_core #(
     .cfg_stream_eof(cfg_stream_eof),
     .cfg_force_link_up(cfg_force_link_up),
     .cfg_force_tx_ready(cfg_force_tx_ready),
+    .cfg_auto_tx_drop(cfg_auto_tx_drop),
     .stat_running(replay_running),
     .stat_done(replay_done),
     .stat_late(|late_pkts),
@@ -357,6 +380,9 @@ module trace_replay_core #(
     .stat_tx_bytes(tx_bytes),
     .stat_late_pkts(late_pkts),
     .stat_underrun_pkts(underrun_pkts),
+    .stat_drop_pkts(drop_pkts),
+    .stat_drop_beats(drop_beats),
+    .stat_stall_events(stall_events),
     .stat_debug_status(debug_status),
     .stat_debug_axi(debug_axi),
     .stat_debug_araddr(m_axi_araddr[63:0]),
@@ -547,6 +573,11 @@ module trace_replay_core #(
       replay_running <= 1'b0;
       late_pkts      <= '0;
       underrun_pkts  <= '0;
+      drop_pkts      <= '0;
+      drop_beats     <= '0;
+      stall_events   <= '0;
+      tx_stall_count <= '0;
+      auto_tx_drop_active <= 1'b0;
       stream_prefetch_active <= 1'b0;
       sel_stream_mode <= 1'b0;
       sel_ddr_mode <= 1'b0;
@@ -561,6 +592,33 @@ module trace_replay_core #(
       if (clear_pulse) begin
         late_pkts     <= '0;
         underrun_pkts <= '0;
+        drop_pkts     <= '0;
+        drop_beats    <= '0;
+        stall_events  <= '0;
+      end
+
+      if (core_clear || start_pulse || !cfg_auto_tx_drop || !tx_backpressured) begin
+        tx_stall_count <= '0;
+      end else if (tx_stall_count < TX_STALL_WATCHDOG_LEVEL) begin
+        tx_stall_count <= tx_stall_count + {{(TX_STALL_CNT_W-1){1'b0}}, 1'b1};
+      end
+
+      if (core_clear || start_pulse || !cfg_auto_tx_drop) begin
+        auto_tx_drop_active <= 1'b0;
+      end else if (auto_tx_drop_start) begin
+        auto_tx_drop_active <= 1'b1;
+      end else if (m_tx_axis_tready || !m_tx_axis_tvalid) begin
+        auto_tx_drop_active <= 1'b0;
+      end
+
+      if (auto_tx_drop_start && !auto_tx_drop_active) begin
+        stall_events <= stall_events + 64'd1;
+      end
+      if (auto_tx_drop_fire) begin
+        drop_beats <= drop_beats + 64'd1;
+        if (m_tx_axis_tlast) begin
+          drop_pkts <= drop_pkts + 64'd1;
+        end
       end
 
       if (core_clear || start_pulse || !stream_ddr_mode) begin

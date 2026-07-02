@@ -1,0 +1,14 @@
+===== 02_h2c_c2h_ddr =====
+date: 2026-07-02 11:47:51 CST
+host: FNIL-2022DEC-GPU-3
+$ bash -lc python3\ /home/user/traffic_replay_remote_src/software/ddr_readback_check.py\ --repeat\ 2\ --case\ 0x00000000:0x1000\ --case\ 0x00100000:0x10000\ --case\ 0x10000000:0x100000\ --case\ 0x18000000:0x800000
+PASS addr=0x00000000 size=4096 repeat=0 h2c=0.607Gbps c2h=0.661Gbps
+PASS addr=0x00100000 size=65536 repeat=0 h2c=7.665Gbps c2h=3.850Gbps
+PASS addr=0x10000000 size=1048576 repeat=0 h2c=14.392Gbps c2h=5.480Gbps
+PASS addr=0x18000000 size=8388608 repeat=0 h2c=14.991Gbps c2h=4.828Gbps
+PASS addr=0x00000000 size=4096 repeat=1 h2c=0.744Gbps c2h=0.048Gbps
+PASS addr=0x00100000 size=65536 repeat=1 h2c=8.319Gbps c2h=13.477Gbps
+PASS addr=0x10000000 size=1048576 repeat=1 h2c=50.253Gbps c2h=6.668Gbps
+PASS addr=0x18000000 size=8388608 repeat=1 h2c=14.423Gbps c2h=5.332Gbps
+SUMMARY cases=4 repeat=2 checked_bytes=19013632 aggregate_rw=0.084Gbps
+[exit=0 elapsed=4s]

@@ -1,0 +1,13 @@
+===== 06_scheduler_precision =====
+date: 2026-07-02 11:48:22 CST
+host: FNIL-2022DEC-GPU-3
+$ bash -lc python3\ /home/user/traffic_replay_remote_src/software/preload_precision_check.py\ --port\ 0\ --packet-count\ 50000\ --pattern\ 64:3\,1518:38\ --max-abs-tick-error\ 0\ --work-dir\ /tmp/tr_eval_precision\ --timeout\ 60
+Traceback (most recent call last):
+  File "/home/user/traffic_replay_remote_src/software/preload_precision_check.py", line 86, in <module>
+    main()
+  File "/home/user/traffic_replay_remote_src/software/preload_precision_check.py", line 44, in main
+    pst.configure_and_start(user_fd, reg_base, args, desc_size, data_size)
+  File "/home/user/traffic_replay_remote_src/software/preload_stress_test.py", line 168, in configure_and_start
+    write32(user_fd, base + REG_RATE, args.rate_q16_16)
+AttributeError: 'Namespace' object has no attribute 'rate_q16_16'
+[exit=1 elapsed=5s]

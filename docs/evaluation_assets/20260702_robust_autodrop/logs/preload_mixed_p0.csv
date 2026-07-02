@@ -1,0 +1,2 @@
+port,packet_count,pattern,completed,tx_packets,tx_bytes,drop_packets,late_packets,underrun_packets,drop_beats,stall_events,expected_ticks,debug_ticks,tick_error,scheduled_seconds,wall_seconds,delivered_l2_gbps,delivered_wire_gbps,load_seconds,load_gbps
+0,100000,"64:3,1518:38",True,100000,79100000,0,0,0,0,0,2050000,2050027,27,0.006833423333333333,0.01014329306781292,92.6036583908407,95.41337748234535,0.04589004395529628,15.062090606697424

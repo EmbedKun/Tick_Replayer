@@ -1,0 +1,112 @@
+===== 00_environment =====
+date: 2026-07-02 11:46:27 CST
+host: FNIL-2022DEC-GPU-3
+$ bash -lc lspci\ -nn\ -d\ 10ee:\;\ echo\;\ sudo\ lspci\ -s\ 01:00.0\ -vvv\ \|\ sed\ -n\ \'1\,70p\'\;\ echo\;\ ls\ -l\ /dev/xdma\*\;\ echo\;\ dmesg\ \|\ grep\ -i\ xdma\ \|\ tail\ -30
+01:00.0 Memory controller [0580]: Xilinx Corporation Device [10ee:903f]
+
+01:00.0 Memory controller: Xilinx Corporation Device 903f
+	Subsystem: Xilinx Corporation Device 0007
+	Control: I/O- Mem+ BusMaster+ SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx-
+	Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
+	Latency: 0
+	Interrupt: pin A routed to IRQ 469
+	Region 0: Memory at fa900000 (32-bit, non-prefetchable) [size=1M]
+	Region 1: Memory at faa00000 (32-bit, non-prefetchable) [size=64K]
+	Capabilities: [40] Power Management version 3
+		Flags: PMEClk- DSI- D1- D2- AuxCurrent=0mA PME(D0-,D1-,D2-,D3hot-,D3cold-)
+		Status: D0 NoSoftRst+ PME-Enable- DSel=0 DScale=0 PME-
+	Capabilities: [48] MSI: Enable+ Count=1/1 Maskable- 64bit+
+		Address: 00000000fee00000  Data: 0000
+	Capabilities: [70] Express (v2) Endpoint, MSI 00
+		DevCap:	MaxPayload 1024 bytes, PhantFunc 0, Latency L0s <64ns, L1 <1us
+			ExtTag+ AttnBtn- AttnInd- PwrInd- RBE+ FLReset- SlotPowerLimit 75.000W
+		DevCtl:	CorrErr- NonFatalErr- FatalErr- UnsupReq-
+			RlxdOrd+ ExtTag+ PhantFunc- AuxPwr- NoSnoop+
+			MaxPayload 512 bytes, MaxReadReq 512 bytes
+		DevSta:	CorrErr+ NonFatalErr+ FatalErr- UnsupReq+ AuxPwr- TransPend-
+		LnkCap:	Port #0, Speed 8GT/s, Width x16, ASPM not supported
+			ClockPM- Surprise- LLActRep- BwNot- ASPMOptComp+
+		LnkCtl:	ASPM Disabled; RCB 64 bytes Disabled- CommClk-
+			ExtSynch- ClockPM- AutWidDis- BWInt- AutBWInt-
+		LnkSta:	Speed 8GT/s (ok), Width x16 (ok)
+			TrErr- Train- SlotClk+ DLActive- BWMgmt- ABWMgmt-
+		DevCap2: Completion Timeout: Range BC, TimeoutDis+, NROPrPrP-, LTR-
+			 10BitTagComp-, 10BitTagReq-, OBFF Not Supported, ExtFmt-, EETLPPrefix-
+			 EmergencyPowerReduction Not Supported, EmergencyPowerReductionInit-
+			 FRS-, TPHComp-, ExtTPHComp-
+			 AtomicOpsCap: 32bit- 64bit- 128bitCAS-
+		DevCtl2: Completion Timeout: 50us to 50ms, TimeoutDis-, LTR-, OBFF Disabled
+			 AtomicOpsCtl: ReqEn-
+		LnkCtl2: Target Link Speed: 8GT/s, EnterCompliance- SpeedDis-
+			 Transmit Margin: Normal Operating Range, EnterModifiedCompliance- ComplianceSOS-
+			 Compliance De-emphasis: -6dB
+		LnkSta2: Current De-emphasis Level: -6dB, EqualizationComplete+, EqualizationPhase1+
+			 EqualizationPhase2+, EqualizationPhase3+, LinkEqualizationRequest-
+	Capabilities: [100 v1] Advanced Error Reporting
+		UESta:	DLP- SDES- TLP- FCP- CmpltTO- CmpltAbrt- UnxCmplt- RxOF- MalfTLP- ECRC- UnsupReq- ACSViol-
+		UEMsk:	DLP- SDES- TLP- FCP- CmpltTO- CmpltAbrt- UnxCmplt- RxOF- MalfTLP- ECRC- UnsupReq- ACSViol-
+		UESvrt:	DLP+ SDES+ TLP- FCP+ CmpltTO- CmpltAbrt- UnxCmplt- RxOF+ MalfTLP+ ECRC- UnsupReq- ACSViol-
+		CESta:	RxErr- BadTLP- BadDLLP- Rollover- Timeout- AdvNonFatalErr+
+		CEMsk:	RxErr- BadTLP- BadDLLP- Rollover- Timeout- AdvNonFatalErr+
+		AERCap:	First Error Pointer: 00, ECRCGenCap- ECRCGenEn- ECRCChkCap- ECRCChkEn-
+			MultHdrRecCap- MultHdrRecEn- TLPPfxPres- HdrLogCap-
+		HeaderLog: 00000000 00000000 00000000 00000000
+	Capabilities: [1c0 v1] Secondary PCI Express
+		LnkCtl3: LnkEquIntrruptEn-, PerformEqu-
+		LaneErrStat: 0
+	Kernel driver in use: xdma
+
+
+crw-rw-rw- 1 root root 505, 36 7月   2 11:41 /dev/xdma0_c2h_0
+crw-rw-rw- 1 root root 505,  1 7月   2 11:41 /dev/xdma0_control
+crw-rw-rw- 1 root root 505, 10 7月   2 11:41 /dev/xdma0_events_0
+crw-rw-rw- 1 root root 505, 11 7月   2 11:41 /dev/xdma0_events_1
+crw-rw-rw- 1 root root 505, 20 7月   2 11:41 /dev/xdma0_events_10
+crw-rw-rw- 1 root root 505, 21 7月   2 11:41 /dev/xdma0_events_11
+crw-rw-rw- 1 root root 505, 22 7月   2 11:41 /dev/xdma0_events_12
+crw-rw-rw- 1 root root 505, 23 7月   2 11:41 /dev/xdma0_events_13
+crw-rw-rw- 1 root root 505, 24 7月   2 11:41 /dev/xdma0_events_14
+crw-rw-rw- 1 root root 505, 25 7月   2 11:41 /dev/xdma0_events_15
+crw-rw-rw- 1 root root 505, 12 7月   2 11:41 /dev/xdma0_events_2
+crw-rw-rw- 1 root root 505, 13 7月   2 11:41 /dev/xdma0_events_3
+crw-rw-rw- 1 root root 505, 14 7月   2 11:41 /dev/xdma0_events_4
+crw-rw-rw- 1 root root 505, 15 7月   2 11:41 /dev/xdma0_events_5
+crw-rw-rw- 1 root root 505, 16 7月   2 11:41 /dev/xdma0_events_6
+crw-rw-rw- 1 root root 505, 17 7月   2 11:41 /dev/xdma0_events_7
+crw-rw-rw- 1 root root 505, 18 7月   2 11:41 /dev/xdma0_events_8
+crw-rw-rw- 1 root root 505, 19 7月   2 11:41 /dev/xdma0_events_9
+crw-rw-rw- 1 root root 505, 32 7月   2 11:41 /dev/xdma0_h2c_0
+crw-rw-rw- 1 root root 505,  0 7月   2 11:41 /dev/xdma0_user
+crw-rw-rw- 1 root root 505,  2 7月   2 11:41 /dev/xdma0_xvc
+
+[561991.457644] xdma:probe_one: 0000:01:00.0 xdma0, pdev 0x00000000ca9c0e40, xdev 0x0000000099d91019, 0x00000000dc58a5d4, usr 16, ch 1,1.
+[561991.458933] xdma:cdev_xvc_init: xcdev 0x00000000fc180a53, bar 0, offset 0x40000.
+[604697.082958] xdma:remove_one: pdev 0x00000000ca9c0e40, xdev 0x0000000099d91019, 0x00000000dc58a5d4.
+[604697.082968] xdma:xpdev_free: xpdev 0x0000000099d91019, destroy_interfaces, xdev 0x00000000dc58a5d4.
+[604697.084266] xdma:xpdev_free: xpdev 0x0000000099d91019, xdev 0x00000000dc58a5d4 xdma_device_close.
+[604745.955507] xdma:xdma_mod_init: Xilinx XDMA Reference Driver xdma v2020.2.2
+[604745.955514] xdma:xdma_mod_init: desc_blen_max: 0xfffffff/268435455, timeout: h2c 10 c2h 10 sec.
+[604745.955657] xdma:xdma_device_open: xdma device 0000:01:00.0, 0x00000000c3756fca.
+[604745.955674] xdma 0000:01:00.0: enabling device (0000 -> 0002)
+[604745.955919] xdma:map_single_bar: BAR0 at 0xfa900000 mapped at 0x0000000042705c59, length=1048576(/1048576)
+[604745.955949] xdma:map_single_bar: BAR1 at 0xfaa00000 mapped at 0x00000000ea751635, length=65536(/65536)
+[604745.955955] xdma:map_bars: config bar 1, pos 1.
+[604745.955959] xdma:identify_bars: 2 BARs: config 1, user 0, bypass -1.
+[604745.956097] xdma:pci_keep_intx_enabled: 0000:01:00.0: clear INTX_DISABLE, 0x406 -> 0x6.
+[604745.956136] xdma:probe_one: 0000:01:00.0 xdma0, pdev 0x00000000c3756fca, xdev 0x00000000824d41d6, 0x000000004b643abc, usr 16, ch 1,1.
+[604745.957412] xdma:cdev_xvc_init: xcdev 0x00000000ec3d89df, bar 0, offset 0x40000.
+[605171.557720] xdma:remove_one: pdev 0x00000000c3756fca, xdev 0x00000000824d41d6, 0x000000004b643abc.
+[605171.557731] xdma:xpdev_free: xpdev 0x00000000824d41d6, destroy_interfaces, xdev 0x000000004b643abc.
+[605171.559044] xdma:xpdev_free: xpdev 0x00000000824d41d6, xdev 0x000000004b643abc xdma_device_close.
+[605176.723672] xdma:xdma_mod_init: Xilinx XDMA Reference Driver xdma v2020.2.2
+[605176.723679] xdma:xdma_mod_init: desc_blen_max: 0xfffffff/268435455, timeout: h2c 10 c2h 10 sec.
+[605176.723822] xdma:xdma_device_open: xdma device 0000:01:00.0, 0x00000000c1f01e6d.
+[605176.723838] xdma 0000:01:00.0: enabling device (0000 -> 0002)
+[605176.724085] xdma:map_single_bar: BAR0 at 0xfa900000 mapped at 0x0000000042705c59, length=1048576(/1048576)
+[605176.724113] xdma:map_single_bar: BAR1 at 0xfaa00000 mapped at 0x000000003f013efa, length=65536(/65536)
+[605176.724120] xdma:map_bars: config bar 1, pos 1.
+[605176.724124] xdma:identify_bars: 2 BARs: config 1, user 0, bypass -1.
+[605176.724251] xdma:pci_keep_intx_enabled: 0000:01:00.0: clear INTX_DISABLE, 0x406 -> 0x6.
+[605176.724283] xdma:probe_one: 0000:01:00.0 xdma0, pdev 0x00000000c1f01e6d, xdev 0x00000000fe2c9f8d, 0x00000000fb016615, usr 16, ch 1,1.
+[605176.726899] xdma:cdev_xvc_init: xcdev 0x00000000b0aeed37, bar 0, offset 0x40000.
+[exit=0 elapsed=0s]

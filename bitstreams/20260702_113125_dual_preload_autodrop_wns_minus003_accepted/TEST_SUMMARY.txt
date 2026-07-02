@@ -1,0 +1,38 @@
+Tick Replayer hardware validation summary
+=========================================
+
+Bitstream
+---------
+20260702_113125_dual_preload_autodrop_wns_minus003_accepted
+
+Build result
+------------
+Bitgen completed successfully with 0 errors.
+Accepted timing: post-route phys_opt WNS=-0.003 ns, TNS=-0.027 ns, WHS=0.000 ns, THS=0.000 ns.
+Known warning: CMAC AN/LT license feature is reported as evaluation/design_linking in Vivado 2020.2.
+
+Feature delta
+-------------
+- TX stall watchdog added in replay core.
+- DEBUG_CTRL bit2 enables automatic drop-on-stall guardrail.
+- DROP_PKTS/DROP_BEATS/STALL_EVT counters added to the AXI-Lite BAR.
+- TX AXIS FIFO and AXIS-to-LBUS buffering increased for robustness.
+
+Board validation on 2026-07-02
+------------------------------
+- PCIe/XDMA enumeration passed: lspci shows 10ee:903f and /dev/xdma0_h2c_0, /dev/xdma0_c2h_0, /dev/xdma0_user exist.
+- Control plane passed: status/regs/auto-drop read/write tested.
+- H2C/C2H DDR readback passed across 4 ranges and 2 repeats.
+- PRELOAD TX-only passed on both ports:
+  * 64B gap=3: 70.398 Gbps wire, no drop/late/underrun/stall.
+  * 1518B gap=38: 97.388 Gbps wire, no drop/late/underrun/stall.
+- Mixed PRELOAD passed: pattern 64:3,1518:38, 100000 packets, 95.413 Gbps wire, no drop/late/underrun/stall.
+- Scheduler tick check passed: expected_ticks=1025000, debug_ticks=1025027, tick_error=27 ticks.
+- TX/RX loopback passed at low rate in both directions with 64B packets; RX sample payloads match and rx_errors=0.
+- 128B loopback payload matched, but rx_errors=8; this remains a known RX-side issue for multi-beat/faster capture.
+- gap=0 robustness passed as overload protection: test completed and counted drop/stall instead of hanging.
+- 15-minute repeated mixed PRELOAD stress passed: elapsed=900.186s, iterations=472, failures=0.
+
+Local report
+------------
+See repository evaluation.md and docs/evaluation_assets/20260702_robust_autodrop/ for screenshots and raw logs.

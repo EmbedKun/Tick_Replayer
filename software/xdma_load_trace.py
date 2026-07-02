@@ -62,6 +62,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clear-force-link-up", action="store_true", help="clear DEBUG_CTRL[0] before start")
     parser.add_argument("--force-tx-ready", action="store_true", help="set DEBUG_CTRL[1] to drain replay core when CMAC/FIFO is not ready")
     parser.add_argument("--clear-force-tx-ready", action="store_true", help="clear DEBUG_CTRL[1] before start")
+    parser.add_argument("--auto-drop", action="store_true", help="set DEBUG_CTRL[2] so long downstream stalls drain as counted drops")
+    parser.add_argument("--no-auto-drop", action="store_true", help="clear DEBUG_CTRL[2] for strict no-drop replay")
     parser.add_argument("--no-start", action="store_true")
     parser.add_argument("--chunk-bytes", type=int_auto, default=4 * 1024 * 1024)
     return parser.parse_args()
@@ -146,7 +148,14 @@ def main() -> None:
         write64(user_fd, reg_base + REG_LOOP_GAP_LO, reg_base + REG_LOOP_GAP_HI, args.loop_gap)
         write64(user_fd, reg_base + REG_START_LO, reg_base + REG_START_HI, args.start_time)
         write32(user_fd, reg_base + REG_RATE, args.rate_q16_16)
-        if args.force_link_up or args.clear_force_link_up or args.force_tx_ready or args.clear_force_tx_ready:
+        if (
+            args.force_link_up
+            or args.clear_force_link_up
+            or args.force_tx_ready
+            or args.clear_force_tx_ready
+            or args.auto_drop
+            or args.no_auto_drop
+        ):
             debug = read32(user_fd, reg_base + REG_DEBUG_CTRL)
             if args.force_link_up:
                 debug |= 0x1
@@ -156,6 +165,10 @@ def main() -> None:
                 debug |= 0x2
             if args.clear_force_tx_ready:
                 debug &= ~0x2
+            if args.auto_drop:
+                debug |= 0x4
+            if args.no_auto_drop:
+                debug &= ~0x4
             write32(user_fd, reg_base + REG_DEBUG_CTRL, debug)
         if not args.no_start:
             write32(user_fd, reg_base + REG_CONTROL, 0x1)

@@ -364,9 +364,13 @@ set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.DATA_WIDTH {32}] [get
 
 create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo_0
 create_bd_cell -type module -reference axis_to_lbus_512_bd tx_lbus_0
+set_property -dict [list CONFIG.DEPTH_LOG2 {10}] [get_bd_cells tx_axis_fifo_0]
+set_property -dict [list CONFIG.FIFO_DEPTH {32}] [get_bd_cells tx_lbus_0]
 if {$enable_port1} {
   create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo_1
   create_bd_cell -type module -reference axis_to_lbus_512_bd tx_lbus_1
+  set_property -dict [list CONFIG.DEPTH_LOG2 {10}] [get_bd_cells tx_axis_fifo_1]
+  set_property -dict [list CONFIG.FIFO_DEPTH {32}] [get_bd_cells tx_lbus_1]
 }
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:clk_wiz cmac_init_clk_wiz

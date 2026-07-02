@@ -5,7 +5,8 @@ module axis_to_lbus_512_bd #(
   parameter KEEP_W = DATA_W / 8,
   parameter SEG_COUNT = 4,
   parameter SEG_DATA_W = DATA_W / SEG_COUNT,
-  parameter SEG_KEEP_W = KEEP_W / SEG_COUNT
+  parameter SEG_KEEP_W = KEEP_W / SEG_COUNT,
+  parameter FIFO_DEPTH = 8
 ) (
   (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK" *)
   (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF S_AXIS, ASSOCIATED_RESET resetn" *)
@@ -61,7 +62,8 @@ module axis_to_lbus_512_bd #(
     .KEEP_W(KEEP_W),
     .SEG_COUNT(SEG_COUNT),
     .SEG_DATA_W(SEG_DATA_W),
-    .SEG_KEEP_W(SEG_KEEP_W)
+    .SEG_KEEP_W(SEG_KEEP_W),
+    .FIFO_DEPTH(FIFO_DEPTH)
   ) core_i (
     .clk(clk),
     .resetn(resetn),

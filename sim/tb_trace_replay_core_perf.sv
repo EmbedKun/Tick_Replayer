@@ -57,7 +57,9 @@ module tb_trace_replay_core_perf;
   logic         tx_tlast;
   logic         tx_tuser;
 
-  traffic_replay_top_stub dut (
+  traffic_replay_top_stub #(
+    .TX_STALL_WATCHDOG_CYCLES_P(32)
+  ) dut (
     .clk(clk),
     .rstn(rstn),
     .link_up(1'b1),
@@ -110,6 +112,8 @@ module tb_trace_replay_core_perf;
   int unsigned case_latency_cycles;
   int unsigned case_ar_stall_period;
   int unsigned case_tready_stall_period;
+  longint unsigned case_tready_block_start = 0;
+  longint unsigned case_tready_block_cycles = 0;
   int unsigned case_beats_per_pkt;
   bit expect_over_100g;
   bit expect_wire_over_100g;
@@ -212,8 +216,14 @@ module tb_trace_replay_core_perf;
     (cmd_count < CMD_Q_DEPTH) &&
     ((case_ar_stall_period == 0) || ((cycle_count % case_ar_stall_period) != (case_ar_stall_period - 1)));
 
+  wire tx_tready_blocked =
+    (case_tready_block_cycles != 0) &&
+    (cycle_count >= case_tready_block_start) &&
+    (cycle_count < (case_tready_block_start + case_tready_block_cycles));
+
   assign tx_tready =
     rstn &&
+    !tx_tready_blocked &&
     ((case_tready_stall_period == 0) || ((cycle_count % case_tready_stall_period) != (case_tready_stall_period - 1)));
 
   always_ff @(posedge clk) begin
@@ -347,6 +357,7 @@ module tb_trace_replay_core_perf;
       axil_write(16'h002c, case_pkt_count[63:32]);
       axil_write(16'h0040, 32'd0);
       axil_write(16'h0044, 32'd0);
+      axil_write(16'h0054, 32'h0000_0004);
       axil_write(16'h0000, 32'd1);
     end
   endtask
@@ -451,6 +462,8 @@ module tb_trace_replay_core_perf;
     logic [31:0] status;
     logic [31:0] tx_pkts_lo;
     logic [31:0] underrun_lo;
+    logic [31:0] drop_pkts_lo;
+    logic [31:0] stall_evt_lo;
     begin
       active_cycles = last_tx_cycle - first_tx_cycle + 1;
       steady_cycles = steady_last_cycle - steady_start_cycle + 1;
@@ -468,6 +481,8 @@ module tb_trace_replay_core_perf;
       axil_read(16'h0008, status);
       axil_read(16'h0060, tx_pkts_lo);
       axil_read(16'h0078, underrun_lo);
+      axil_read(16'h00c8, drop_pkts_lo);
+      axil_read(16'h00d8, stall_evt_lo);
 
       $display("CORE %-28s pkt_len=%0d pkts=%0d latency=%0d ar_stall_period=%0d tready_stall_period=%0d",
                case_name, case_pkt_len, case_pkt_count, case_latency_cycles,
@@ -480,7 +495,8 @@ module tb_trace_replay_core_perf;
       $display("  axi_ar: total=%0d desc=%0d payload=%0d desc_beats=%0d payload_beats=%0d payload_avg_burst=%.2f",
                ar_count, desc_ar_count, payload_ar_count, desc_ar_beats,
                payload_ar_beats, payload_avg_burst);
-      $display("  regs: status=0x%08x tx_pkts_lo=%0d underrun_lo=%0d", status, tx_pkts_lo, underrun_lo);
+      $display("  regs: status=0x%08x tx_pkts_lo=%0d underrun_lo=%0d drop_pkts_lo=%0d stall_evt_lo=%0d",
+               status, tx_pkts_lo, underrun_lo, drop_pkts_lo, stall_evt_lo);
 
       if (check_underrun && (status[3] || (underrun_lo != 32'd0))) begin
         $fatal(1, "%s underrun detected status=0x%08x underrun_lo=%0d", case_name, status, underrun_lo);
@@ -515,6 +531,8 @@ module tb_trace_replay_core_perf;
       case_latency_cycles = latency_i;
       case_ar_stall_period = ar_stall_period_i;
       case_tready_stall_period = tready_stall_period_i;
+      case_tready_block_start = 0;
+      case_tready_block_cycles = 0;
       case_beats_per_pkt = beats_from_bytes(16'(pkt_len_i));
       expect_over_100g = expect_over_100g_i;
       expect_wire_over_100g = expect_wire_over_100g_i;
@@ -542,11 +560,75 @@ module tb_trace_replay_core_perf;
     end
   endtask
 
+  task automatic run_auto_drop_case;
+    longint unsigned timeout_cycles;
+    logic [31:0] status;
+    logic [31:0] tx_pkts_lo;
+    logic [31:0] drop_pkts_lo;
+    logic [31:0] drop_beats_lo;
+    logic [31:0] stall_evt_lo;
+    begin
+      case_name = "core_64B_long_tready_stall_auto_drop";
+      case_pkt_count = 512;
+      case_pkt_len = 64;
+      case_gap_ticks = 0;
+      case_latency_cycles = 64;
+      case_ar_stall_period = 0;
+      case_tready_stall_period = 0;
+      case_beats_per_pkt = beats_from_bytes(16'(case_pkt_len));
+      warmup_pkts = 16;
+
+      reset_case();
+      configure_preload();
+
+      case_tready_block_start = cycle_count + 4500;
+      case_tready_block_cycles = 200000;
+
+      timeout_cycles = 120000;
+      repeat (timeout_cycles) begin
+        @(posedge clk);
+        if ((cycle_count % 256) == 0) begin
+          axil_read(16'h0060, tx_pkts_lo);
+          if (tx_pkts_lo >= case_pkt_count[31:0]) begin
+            break;
+          end
+        end
+      end
+
+      axil_read(16'h0008, status);
+      axil_read(16'h0060, tx_pkts_lo);
+      axil_read(16'h00c8, drop_pkts_lo);
+      axil_read(16'h00d0, drop_beats_lo);
+      axil_read(16'h00d8, stall_evt_lo);
+
+      $display("CORE %-28s pkt_len=%0d pkts=%0d accepted=%0d",
+               case_name, case_pkt_len, case_pkt_count, tx_pkt_count);
+      $display("  regs: status=0x%08x tx_pkts_lo=%0d drop_pkts_lo=%0d drop_beats_lo=%0d stall_evt_lo=%0d",
+               status, tx_pkts_lo, drop_pkts_lo, drop_beats_lo, stall_evt_lo);
+
+      if (tx_pkts_lo != case_pkt_count[31:0]) begin
+        $fatal(1, "%s core did not drain through auto-drop got=%0d exp=%0d",
+               case_name, tx_pkts_lo, case_pkt_count);
+      end
+      if ((drop_pkts_lo == 32'd0) || (drop_beats_lo == 32'd0) || (stall_evt_lo == 32'd0)) begin
+        $fatal(1, "%s auto-drop counters did not increment", case_name);
+      end
+      if (status[0] && !status[1]) begin
+        $fatal(1, "%s core still running after auto-drop drain status=0x%08x", case_name, status);
+      end
+
+      case_tready_block_start = 0;
+      case_tready_block_cycles = 0;
+      repeat (20) @(posedge clk);
+    end
+  endtask
+
   initial begin
     run_case("core_1518B_latency64", 4096, 1518, 0, 64, 0, 0, 1'b1, 1'b1, 1'b1);
     run_case("core_1518B_latency128_ar75", 4096, 1518, 0, 128, 4, 0, 1'b1, 1'b1, 1'b1);
     run_case("core_64B_gap0_max", 32768, 64, 0, 64, 0, 0, 1'b0, 1'b0, 1'b0);
     run_case("core_64B_gap2_wire100", 32768, 64, 2, 64, 0, 0, 1'b0, 1'b1, 1'b1);
+    run_auto_drop_case();
 
     $display("PASS: trace_replay_core preload pipeline correctness and throughput simulation completed");
     $finish;

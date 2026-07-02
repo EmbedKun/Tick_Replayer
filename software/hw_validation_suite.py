@@ -21,6 +21,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROFILES = {
     "smoke": {
         "ddr_repeat": 1,
+        "preload_packets": 20000,
+        "preload_safe_cases": ["64:3", "1518:38"],
+        "preload_overrate_cases": ["64:2", "1518:0"],
         "pcap_packets": 4096,
         "finite_packets": 2000,
         "ring_packets": 20000,
@@ -32,6 +35,9 @@ PROFILES = {
     },
     "stress": {
         "ddr_repeat": 3,
+        "preload_packets": 100000,
+        "preload_safe_cases": ["64:3", "1518:38"],
+        "preload_overrate_cases": ["64:2", "1518:0"],
         "pcap_packets": 100000,
         "finite_packets": 100000,
         "ring_packets": 200000,
@@ -43,6 +49,9 @@ PROFILES = {
     },
     "long": {
         "ddr_repeat": 10,
+        "preload_packets": 500000,
+        "preload_safe_cases": ["64:3", "1518:38"],
+        "preload_overrate_cases": ["64:2", "1518:0"],
         "pcap_packets": 500000,
         "finite_packets": 500000,
         "ring_packets": 1000000,
@@ -73,6 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--watermark", type=int_auto, default=4096)
     parser.add_argument("--ring-loader", choices=["cpp", "python"], default="cpp")
     parser.add_argument("--skip-ddr", action="store_true")
+    parser.add_argument("--skip-preload", action="store_true")
     parser.add_argument("--skip-finite", action="store_true")
     parser.add_argument("--skip-ring", action="store_true")
     parser.add_argument("--skip-rx", action="store_true")
@@ -116,6 +126,13 @@ def maybe_force_args(args: argparse.Namespace) -> list[str]:
     return force
 
 
+def repeated_case_args(cases: list[str]) -> list[str]:
+    out = []
+    for case in cases:
+        out += ["--case", case]
+    return out
+
+
 def main() -> None:
     args = parse_args()
     cfg = PROFILES[args.profile]
@@ -146,6 +163,50 @@ def main() -> None:
                 "--case",
                 "0x10000000:0x100000",
             ],
+            log_path,
+        )
+
+    if not args.skip_preload:
+        preload_csv = run_dir / "preload_sweep.csv"
+        run_step(
+            "preload scheduled no-drop sweep",
+            [
+                args.python,
+                script("preload_stress_test.py"),
+                "--port",
+                str(args.port),
+                "--packet-count",
+                str(cfg["preload_packets"]),
+                "--work-dir",
+                str(run_dir / "preload_safe"),
+                "--csv",
+                str(preload_csv),
+                "--timeout",
+                str(cfg["timeout"]),
+                "--require-no-drop",
+            ]
+            + repeated_case_args(cfg["preload_safe_cases"])
+            + maybe_force_args(args),
+            log_path,
+        )
+        run_step(
+            "preload overrate robustness sweep",
+            [
+                args.python,
+                script("preload_stress_test.py"),
+                "--port",
+                str(args.port),
+                "--packet-count",
+                str(cfg["preload_packets"]),
+                "--work-dir",
+                str(run_dir / "preload_overrate"),
+                "--csv",
+                str(run_dir / "preload_overrate.csv"),
+                "--timeout",
+                str(cfg["timeout"]),
+            ]
+            + repeated_case_args(cfg["preload_overrate_cases"])
+            + maybe_force_args(args),
             log_path,
         )
 

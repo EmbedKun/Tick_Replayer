@@ -45,6 +45,12 @@ REG_UNDERRUN_LO = 0x0078
 REG_UNDERRUN_HI = 0x007C
 REG_DEBUG_TICK_LO = 0x0094
 REG_DEBUG_TICK_HI = 0x0098
+REG_DROP_PKTS_LO = 0x00C8
+REG_DROP_PKTS_HI = 0x00CC
+REG_DROP_BEATS_LO = 0x00D0
+REG_DROP_BEATS_HI = 0x00D4
+REG_STALL_EVT_LO = 0x00D8
+REG_STALL_EVT_HI = 0x00DC
 
 TX_PORT_BASE = {0: 0x00000, 1: 0x10000}
 MODE_STREAM = 1
@@ -81,6 +87,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--watermark", type=int_auto, default=4096)
     parser.add_argument("--force-link-up", action="store_true")
     parser.add_argument("--force-tx-ready", action="store_true")
+    parser.add_argument("--no-auto-drop", action="store_true", help="clear DEBUG_CTRL[2] for strict no-drop tests")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--chunk-bytes", type=int_auto, default=4 * 1024 * 1024)
     parser.add_argument("--csv", type=Path, help="optional CSV result path")
@@ -160,6 +167,10 @@ def configure_and_start(fd: int, base: int, args: argparse.Namespace, stream_byt
         debug |= 0x1
     if args.force_tx_ready:
         debug |= 0x2
+    if args.no_auto_drop:
+        debug &= ~0x4
+    else:
+        debug |= 0x4
     write32(fd, base + REG_DEBUG_CTRL, debug)
     write32(fd, base + REG_CONTROL, 0x1)
 
@@ -200,6 +211,9 @@ def run_case(args: argparse.Namespace, h2c_fd: int, user_fd: int, base: int, fra
     tx_bytes = read64(user_fd, base + REG_TX_BYTES_LO, base + REG_TX_BYTES_HI)
     late_pkts = read64(user_fd, base + REG_LATE_LO, base + REG_LATE_HI)
     underrun_pkts = read64(user_fd, base + REG_UNDERRUN_LO, base + REG_UNDERRUN_HI)
+    drop_pkts = read64(user_fd, base + REG_DROP_PKTS_LO, base + REG_DROP_PKTS_HI)
+    drop_beats = read64(user_fd, base + REG_DROP_BEATS_LO, base + REG_DROP_BEATS_HI)
+    stall_events = read64(user_fd, base + REG_STALL_EVT_LO, base + REG_STALL_EVT_HI)
     ticks = read64(user_fd, base + REG_DEBUG_TICK_LO, base + REG_DEBUG_TICK_HI)
 
     hw_seconds = ticks / args.tick_hz if ticks else wall_seconds
@@ -216,6 +230,9 @@ def run_case(args: argparse.Namespace, h2c_fd: int, user_fd: int, base: int, fra
         "tx_bytes": tx_bytes,
         "late_packets": late_pkts,
         "underrun_packets": underrun_pkts,
+        "drop_packets": drop_pkts,
+        "drop_beats": drop_beats,
+        "stall_events": stall_events,
         "debug_ticks": ticks,
         "hw_seconds": hw_seconds,
         "hw_gbps": hw_gbps,
@@ -227,7 +244,8 @@ def run_case(args: argparse.Namespace, h2c_fd: int, user_fd: int, base: int, fra
         "result "
         f"done={completed} tx_pkts={tx_pkts} tx_bytes={tx_bytes} "
         f"hw_gbps={hw_gbps:.3f} load_gbps={load_gbps:.3f} "
-        f"late={late_pkts} underrun={underrun_pkts}"
+        f"late={late_pkts} underrun={underrun_pkts} "
+        f"drop_pkts={drop_pkts} stall_events={stall_events}"
     )
     if not completed:
         stop_and_clear(user_fd, base)

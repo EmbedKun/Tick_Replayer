@@ -45,6 +45,7 @@ module axi_lite_regs #(
   output logic              cfg_stream_eof,
   output logic              cfg_force_link_up,
   output logic              cfg_force_tx_ready,
+  output logic              cfg_auto_tx_drop,
 
   input  logic              stat_running,
   input  logic              stat_done,
@@ -57,6 +58,9 @@ module axi_lite_regs #(
   input  logic [63:0]       stat_tx_bytes,
   input  logic [63:0]       stat_late_pkts,
   input  logic [63:0]       stat_underrun_pkts,
+  input  logic [63:0]       stat_drop_pkts,
+  input  logic [63:0]       stat_drop_beats,
+  input  logic [63:0]       stat_stall_events,
   input  logic [31:0]       stat_debug_status,
   input  logic [31:0]       stat_debug_axi,
   input  logic [63:0]       stat_debug_araddr,
@@ -112,6 +116,12 @@ module axi_lite_regs #(
   localparam logic [ADDR_W-1:0] REG_STREAM_STATUS= 16'h00bc;
   localparam logic [ADDR_W-1:0] REG_STREAM_LEVEL_LO = 16'h00c0;
   localparam logic [ADDR_W-1:0] REG_STREAM_LEVEL_HI = 16'h00c4;
+  localparam logic [ADDR_W-1:0] REG_DROP_PKTS_LO = 16'h00c8;
+  localparam logic [ADDR_W-1:0] REG_DROP_PKTS_HI = 16'h00cc;
+  localparam logic [ADDR_W-1:0] REG_DROP_BEATS_LO= 16'h00d0;
+  localparam logic [ADDR_W-1:0] REG_DROP_BEATS_HI= 16'h00d4;
+  localparam logic [ADDR_W-1:0] REG_STALL_EVT_LO = 16'h00d8;
+  localparam logic [ADDR_W-1:0] REG_STALL_EVT_HI = 16'h00dc;
 
   logic [ADDR_W-1:0] awaddr_q;
   logic [ADDR_W-1:0] araddr_q;
@@ -173,6 +183,7 @@ module axi_lite_regs #(
       cfg_stream_eof     <= 1'b0;
       cfg_force_link_up  <= 1'b0;
       cfg_force_tx_ready <= 1'b0;
+      cfg_auto_tx_drop   <= 1'b1;
     end else begin
       start_pulse <= 1'b0;
       stop_pulse  <= 1'b0;
@@ -237,6 +248,7 @@ module axi_lite_regs #(
             if (wstrb_q[0]) begin
               cfg_force_link_up <= wdata_q[0];
               cfg_force_tx_ready <= wdata_q[1];
+              cfg_auto_tx_drop <= wdata_q[2];
             end
           end
           default: begin
@@ -273,7 +285,7 @@ module axi_lite_regs #(
           REG_RATE:        s_axil_rdata <= cfg_rate_q16_16;
           REG_WATERMARK:   s_axil_rdata <= cfg_watermark;
           REG_FIFO_LEVEL:  s_axil_rdata <= stat_fifo_level;
-          REG_DEBUG_CTRL:  s_axil_rdata <= {30'd0, cfg_force_tx_ready, cfg_force_link_up};
+          REG_DEBUG_CTRL:  s_axil_rdata <= {29'd0, cfg_auto_tx_drop, cfg_force_tx_ready, cfg_force_link_up};
           REG_TX_PKTS_LO:  s_axil_rdata <= stat_tx_pkts[31:0];
           REG_TX_PKTS_HI:  s_axil_rdata <= stat_tx_pkts[63:32];
           REG_TX_BYTES_LO: s_axil_rdata <= stat_tx_bytes[31:0];
@@ -299,6 +311,12 @@ module axi_lite_regs #(
           REG_STREAM_STATUS:s_axil_rdata <= stat_stream_status;
           REG_STREAM_LEVEL_LO:s_axil_rdata <= stat_stream_level[31:0];
           REG_STREAM_LEVEL_HI:s_axil_rdata <= stat_stream_level[63:32];
+          REG_DROP_PKTS_LO:s_axil_rdata <= stat_drop_pkts[31:0];
+          REG_DROP_PKTS_HI:s_axil_rdata <= stat_drop_pkts[63:32];
+          REG_DROP_BEATS_LO:s_axil_rdata <= stat_drop_beats[31:0];
+          REG_DROP_BEATS_HI:s_axil_rdata <= stat_drop_beats[63:32];
+          REG_STALL_EVT_LO:s_axil_rdata <= stat_stall_events[31:0];
+          REG_STALL_EVT_HI:s_axil_rdata <= stat_stall_events[63:32];
           default:         s_axil_rdata <= 32'h0;
         endcase
       end else if (s_axil_rvalid && s_axil_rready) begin

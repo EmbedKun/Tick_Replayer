@@ -5,7 +5,8 @@ import traffic_replay_pkg::*;
 module traffic_replay_top_stub #(
   parameter int AXIL_ADDR_W = 16,
   parameter int AXI_ADDR_W_P = AXI_ADDR_W,
-  parameter int AXI_ID_W_P   = AXI_ID_W
+  parameter int AXI_ID_W_P   = AXI_ID_W,
+  parameter int TX_STALL_WATCHDOG_CYCLES_P = 4096
 ) (
   input  logic                     clk,
   input  logic                     rstn,
@@ -59,7 +60,8 @@ module traffic_replay_top_stub #(
   trace_replay_core #(
     .AXIL_ADDR_W(AXIL_ADDR_W),
     .AXI_ADDR_W_P(AXI_ADDR_W_P),
-    .AXI_ID_W_P(AXI_ID_W_P)
+    .AXI_ID_W_P(AXI_ID_W_P),
+    .TX_STALL_WATCHDOG_CYCLES_P(TX_STALL_WATCHDOG_CYCLES_P)
   ) core_i (
     .clk(clk),
     .rstn(rstn),

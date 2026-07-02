@@ -1,0 +1,7 @@
+===== 05_preload_mixed_p0 =====
+date: 2026-07-02 11:48:13 CST
+host: FNIL-2022DEC-GPU-3
+$ bash -lc python3\ /home/user/traffic_replay_remote_src/software/preload_mixed_test.py\ --port\ 0\ --packet-count\ 100000\ --pattern\ 64:3\,1518:38\ --require-no-drop\ --work-dir\ /tmp/tr_eval_mixed_p0\ --csv\ /home/user/traffic_replay_remote_src/bitstreams/20260702_113125_dual_preload_autodrop_wns_minus003_accepted/evaluation_logs/preload_mixed_p0.csv\ --timeout\ 60
+mixed port=0 pattern=64:3,1518:38 packets=100000 done=True tx=100000 drop=0 late=0 underrun=0 stall=0 ticks=2050027 expected_ticks=2050000 tick_error=27 l2=92.604Gbps wire=95.413Gbps load=15.062Gbps
+wrote /home/user/traffic_replay_remote_src/bitstreams/20260702_113125_dual_preload_autodrop_wns_minus003_accepted/evaluation_logs/preload_mixed_p0.csv
+[exit=0 elapsed=9s]

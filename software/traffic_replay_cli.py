@@ -54,6 +54,12 @@ REG_STREAM_CTRL = 0x00B8
 REG_STREAM_STATUS = 0x00BC
 REG_STREAM_LEVEL_LO = 0x00C0
 REG_STREAM_LEVEL_HI = 0x00C4
+REG_DROP_PKTS_LO = 0x00C8
+REG_DROP_PKTS_HI = 0x00CC
+REG_DROP_BEATS_LO = 0x00D0
+REG_DROP_BEATS_HI = 0x00D4
+REG_STALL_EVT_LO = 0x00D8
+REG_STALL_EVT_HI = 0x00DC
 
 TX_PORT_BASE = {0: 0x00000, 1: 0x10000}
 RX_PORT_BASE = {0: 0x20000, 1: 0x30000}
@@ -127,6 +133,12 @@ REG_NAMES = [
     ("STREAM_STATUS", REG_STREAM_STATUS),
     ("STREAM_LEVEL_LO", REG_STREAM_LEVEL_LO),
     ("STREAM_LEVEL_HI", REG_STREAM_LEVEL_HI),
+    ("DROP_PKTS_LO", REG_DROP_PKTS_LO),
+    ("DROP_PKTS_HI", REG_DROP_PKTS_HI),
+    ("DROP_BEATS_LO", REG_DROP_BEATS_LO),
+    ("DROP_BEATS_HI", REG_DROP_BEATS_HI),
+    ("STALL_EVT_LO", REG_STALL_EVT_LO),
+    ("STALL_EVT_HI", REG_STALL_EVT_HI),
 ]
 
 RX_REG_NAMES = [
@@ -188,11 +200,15 @@ def print_status(fd: int, base: int) -> None:
     print(f"tx_gate_open      : {bool_word(bool(status & (1 << 5)))}")
     print(f"force_link_up     : {bool_word(bool(debug & 0x1))}")
     print(f"force_tx_ready    : {bool_word(bool(debug & 0x2))}")
+    print(f"auto_tx_drop      : {bool_word(bool(debug & 0x4))}")
     print(f"fifo_level        : {read32(fd, base + REG_FIFO_LEVEL)}")
     print(f"tx_packets        : {read64(fd, base + REG_TX_PKTS_LO, base + REG_TX_PKTS_HI)}")
     print(f"tx_bytes          : {read64(fd, base + REG_TX_BYTES_LO, base + REG_TX_BYTES_HI)}")
     print(f"late_packets      : {read64(fd, base + REG_LATE_LO, base + REG_LATE_HI)}")
     print(f"underrun_packets  : {read64(fd, base + REG_UNDERRUN_LO, base + REG_UNDERRUN_HI)}")
+    print(f"drop_packets      : {read64(fd, base + REG_DROP_PKTS_LO, base + REG_DROP_PKTS_HI)}")
+    print(f"drop_beats        : {read64(fd, base + REG_DROP_BEATS_LO, base + REG_DROP_BEATS_HI)}")
+    print(f"stall_events      : {read64(fd, base + REG_STALL_EVT_LO, base + REG_STALL_EVT_HI)}")
     print(f"debug_status      : 0x{read32(fd, base + REG_DEBUG_STATUS):08x}")
     print(f"debug_axi         : 0x{read32(fd, base + REG_DEBUG_AXI):08x}")
     print(f"debug_araddr      : 0x{read64(fd, base + REG_DEBUG_AR_LO, base + REG_DEBUG_AR_HI):016x}")
@@ -271,6 +287,9 @@ def parse_args() -> argparse.Namespace:
     debug_tx = sub.add_parser("debug-tx-ready")
     debug_tx.add_argument("state", choices=["on", "off"])
 
+    auto_drop = sub.add_parser("auto-drop")
+    auto_drop.add_argument("state", choices=["on", "off"])
+
     read_reg = sub.add_parser("read-reg")
     read_reg.add_argument("offset", type=int_auto)
 
@@ -310,6 +329,10 @@ def main() -> None:
       elif args.cmd == "debug-tx-ready":
           value = read32(fd, tx_base + REG_DEBUG_CTRL)
           value = (value | 0x2) if args.state == "on" else (value & ~0x2)
+          write32(fd, tx_base + REG_DEBUG_CTRL, value)
+      elif args.cmd == "auto-drop":
+          value = read32(fd, tx_base + REG_DEBUG_CTRL)
+          value = (value | 0x4) if args.state == "on" else (value & ~0x4)
           write32(fd, tx_base + REG_DEBUG_CTRL, value)
       elif args.cmd == "rx-status":
           print_rx_status(fd, rx_base)

@@ -649,6 +649,9 @@ The stress script reports:
   replay tick counter.
 * `late_packets` and `underrun_packets`: scheduler and payload starvation
   indicators.
+* `drop_packets`, `drop_beats`, and `stall_events`: best-effort overload
+  recovery counters.  Precision and lossless replay tests must require these
+  counters to stay at zero.
 
 ## Hardware Validation Suite
 
@@ -658,6 +661,7 @@ important bitstream versions because each run records the same classes of
 evidence:
 
 * `XDMA H2C` / `C2H` deterministic `DDR4` readback.
+* `PRELOAD` scheduled no-drop sweep and over-rate robustness sweep.
 * Synthetic `pcap` generation, `pcap2trace.py` conversion, and
   `trace_to_stream.py` conversion.
 * Finite-buffer `STREAM` throughput sweep.
@@ -821,6 +825,7 @@ python3 -m py_compile \
   software/gen_synthetic_pcap.py \
   software/gen_synthetic_trace.py \
   software/stream_stress_test.py \
+  software/preload_stress_test.py \
   software/hw_validation_suite.py
 ```
 
@@ -881,9 +886,9 @@ Hardware smoke tests to date prove:
   `70.400Gbps` wire-estimated throughput.  The current integer tick scheduler
   and one-packet-per-tick release model cannot represent the average spacing
   needed for 100G minimum-size packets without a scheduler architecture change.
-* Over-rate preload tests can fill the downstream TX async FIFO/CMAC side and
-  stall with `m_tx_axis_tready=0`.  `stop`/`clear` reset the replay core but do
-  not yet reset the whole per-port TX datapath.
+* Over-rate preload tests now use `auto_tx_drop` to avoid a hung replay core.
+  Any nonzero `drop_packets`/`stall_events` result is a robustness pass, not a
+  valid lossless replay result.
 * The archived BRAM-FIFO STREAM build is functional but not timing-clean:
   final implementation timing is `WNS=-0.247 ns`.
 * The finite-buffer `STREAM` path reaches about `96.98Gbps` for 1518-byte
