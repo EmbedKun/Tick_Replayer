@@ -23,6 +23,7 @@
 #include <iterator>
 #include <mutex>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -72,6 +73,11 @@ static constexpr off_t REG_STREAM_LEVEL_LO = 0x00c0;
 static constexpr off_t REG_STREAM_LEVEL_HI = 0x00c4;
 
 static constexpr uint32_t MODE_STREAM = 1;
+static constexpr uint32_t STREAM_STATUS_ERROR = 1u << 6;
+static constexpr uint32_t STREAM_STATUS_RING_MODE = 1u << 7;
+static constexpr uint32_t STREAM_STATUS_SIZE_VALID = 1u << 9;
+static constexpr uint32_t STREAM_STATUS_OVERRUN = 1u << 10;
+static constexpr uint32_t STREAM_STATUS_PTR_ERROR = 1u << 12;
 
 struct Args {
   fs::path stream;
@@ -408,6 +414,30 @@ static uint64_t read64(int fd, uint64_t lo, uint64_t hi) {
          (static_cast<uint64_t>(read32(fd, hi)) << 32);
 }
 
+static uint32_t check_stream_status(int user_fd, uint64_t base) {
+  uint32_t status = read32(user_fd, base + REG_STREAM_STATUS);
+  uint32_t fatal = STREAM_STATUS_ERROR | STREAM_STATUS_OVERRUN | STREAM_STATUS_PTR_ERROR;
+  if ((status & fatal) != 0) {
+    std::ostringstream oss;
+    oss << "FPGA stream ring error: status=0x" << std::hex << std::setw(8)
+        << std::setfill('0') << status;
+    throw std::runtime_error(oss.str());
+  }
+  if (status != 0 && (status & STREAM_STATUS_RING_MODE) == 0) {
+    std::ostringstream oss;
+    oss << "FPGA stream reader is not in ring mode: status=0x" << std::hex
+        << std::setw(8) << std::setfill('0') << status;
+    throw std::runtime_error(oss.str());
+  }
+  if (status != 0 && (status & STREAM_STATUS_SIZE_VALID) == 0) {
+    std::ostringstream oss;
+    oss << "FPGA stream ring size is invalid: status=0x" << std::hex
+        << std::setw(8) << std::setfill('0') << status;
+    throw std::runtime_error(oss.str());
+  }
+  return status;
+}
+
 static void pwrite_ring(int fd, const uint8_t *data, size_t len,
                         uint64_t ring_base, uint64_t ring_size,
                         uint64_t write_count) {
@@ -636,6 +666,7 @@ int main(int argc, char **argv) {
           }
 
           uint64_t read_count = read64(user_fd, base + REG_STREAM_RD_LO, base + REG_STREAM_RD_HI);
+          (void)check_stream_status(user_fd, base);
           if (read_count > write_count) {
             throw std::runtime_error("FPGA read pointer advanced past host write pointer");
           }

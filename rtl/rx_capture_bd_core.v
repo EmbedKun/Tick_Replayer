@@ -140,6 +140,7 @@ module rx_capture_bd_core #(
   input  wire [AXIS_KEEP_W_P-1:0]   s_rx_axis_tkeep,
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_RX_AXIS TVALID" *)
   input  wire                       s_rx_axis_tvalid,
+  input  wire                       s_rx_axis_tstart,
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_RX_AXIS TLAST" *)
   input  wire                       s_rx_axis_tlast,
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_RX_AXIS TUSER" *)
@@ -216,6 +217,7 @@ module rx_capture_bd_core #(
     .s_rx_axis_tdata(s_rx_axis_tdata),
     .s_rx_axis_tkeep(s_rx_axis_tkeep),
     .s_rx_axis_tvalid(s_rx_axis_tvalid),
+    .s_rx_axis_tstart(s_rx_axis_tstart),
     .s_rx_axis_tlast(s_rx_axis_tlast),
     .s_rx_axis_tuser(s_rx_axis_tuser)
   );

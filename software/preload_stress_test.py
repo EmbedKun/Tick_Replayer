@@ -97,7 +97,26 @@ def align_up(value: int, alignment: int) -> int:
 
 
 def make_frame(packet_index: int, frame_len: int) -> bytes:
-    return bytes(((packet_index * 17 + i * 3 + (packet_index >> 4)) & 0xFF) for i in range(frame_len))
+    header = bytes(
+        [
+            0x02,
+            0x00,
+            0x00,
+            0x00,
+            (packet_index >> 8) & 0xFF,
+            packet_index & 0xFF,
+            0x02,
+            0x00,
+            0x00,
+            0x01,
+            (packet_index >> 8) & 0xFF,
+            packet_index & 0xFF,
+            0x08,
+            0x00,
+        ]
+    )
+    payload = bytes(((packet_index * 17 + i * 3 + (packet_index >> 4)) & 0xFF) for i in range(max(0, frame_len - len(header))))
+    return (header + payload)[:frame_len]
 
 
 def make_trace(out_dir: Path, packet_count: int, frame_len: int, gap_ticks: int) -> tuple[Path, Path, int, int]:

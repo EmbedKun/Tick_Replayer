@@ -105,7 +105,8 @@ module tb_trace_replay_core;
     .m_tx_axis_tvalid(tx_tvalid),
     .m_tx_axis_tready(tx_tready),
     .m_tx_axis_tlast(tx_tlast),
-    .m_tx_axis_tuser(tx_tuser)
+    .m_tx_axis_tuser(tx_tuser),
+    .tx_path_clear()
   );
 
   function automatic logic [511:0] test_payload_word(input logic [7:0] value, input int valid_bytes);
@@ -247,38 +248,21 @@ module tb_trace_replay_core;
     end
   endtask
 
-  task automatic send_host_packet(input [63:0] gap_ticks, input [15:0] length, input [7:0] seed);
-    logic [511:0] header;
-    logic [511:0] payload;
+  task automatic axil_read(input [15:0] addr, output [31:0] data);
     begin
-      header = '0;
-      header[63:0]    = gap_ticks;
-      header[111:96]  = length;
-      header[127:112] = 16'd0;
+      @(posedge clk);
+      axil_araddr  <= addr;
+      axil_arvalid <= 1'b1;
+      axil_rready  <= 1'b1;
 
-      payload = '0;
-      for (int i = 0; i < 64; i++) begin
-        payload[i*8 +: 8] = seed + i[7:0];
-      end
+      wait (axil_arready);
+      @(posedge clk);
+      axil_arvalid <= 1'b0;
 
+      wait (axil_rvalid);
+      data = axil_rdata;
       @(posedge clk);
-      host_tdata  <= header;
-      host_tkeep  <= {64{1'b1}};
-      host_tlast  <= 1'b0;
-      host_tvalid <= 1'b1;
-      wait (host_tready);
-      @(posedge clk);
-      host_tvalid <= 1'b0;
-
-      @(posedge clk);
-      host_tdata  <= payload;
-      host_tkeep  <= keep_from_len(length);
-      host_tlast  <= 1'b1;
-      host_tvalid <= 1'b1;
-      wait (host_tready);
-      @(posedge clk);
-      host_tvalid <= 1'b0;
-      host_tlast  <= 1'b0;
+      axil_rready <= 1'b0;
     end
   endtask
 
@@ -300,6 +284,9 @@ module tb_trace_replay_core;
   end
 
   initial begin
+    logic [31:0] status_word;
+    logic [31:0] stream_status_word;
+
     axil_awaddr  = '0;
     axil_awvalid = 1'b0;
     axil_wdata   = '0;
@@ -320,47 +307,33 @@ module tb_trace_replay_core;
     repeat (10) @(posedge clk);
 
     axil_write(16'h0004, 32'd1);
-    axil_write(16'h0000, 32'd1);
-
-    send_host_packet(64'd4, 16'd64, 8'h10);
-    send_host_packet(64'd3, 16'd60, 8'h40);
-
-    for (int timeout = 0; timeout < 300 && tx_pkt_count < 2; timeout++) begin
-      @(posedge clk);
-    end
-
-    if (tx_pkt_count != 2) begin
-      $fatal(1, "Expected 2 TX packets, got %0d", tx_pkt_count);
-    end
-    if (tx_beat_count != 2) begin
-      $fatal(1, "Expected 2 TX beats, got %0d", tx_beat_count);
-    end
-    $display("PASS: host stream replay emitted %0d packets", tx_pkt_count);
-
-    axil_write(16'h0000, 32'd2);
-    axil_write(16'h0000, 32'd4);
-    axil_write(16'h0004, 32'd1);
-    axil_write(16'h0010, 32'h2000_0000);
+    axil_write(16'h0010, 32'h3000_0000);
     axil_write(16'h0014, 32'h0000_0000);
-    axil_write(16'h0020, 32'd256);
-    axil_write(16'h0024, 32'd0);
-    axil_write(16'h0028, 32'd2);
+    axil_write(16'h0028, 32'd4);
     axil_write(16'h002c, 32'd0);
+    axil_write(16'h00b0, 32'd0);
+    axil_write(16'h00b4, 32'd0);
     axil_write(16'h0000, 32'd1);
 
-    for (int timeout = 0; timeout < 1000 && tx_pkt_count < 4; timeout++) begin
+    for (int timeout = 0; timeout < 200; timeout++) begin
       @(posedge clk);
     end
 
-    if (tx_pkt_count != 4) begin
-      $fatal(1, "Expected total 4 TX packets after DDR stream replay, got %0d", tx_pkt_count);
+    axil_read(16'h0008, status_word);
+    axil_read(16'h00bc, stream_status_word);
+    if (status_word[0]) begin
+      $fatal(1, "Invalid stream ring configuration left replay running, status=0x%08x", status_word);
     end
-    if (tx_beat_count != 4) begin
-      $fatal(1, "Expected total 4 TX beats after DDR stream replay, got %0d", tx_beat_count);
+    if (!status_word[1] || !stream_status_word[6]) begin
+      $fatal(1, "Invalid stream ring configuration did not report done/error, status=0x%08x stream=0x%08x",
+             status_word, stream_status_word);
     end
-    $display("PASS: DDR stream-buffer replay emitted 2 packets");
+    if (tx_pkt_count != 0 || tx_beat_count != 0) begin
+      $fatal(1, "Invalid stream ring configuration emitted data: packets=%0d beats=%0d",
+             tx_pkt_count, tx_beat_count);
+    end
+    $display("PASS: invalid DDR ring-stream configuration stops cleanly without emitting data");
 
-    axil_write(16'h0000, 32'd2);
     axil_write(16'h0000, 32'd4);
     axil_write(16'h0004, 32'd1);
     axil_write(16'h0010, 32'h3000_0000);
@@ -376,11 +349,11 @@ module tb_trace_replay_core;
     axil_write(16'h00a4, 32'd0);
     axil_write(16'h0000, 32'd1);
 
-    for (int timeout = 0; timeout < 500 && tx_pkt_count < 5; timeout++) begin
+    for (int timeout = 0; timeout < 500 && tx_pkt_count < 1; timeout++) begin
       @(posedge clk);
     end
 
-    if (tx_pkt_count != 5) begin
+    if (tx_pkt_count != 1) begin
       $fatal(1, "Expected first ring-stream packet, got total %0d", tx_pkt_count);
     end
 
@@ -388,15 +361,15 @@ module tb_trace_replay_core;
     axil_write(16'h00a4, 32'd0);
     axil_write(16'h00b8, 32'd1);
 
-    for (int timeout = 0; timeout < 1000 && tx_pkt_count < 6; timeout++) begin
+    for (int timeout = 0; timeout < 1000 && tx_pkt_count < 2; timeout++) begin
       @(posedge clk);
     end
 
-    if (tx_pkt_count != 6) begin
-      $fatal(1, "Expected total 6 TX packets after DDR ring stream replay, got %0d", tx_pkt_count);
+    if (tx_pkt_count != 2) begin
+      $fatal(1, "Expected total 2 TX packets after DDR ring stream replay, got %0d", tx_pkt_count);
     end
-    if (tx_beat_count != 6) begin
-      $fatal(1, "Expected total 6 TX beats after DDR ring stream replay, got %0d", tx_beat_count);
+    if (tx_beat_count != 2) begin
+      $fatal(1, "Expected total 2 TX beats after DDR ring stream replay, got %0d", tx_beat_count);
     end
     $display("PASS: DDR ring-stream replay waited for host write pointer and emitted 2 packets");
 
@@ -411,15 +384,15 @@ module tb_trace_replay_core;
     axil_write(16'h002c, 32'd0);
     axil_write(16'h0000, 32'd1);
 
-    for (int timeout = 0; timeout < 10000 && tx_pkt_count < 9; timeout++) begin
+    for (int timeout = 0; timeout < 10000 && tx_pkt_count < 5; timeout++) begin
       @(posedge clk);
     end
 
-    if (tx_pkt_count != 9) begin
-      $fatal(1, "Expected total 9 TX packets after DDR replay, got %0d", tx_pkt_count);
+    if (tx_pkt_count != 5) begin
+      $fatal(1, "Expected total 5 TX packets after DDR replay, got %0d", tx_pkt_count);
     end
-    if (tx_beat_count != 10) begin
-      $fatal(1, "Expected total 10 TX beats after DDR replay, got %0d", tx_beat_count);
+    if (tx_beat_count != 6) begin
+      $fatal(1, "Expected total 6 TX beats after DDR replay, got %0d", tx_beat_count);
     end
     $display("PASS: DDR preload replay emitted 3 packets");
     $finish;

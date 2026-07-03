@@ -6,13 +6,13 @@ version should live in its own timestamped subdirectory and include a matching
 TXT note file with the source commit, SHA256 hash, build path, and verification
 status.
 
-Recommended command from PowerShell:
+Recommended archive contents:
 
-  powershell -ExecutionPolicy Bypass -File scripts\archive_bitstream.ps1 `
-    -Bitfile D:\tr_build_dual\vivado_hw\traffic_replay_hw.runs\impl_1\traffic_replay_bd_wrapper.bit `
-    -Name dual_qsfp_loop_verified `
-    -BuildRoot D:\tr_build_dual `
-    -Notes "H2C/C2H DDR readback passed; TX0->RX1 and TX1->RX0 loopback passed."
+  traffic_replay_bd_wrapper.bit
+  traffic_replay_bd_wrapper.ltx
+  traffic_replay_bd_wrapper_timing_summary_routed.rpt
+  traffic_replay_bd_wrapper_route_status.rpt
+  README.txt
 
 Archived versions currently kept in this repository:
 
@@ -33,3 +33,9 @@ Archived versions currently kept in this repository:
     97.386Gbps wire-estimated throughput for 1518B packets at gap=38 and
     96.158Gbps for a mixed-size trace with only +11 tick schedule error.
     RX error counters and over-rate recovery still need RTL cleanup.
+
+  20260704_052345_timing10_bugfix_clean_rx_deep_pass
+    Timing-clean DDR-register-slice image.  Routed timing is met
+    (WNS=0.024 ns, TNS=0.000 ns).  H2C/C2H DDR readback passed, PRELOAD
+    large/mixed traces passed, STREAM gap0 recovery passed, and both optical
+    loopback directions passed RX sample verification.

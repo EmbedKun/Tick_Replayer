@@ -8,6 +8,7 @@ module tb_lbus_adapters;
 
   logic clk = 1'b0;
   logic resetn = 1'b0;
+  logic clear = 1'b0;
 
   logic [DATA_W-1:0] s_axis_tdata;
   logic [KEEP_W-1:0] s_axis_tkeep;
@@ -41,10 +42,13 @@ module tb_lbus_adapters;
   logic tx_errin2;
   logic tx_errin3;
   logic tx_rdyout;
+  logic hold_not_ready = 1'b0;
+  logic inject_disabled_sideband = 1'b0;
 
   logic [DATA_W-1:0] m_axis_tdata;
   logic [KEEP_W-1:0] m_axis_tkeep;
   logic              m_axis_tvalid;
+  logic              m_axis_tstart;
   logic              m_axis_tlast;
   logic              m_axis_tuser;
 
@@ -52,6 +56,7 @@ module tb_lbus_adapters;
   logic [KEEP_W-1:0] exp_keep [0:MAX_BEATS-1];
   logic              exp_last [0:MAX_BEATS-1];
   logic              exp_user [0:MAX_BEATS-1];
+  logic              exp_start [0:MAX_BEATS-1];
   int exp_wr = 0;
   int exp_rd = 0;
   int sop_count = 0;
@@ -62,12 +67,18 @@ module tb_lbus_adapters;
   int full_rate_last_cycle = -1;
   logic force_ready = 1'b0;
   logic full_rate_phase = 1'b0;
+  logic lbus_in_frame = 1'b0;
+
+  wire any_tx_ena = tx_enain0 || tx_enain1 || tx_enain2 || tx_enain3;
+  wire any_tx_sop = tx_sopin0 || tx_sopin1 || tx_sopin2 || tx_sopin3;
+  wire any_tx_eop = tx_eopin0 || tx_eopin1 || tx_eopin2 || tx_eopin3;
 
   always #1.55 clk = ~clk;
 
   axis_to_lbus_512 dut_tx (
     .clk(clk),
     .resetn(resetn),
+    .clear(clear),
     .s_axis_tdata(s_axis_tdata),
     .s_axis_tkeep(s_axis_tkeep),
     .s_axis_tvalid(s_axis_tvalid),
@@ -120,19 +131,20 @@ module tb_lbus_adapters;
     .rx_sopout3(tx_rdyout && tx_sopin3),
     .rx_eopout0(tx_rdyout && tx_eopin0),
     .rx_eopout1(tx_rdyout && tx_eopin1),
-    .rx_eopout2(tx_rdyout && tx_eopin2),
-    .rx_eopout3(tx_rdyout && tx_eopin3),
+    .rx_eopout2((tx_rdyout && tx_eopin2) || inject_disabled_sideband),
+    .rx_eopout3((tx_rdyout && tx_eopin3) || inject_disabled_sideband),
     .rx_mtyout0(tx_mtyin0),
     .rx_mtyout1(tx_mtyin1),
     .rx_mtyout2(tx_mtyin2),
     .rx_mtyout3(tx_mtyin3),
     .rx_errout0(tx_rdyout && tx_errin0),
     .rx_errout1(tx_rdyout && tx_errin1),
-    .rx_errout2(tx_rdyout && tx_errin2),
-    .rx_errout3(tx_rdyout && tx_errin3),
+    .rx_errout2((tx_rdyout && tx_errin2) || inject_disabled_sideband),
+    .rx_errout3((tx_rdyout && tx_errin3) || inject_disabled_sideband),
     .m_axis_tdata(m_axis_tdata),
     .m_axis_tkeep(m_axis_tkeep),
     .m_axis_tvalid(m_axis_tvalid),
+    .m_axis_tstart(m_axis_tstart),
     .m_axis_tlast(m_axis_tlast),
     .m_axis_tuser(m_axis_tuser)
   );
@@ -162,6 +174,7 @@ module tb_lbus_adapters;
   task automatic expect_beat(
     input logic [DATA_W-1:0] data,
     input logic [KEEP_W-1:0] keep,
+    input logic start,
     input logic last,
     input logic user
   );
@@ -173,6 +186,7 @@ module tb_lbus_adapters;
       exp_keep[exp_wr] = keep;
       exp_last[exp_wr] = last;
       exp_user[exp_wr] = user;
+      exp_start[exp_wr] = start;
       exp_wr++;
     end
   endtask
@@ -180,6 +194,7 @@ module tb_lbus_adapters;
   task automatic send_beat(
     input logic [DATA_W-1:0] data,
     input logic [KEEP_W-1:0] keep,
+    input logic start,
     input logic last,
     input logic user
   );
@@ -193,7 +208,7 @@ module tb_lbus_adapters;
       do begin
         @(posedge clk);
       end while (!s_axis_tready);
-      expect_beat(data, keep, last, user && last);
+      expect_beat(data, keep, start, last, user && last);
       @(negedge clk);
       s_axis_tvalid = 1'b0;
       s_axis_tlast  = 1'b0;
@@ -215,6 +230,7 @@ module tb_lbus_adapters;
         send_beat(
           make_data(pkt_id, beat_idx),
           make_keep(beat_bytes),
+          beat_idx == 0,
           remaining <= KEEP_W,
           err && (remaining <= KEEP_W)
         );
@@ -239,7 +255,7 @@ module tb_lbus_adapters;
         @(posedge clk);
         if (s_axis_tready) begin
           data = make_data(1000, sent);
-          expect_beat(data, '1, 1'b1, 1'b0);
+          expect_beat(data, '1, 1'b1, 1'b1, 1'b0);
           sent++;
           @(negedge clk);
           if (sent < packet_count) begin
@@ -263,7 +279,7 @@ module tb_lbus_adapters;
       cycle_count <= 0;
     end else begin
       cycle_count <= cycle_count + 1;
-      tx_rdyout <= force_ready || ($urandom_range(0, 7) != 0);
+      tx_rdyout <= force_ready || (!hold_not_ready && ($urandom_range(0, 7) != 0));
     end
   end
 
@@ -272,10 +288,29 @@ module tb_lbus_adapters;
       exp_rd <= 0;
       sop_count <= 0;
       eop_count <= 0;
+      lbus_in_frame <= 1'b0;
     end else begin
       if (tx_rdyout) begin
         sop_count <= sop_count + tx_sopin0 + tx_sopin1 + tx_sopin2 + tx_sopin3;
         eop_count <= eop_count + tx_eopin0 + tx_eopin1 + tx_eopin2 + tx_eopin3;
+
+        if (lbus_in_frame && !any_tx_ena) begin
+          $fatal(1, "LBUS gap inserted inside a frame at cycle %0d", cycle_count);
+        end
+        if (!lbus_in_frame && any_tx_ena && !any_tx_sop) begin
+          $fatal(1, "LBUS frame started without SOP at cycle %0d", cycle_count);
+        end
+        if (lbus_in_frame && any_tx_sop && !any_tx_eop) begin
+          $fatal(1, "LBUS SOP appeared before prior EOP at cycle %0d", cycle_count);
+        end
+        if (any_tx_ena) begin
+          if (any_tx_sop) begin
+            lbus_in_frame <= 1'b1;
+          end
+          if (any_tx_eop) begin
+            lbus_in_frame <= 1'b0;
+          end
+        end
       end
 
       if (m_axis_tvalid) begin
@@ -302,6 +337,9 @@ module tb_lbus_adapters;
         if (m_axis_tuser !== exp_user[exp_rd]) begin
           $fatal(1, "TUSER mismatch beat %0d expected=%0b got=%0b", exp_rd, exp_user[exp_rd], m_axis_tuser);
         end
+        if (m_axis_tstart !== exp_start[exp_rd]) begin
+          $fatal(1, "TSTART mismatch beat %0d expected=%0b got=%0b", exp_rd, exp_start[exp_rd], m_axis_tstart);
+        end
         exp_rd <= exp_rd + 1;
       end
     end
@@ -327,11 +365,18 @@ module tb_lbus_adapters;
     wait (exp_rd == exp_wr);
     repeat (8) @(posedge clk);
 
-    if (sop_count != 5) begin
-      $fatal(1, "SOP count mismatch expected=5 got=%0d", sop_count);
+    inject_disabled_sideband = 1'b1;
+    send_packet(5, 32, 1'b0);
+    inject_disabled_sideband = 1'b0;
+
+    wait (exp_rd == exp_wr);
+    repeat (8) @(posedge clk);
+
+    if (sop_count != 6) begin
+      $fatal(1, "SOP count mismatch expected=6 got=%0d", sop_count);
     end
-    if (eop_count != 5) begin
-      $fatal(1, "EOP count mismatch expected=5 got=%0d", eop_count);
+    if (eop_count != 6) begin
+      $fatal(1, "EOP count mismatch expected=6 got=%0d", eop_count);
     end
 
     force_ready = 1'b1;
@@ -350,9 +395,43 @@ module tb_lbus_adapters;
              full_rate_first_cycle, full_rate_last_cycle, full_rate_outputs);
     end
 
+    full_rate_phase = 1'b0;
+    force_ready = 1'b0;
+    hold_not_ready = 1'b1;
+    repeat (4) @(posedge clk);
+
+    // Queue a few stale beats while CMAC ready is held low. They are not
+    // added to the expected stream; clear must flush them before ready returns.
+    @(negedge clk);
+    s_axis_tvalid = 1'b1;
+    s_axis_tkeep  = '1;
+    s_axis_tlast  = 1'b1;
+    s_axis_tuser  = 1'b0;
+    for (int i = 0; i < 8; i++) begin
+      s_axis_tdata = make_data(9000, i);
+      do begin
+        @(posedge clk);
+      end while (!s_axis_tready);
+      @(negedge clk);
+    end
+    s_axis_tvalid = 1'b0;
+    s_axis_tkeep  = '0;
+    s_axis_tlast  = 1'b0;
+    s_axis_tdata  = '0;
+
+    clear = 1'b1;
+    repeat (16) @(posedge clk);
+    clear = 1'b0;
+    repeat (16) @(posedge clk);
+    hold_not_ready = 1'b0;
+    force_ready = 1'b1;
+    repeat (16) @(posedge clk);
+
     $display("PASS: LBUS adapters preserve AXIS payload, keep, last, and error metadata under backpressure");
+    $display("PASS: LBUS RX ignores EOP/ERR sideband bits from disabled segments");
     $display("PASS: LBUS adapter full-rate 64B burst outputs=%0d span_cycles=%0d",
              full_rate_outputs, full_rate_last_cycle - full_rate_first_cycle + 1);
+    $display("PASS: LBUS adapter clear flushes stale beats queued while CMAC ready is low");
     $finish;
   end
 endmodule

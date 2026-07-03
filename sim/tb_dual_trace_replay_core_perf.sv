@@ -217,7 +217,8 @@ module tb_dual_trace_replay_core_perf;
       .m_tx_axis_tvalid(tx_tvalid[P]),
       .m_tx_axis_tready(tx_tready[P]),
       .m_tx_axis_tlast(tx_tlast[P]),
-      .m_tx_axis_tuser(tx_tuser[P])
+      .m_tx_axis_tuser(tx_tuser[P]),
+      .tx_path_clear()
     );
 
     assign arready[P] =

@@ -11,6 +11,7 @@ module tb_axis_async_fifo;
   logic m_clk = 1'b0;
   logic s_resetn = 1'b0;
   logic m_resetn = 1'b0;
+  logic clear = 1'b0;
 
   always #1.666 s_clk = ~s_clk;
   always #1.553 m_clk = ~m_clk;
@@ -54,6 +55,7 @@ module tb_axis_async_fifo;
     .s_resetn(s_resetn),
     .m_clk(m_clk),
     .m_resetn(m_resetn),
+    .clear(clear),
     .s_axis_tdata(s_axis_tdata),
     .s_axis_tkeep(s_axis_tkeep),
     .s_axis_tvalid(s_axis_tvalid),

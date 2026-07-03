@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert descriptor/data trace files into a DDR-backed stream buffer."""
+"""Convert descriptor/data trace files into STREAM record format."""
 
 from __future__ import annotations
 

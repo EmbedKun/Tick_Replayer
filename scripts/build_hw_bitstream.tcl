@@ -20,6 +20,19 @@ if {[catch {set_property strategy $impl_strategy [get_runs impl_1]} strategy_err
   puts "WARNING: failed to set implementation strategy $impl_strategy: $strategy_err"
 }
 
+if {[info exists ::env(TRAFFIC_REPLAY_INCREMENTAL_CHECKPOINT)] && $::env(TRAFFIC_REPLAY_INCREMENTAL_CHECKPOINT) ne ""} {
+  set inc_dcp [file normalize $::env(TRAFFIC_REPLAY_INCREMENTAL_CHECKPOINT)]
+  if {[file exists $inc_dcp]} {
+    if {[catch {set_property incremental_checkpoint $inc_dcp [get_runs impl_1]} inc_err]} {
+      puts "WARNING: failed to set incremental checkpoint $inc_dcp: $inc_err"
+    } else {
+      puts "Implementation incremental checkpoint: $inc_dcp"
+    }
+  } else {
+    puts "WARNING: incremental checkpoint does not exist: $inc_dcp"
+  }
+}
+
 launch_runs synth_1 -jobs $vivado_jobs
 wait_on_run synth_1
 set synth_status [get_property STATUS [get_runs synth_1]]

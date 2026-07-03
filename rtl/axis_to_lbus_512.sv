@@ -6,7 +6,7 @@ module axis_to_lbus_512 #(
   parameter int SEG_COUNT = 4,
   parameter int SEG_DATA_W = DATA_W / SEG_COUNT,
   parameter int SEG_KEEP_W = KEEP_W / SEG_COUNT,
-  parameter int FIFO_DEPTH = 8
+  parameter int FIFO_DEPTH = 256
 ) (
   (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK" *)
   (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF S_AXIS, ASSOCIATED_RESET resetn" *)
@@ -14,6 +14,7 @@ module axis_to_lbus_512 #(
   (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 resetn RST" *)
   (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
   input  wire                  resetn,
+  input  wire                  clear,
 
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_AXIS TDATA" *)
   input  wire [DATA_W-1:0]     s_axis_tdata,
@@ -61,13 +62,14 @@ module axis_to_lbus_512 #(
   localparam logic [4:0] SEG_KEEP_W_5 = SEG_KEEP_W;
   localparam int FIFO_PTR_W = (FIFO_DEPTH <= 2) ? 1 : $clog2(FIFO_DEPTH);
   localparam int FIFO_COUNT_W = $clog2(FIFO_DEPTH + 1);
+  localparam int FRAME_COUNT_W = $clog2(FIFO_DEPTH + 1);
   localparam logic [FIFO_COUNT_W-1:0] FIFO_DEPTH_LEVEL = FIFO_DEPTH;
   localparam logic [FIFO_PTR_W-1:0] FIFO_LAST_PTR = FIFO_DEPTH - 1;
 
-  (* shreg_extract = "no" *) logic [SEG_DATA_W-1:0] data0_mem [0:FIFO_DEPTH-1];
-  (* shreg_extract = "no" *) logic [SEG_DATA_W-1:0] data1_mem [0:FIFO_DEPTH-1];
-  (* shreg_extract = "no" *) logic [SEG_DATA_W-1:0] data2_mem [0:FIFO_DEPTH-1];
-  (* shreg_extract = "no" *) logic [SEG_DATA_W-1:0] data3_mem [0:FIFO_DEPTH-1];
+  (* ram_style = "block", shreg_extract = "no" *) logic [SEG_DATA_W-1:0] data0_mem [0:FIFO_DEPTH-1];
+  (* ram_style = "block", shreg_extract = "no" *) logic [SEG_DATA_W-1:0] data1_mem [0:FIFO_DEPTH-1];
+  (* ram_style = "block", shreg_extract = "no" *) logic [SEG_DATA_W-1:0] data2_mem [0:FIFO_DEPTH-1];
+  (* ram_style = "block", shreg_extract = "no" *) logic [SEG_DATA_W-1:0] data3_mem [0:FIFO_DEPTH-1];
   (* shreg_extract = "no" *) logic [SEG_COUNT-1:0]  ena_mem   [0:FIFO_DEPTH-1];
   (* shreg_extract = "no" *) logic [SEG_COUNT-1:0]  sop_mem   [0:FIFO_DEPTH-1];
   (* shreg_extract = "no" *) logic [SEG_COUNT-1:0]  eop_mem   [0:FIFO_DEPTH-1];
@@ -77,7 +79,9 @@ module axis_to_lbus_512 #(
   logic [FIFO_PTR_W-1:0] wr_ptr_q;
   logic [FIFO_PTR_W-1:0] rd_ptr_q;
   logic [FIFO_COUNT_W-1:0] fifo_count_q;
+  logic [FRAME_COUNT_W-1:0] stored_frames_q;
   logic              in_packet_q;
+  logic              out_frame_active_q;
   logic              out_valid_q;
   logic              s_axis_tready_q;
 
@@ -92,10 +96,19 @@ module axis_to_lbus_512 #(
   logic [3:0]            tx_mty_q [0:SEG_COUNT-1];
   logic                  resetn_pipe1 = 1'b0;
   logic                  resetn_pipe2 = 1'b0;
+  (* ASYNC_REG = "TRUE" *) logic clear_pipe1 = 1'b0;
+  (* ASYNC_REG = "TRUE" *) logic clear_pipe2 = 1'b0;
 
-  wire load_fire = s_axis_tvalid && s_axis_tready;
-  wire consume_fire = out_valid_q && tx_rdyout;
-  wire pop_fifo = (fifo_count_q != '0) && (!out_valid_q || consume_fire);
+  wire clear_active = clear_pipe2;
+  wire load_fire = s_axis_tvalid && s_axis_tready && !clear_active;
+  wire consume_fire = out_valid_q && tx_rdyout && !clear_active;
+  wire tx_eop_any = |tx_eop_q;
+  wire current_frame_done = consume_fire && tx_eop_any;
+  wire frame_active_after_consume = out_frame_active_q && !current_frame_done;
+  wire output_slot_available = !out_valid_q || consume_fire;
+  wire pop_fifo = !clear_active && (fifo_count_q != '0) && output_slot_available &&
+                  (frame_active_after_consume || (stored_frames_q != '0));
+  wire start_frame_pop = pop_fifo && !frame_active_after_consume;
 
   assign s_axis_tready = s_axis_tready_q;
 
@@ -219,26 +232,22 @@ module axis_to_lbus_512 #(
   always_ff @(posedge clk) begin
     resetn_pipe1 <= resetn;
     resetn_pipe2 <= resetn_pipe1;
+    clear_pipe1 <= clear;
+    clear_pipe2 <= clear_pipe1;
 
-    if (!resetn_pipe2) begin
+    if (!resetn_pipe2 || clear_active) begin
       wr_ptr_q     <= '0;
       rd_ptr_q     <= '0;
       fifo_count_q <= '0;
+      stored_frames_q <= '0;
       in_packet_q <= 1'b0;
+      out_frame_active_q <= 1'b0;
       out_valid_q <= 1'b0;
       s_axis_tready_q <= 1'b0;
-      tx_datain0_q <= '0;
-      tx_datain1_q <= '0;
-      tx_datain2_q <= '0;
-      tx_datain3_q <= '0;
       tx_ena_q <= '0;
       tx_sop_q <= '0;
       tx_eop_q <= '0;
       tx_err_q <= '0;
-      tx_mty_q[0] <= '0;
-      tx_mty_q[1] <= '0;
-      tx_mty_q[2] <= '0;
-      tx_mty_q[3] <= '0;
     end else begin
       s_axis_tready_q <= (fifo_count_q != FIFO_DEPTH_LEVEL);
 
@@ -271,13 +280,24 @@ module axis_to_lbus_512 #(
         tx_mty_q[3]  <= mty_mem[rd_ptr_q][15:12];
         rd_ptr_q <= inc_fifo_ptr(rd_ptr_q);
         out_valid_q <= 1'b1;
+        out_frame_active_q <= 1'b1;
       end else if (consume_fire) begin
         out_valid_q <= 1'b0;
+        if (current_frame_done) begin
+          out_frame_active_q <= 1'b0;
+        end
       end
 
       unique case ({load_fire, pop_fifo})
         2'b10: fifo_count_q <= fifo_count_q + {{(FIFO_COUNT_W-1){1'b0}}, 1'b1};
         2'b01: fifo_count_q <= fifo_count_q - {{(FIFO_COUNT_W-1){1'b0}}, 1'b1};
+        default: begin
+        end
+      endcase
+
+      unique case ({load_fire && s_axis_tlast, start_frame_pop})
+        2'b10: stored_frames_q <= stored_frames_q + {{(FRAME_COUNT_W-1){1'b0}}, 1'b1};
+        2'b01: stored_frames_q <= stored_frames_q - {{(FRAME_COUNT_W-1){1'b0}}, 1'b1};
         default: begin
         end
       endcase

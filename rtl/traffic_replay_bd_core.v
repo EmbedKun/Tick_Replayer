@@ -139,7 +139,8 @@ module traffic_replay_bd_core #(
   output wire                       m_tx_axis_tlast,
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 M_TX_AXIS TUSER" *)
   (* X_INTERFACE_PARAMETER = "TDATA_NUM_BYTES 64, TUSER_WIDTH 1, HAS_TKEEP 1, HAS_TLAST 1, HAS_TREADY 1" *)
-  output wire                       m_tx_axis_tuser
+  output wire                       m_tx_axis_tuser,
+  output wire                       tx_path_clear
 );
   wire unused_host_axis_tready;
 
@@ -211,6 +212,7 @@ module traffic_replay_bd_core #(
     .m_tx_axis_tvalid(m_tx_axis_tvalid),
     .m_tx_axis_tready(m_tx_axis_tready),
     .m_tx_axis_tlast(m_tx_axis_tlast),
-    .m_tx_axis_tuser(m_tx_axis_tuser)
+    .m_tx_axis_tuser(m_tx_axis_tuser),
+    .tx_path_clear(tx_path_clear)
   );
 endmodule

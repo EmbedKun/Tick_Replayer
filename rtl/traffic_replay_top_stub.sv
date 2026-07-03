@@ -55,7 +55,8 @@ module traffic_replay_top_stub #(
   output logic                     m_tx_axis_tvalid,
   input  logic                     m_tx_axis_tready,
   output logic                     m_tx_axis_tlast,
-  output logic                     m_tx_axis_tuser
+  output logic                     m_tx_axis_tuser,
+  output logic                     tx_path_clear
 );
   trace_replay_core #(
     .AXIL_ADDR_W(AXIL_ADDR_W),
@@ -106,6 +107,7 @@ module traffic_replay_top_stub #(
     .m_tx_axis_tvalid(m_tx_axis_tvalid),
     .m_tx_axis_tready(m_tx_axis_tready),
     .m_tx_axis_tlast(m_tx_axis_tlast),
-    .m_tx_axis_tuser(m_tx_axis_tuser)
+    .m_tx_axis_tuser(m_tx_axis_tuser),
+    .tx_path_clear(tx_path_clear)
   );
 endmodule

@@ -63,6 +63,11 @@ REG_STREAM_LEVEL_HI = 0x00C4
 
 TX_PORT_BASE = {0: 0x00000, 1: 0x10000}
 MODE_STREAM = 1
+STREAM_STATUS_ERROR = 1 << 6
+STREAM_STATUS_RING_MODE = 1 << 7
+STREAM_STATUS_SIZE_VALID = 1 << 9
+STREAM_STATUS_OVERRUN = 1 << 10
+STREAM_STATUS_PTR_ERROR = 1 << 12
 
 
 def int_auto(value: str) -> int:
@@ -190,6 +195,18 @@ def configure(user_fd: int, base: int, args: argparse.Namespace) -> None:
     write32(user_fd, base + REG_DEBUG_CTRL, debug)
 
 
+def check_stream_status(user_fd: int, base: int) -> int:
+    status = read32(user_fd, base + REG_STREAM_STATUS)
+    fatal = STREAM_STATUS_ERROR | STREAM_STATUS_OVERRUN | STREAM_STATUS_PTR_ERROR
+    if status & fatal:
+        raise RuntimeError(f"FPGA stream ring error: status=0x{status:08x}")
+    if status and not (status & STREAM_STATUS_RING_MODE):
+        raise RuntimeError(f"FPGA stream reader is not in ring mode: status=0x{status:08x}")
+    if status and not (status & STREAM_STATUS_SIZE_VALID):
+        raise RuntimeError(f"FPGA stream ring size is invalid: status=0x{status:08x}")
+    return status
+
+
 def start_replay(user_fd: int, base: int) -> None:
     write32(user_fd, base + REG_CONTROL, 0x1)
 
@@ -272,6 +289,7 @@ def main() -> None:
                     raise RuntimeError("one stream record is too large for the selected ring")
 
                 read_count = read64(user_fd, reg_base + REG_STREAM_RD_LO, reg_base + REG_STREAM_RD_HI)
+                check_stream_status(user_fd, reg_base)
                 if read_count > write_count:
                     raise RuntimeError(f"FPGA read pointer advanced past host write pointer: {read_count}>{write_count}")
                 level = write_count - read_count

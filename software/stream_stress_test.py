@@ -1,59 +1,25 @@
 #!/usr/bin/env python3
-"""Generate stream-mode stress datasets, load them through XDMA, and report throughput."""
+"""Generate STREAM ring-buffer stress datasets and run dynamic ring replay.
+
+This script intentionally supports only the DDR ring-buffer STREAM mode.  It
+creates stream-record files, invokes the ring loader, and summarizes replay and
+host-to-FPGA load throughput for each generated packet size.
+"""
 
 from __future__ import annotations
 
 import argparse
 import csv
-import os
-import struct
-import time
+import json
+import shlex
+import subprocess
+import sys
 from pathlib import Path
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_BEAT_BYTES = 64
 DEFAULT_TICK_HZ = 300_000_000
-
-REG_CONTROL = 0x0000
-REG_MODE = 0x0004
-REG_STATUS = 0x0008
-REG_DESC_BASE_LO = 0x0010
-REG_DESC_BASE_HI = 0x0014
-REG_DATA_BASE_LO = 0x0018
-REG_DATA_BASE_HI = 0x001C
-REG_TRACE_LO = 0x0020
-REG_TRACE_HI = 0x0024
-REG_PKT_LO = 0x0028
-REG_PKT_HI = 0x002C
-REG_START_LO = 0x0040
-REG_START_HI = 0x0044
-REG_RATE = 0x0048
-REG_WATERMARK = 0x004C
-REG_DEBUG_CTRL = 0x0054
-REG_STREAM_WR_LO = 0x00A0
-REG_STREAM_WR_HI = 0x00A4
-REG_STREAM_RING_LO = 0x00B0
-REG_STREAM_RING_HI = 0x00B4
-REG_STREAM_CTRL = 0x00B8
-REG_TX_PKTS_LO = 0x0060
-REG_TX_PKTS_HI = 0x0064
-REG_TX_BYTES_LO = 0x0068
-REG_TX_BYTES_HI = 0x006C
-REG_LATE_LO = 0x0070
-REG_LATE_HI = 0x0074
-REG_UNDERRUN_LO = 0x0078
-REG_UNDERRUN_HI = 0x007C
-REG_DEBUG_TICK_LO = 0x0094
-REG_DEBUG_TICK_HI = 0x0098
-REG_DROP_PKTS_LO = 0x00C8
-REG_DROP_PKTS_HI = 0x00CC
-REG_DROP_BEATS_LO = 0x00D0
-REG_DROP_BEATS_HI = 0x00D4
-REG_STALL_EVT_LO = 0x00D8
-REG_STALL_EVT_HI = 0x00DC
-
-TX_PORT_BASE = {0: 0x00000, 1: 0x10000}
-MODE_STREAM = 1
 
 
 def int_auto(value: str) -> int:
@@ -77,8 +43,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", default="/dev/xdma0_user")
     parser.add_argument("--port", type=int, choices=[0, 1], default=0)
     parser.add_argument("--reg-base", type=int_auto, help="override AXI-Lite replay register base")
-    parser.add_argument("--stream-base", type=int_auto, default=0x2000_0000)
-    parser.add_argument("--work-dir", type=Path, default=Path("/tmp/traffic_replay_stream_stress"))
+    parser.add_argument("--ring-base", type=int_auto, default=0x2000_0000)
+    parser.add_argument("--ring-size", type=int_auto, default=0x0800_0000)
+    parser.add_argument("--prefill-bytes", type=int_auto, default=0)
+    parser.add_argument("--guard-bytes", type=int_auto, default=1 * 1024 * 1024)
+    parser.add_argument("--batch-bytes", type=int_auto, default=64 * 1024 * 1024)
+    parser.add_argument("--read-bytes", type=int_auto, default=64 * 1024 * 1024)
+    parser.add_argument("--queue-depth", type=int_auto, default=4)
+    parser.add_argument("--poll-interval", type=float, default=0.0002)
+    parser.add_argument("--work-dir", type=Path, default=Path("/tmp/traffic_replay_stream_ring_stress"))
     parser.add_argument("--frame-sizes", type=parse_frame_sizes, default=parse_frame_sizes("64,128,256,512,1024,1518"))
     parser.add_argument("--packet-count", type=int_auto, default=100_000)
     parser.add_argument("--gap-ticks", type=int_auto, default=0)
@@ -87,10 +60,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--watermark", type=int_auto, default=4096)
     parser.add_argument("--force-link-up", action="store_true")
     parser.add_argument("--force-tx-ready", action="store_true")
-    parser.add_argument("--no-auto-drop", action="store_true", help="clear DEBUG_CTRL[2] for strict no-drop tests")
-    parser.add_argument("--timeout", type=float, default=30.0)
-    parser.add_argument("--chunk-bytes", type=int_auto, default=4 * 1024 * 1024)
+    parser.add_argument("--timeout", type=float, default=60.0)
+    parser.add_argument("--feed-timeout", type=float, default=0.0)
     parser.add_argument("--csv", type=Path, help="optional CSV result path")
+    parser.add_argument("--loader", choices=["auto", "cpp", "python"], default="auto")
+    parser.add_argument("--cpp-loader", type=Path, default=SCRIPT_DIR / "xdma_stream_ring_fast")
+    parser.add_argument("--python", default=sys.executable or "python3")
     return parser.parse_args()
 
 
@@ -98,188 +73,181 @@ def make_payload(packet_index: int, frame_len: int) -> bytes:
     return bytes(((packet_index * 13 + i) & 0xFF) for i in range(frame_len))
 
 
-def make_stream(path: Path, packet_count: int, frame_len: int, gap_ticks: int) -> tuple[int, int]:
+def make_stream(stream_path: Path, manifest_path: Path, packet_count: int, frame_len: int, gap_ticks: int) -> dict[str, int | str]:
     payload_aligned = align_up(frame_len, DATA_BEAT_BYTES)
     total_frame_bytes = packet_count * frame_len
     stream_bytes = packet_count * (DATA_BEAT_BYTES + payload_aligned)
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as fh:
+    stream_path.parent.mkdir(parents=True, exist_ok=True)
+    with stream_path.open("wb") as fh:
         for pkt_idx in range(packet_count):
             header = bytearray(DATA_BEAT_BYTES)
-            struct.pack_into("<QIHH", header, 0, gap_ticks, 0, frame_len, 0)
+            header[0:8] = int(gap_ticks).to_bytes(8, "little")
+            header[8:12] = (0).to_bytes(4, "little")
+            header[12:14] = int(frame_len).to_bytes(2, "little")
+            header[14:16] = (0).to_bytes(2, "little")
             payload = make_payload(pkt_idx, frame_len)
             fh.write(header)
             fh.write(payload)
             fh.write(bytes(payload_aligned - frame_len))
-    return stream_bytes, total_frame_bytes
+
+    manifest = {
+        "generator": "stream_stress_test.py",
+        "stream_file": str(stream_path),
+        "stream_bytes": stream_bytes,
+        "packet_count": packet_count,
+        "gap_ticks": gap_ticks,
+        "frame_len": frame_len,
+        "data_beat_bytes": DATA_BEAT_BYTES,
+        "total_frame_bytes": total_frame_bytes,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
 
 
-def pwrite_all(fd: int, path: Path, addr: int, chunk_bytes: int) -> None:
-    offset = 0
-    with path.open("rb") as fh:
-        while True:
-            chunk = fh.read(chunk_bytes)
-            if not chunk:
-                break
-            written = 0
-            while written < len(chunk):
-                written += os.pwrite(fd, chunk[written:], addr + offset + written)
-            offset += len(chunk)
+def shell_line(cmd: list[str]) -> str:
+    return " ".join(shlex.quote(str(item)) for item in cmd)
 
 
-def write32(fd: int, offset: int, value: int) -> None:
-    os.pwrite(fd, struct.pack("<I", value & 0xFFFF_FFFF), offset)
+def parse_loader_output(text: str) -> dict[str, str]:
+    metrics: dict[str, str] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key:
+            metrics[key] = value
+    return metrics
 
 
-def read32(fd: int, offset: int) -> int:
-    return struct.unpack("<I", os.pread(fd, 4, offset))[0]
+def selected_loader(args: argparse.Namespace) -> str:
+    if args.loader == "auto":
+        return "cpp" if args.cpp_loader.exists() else "python"
+    return args.loader
 
 
-def write64(fd: int, lo: int, hi: int, value: int) -> None:
-    write32(fd, lo, value)
-    write32(fd, hi, value >> 32)
-
-
-def read64(fd: int, lo: int, hi: int) -> int:
-    return read32(fd, lo) | (read32(fd, hi) << 32)
-
-
-def configure_and_start(fd: int, base: int, args: argparse.Namespace, stream_bytes: int, packet_count: int) -> None:
-    write32(fd, base + REG_CONTROL, 0x2)
-    time.sleep(0.001)
-    write32(fd, base + REG_CONTROL, 0x4)
-    time.sleep(0.001)
-    write32(fd, base + REG_MODE, MODE_STREAM)
-    write64(fd, base + REG_DESC_BASE_LO, base + REG_DESC_BASE_HI, args.stream_base)
-    write64(fd, base + REG_DATA_BASE_LO, base + REG_DATA_BASE_HI, 0)
-    write64(fd, base + REG_TRACE_LO, base + REG_TRACE_HI, stream_bytes)
-    write64(fd, base + REG_PKT_LO, base + REG_PKT_HI, packet_count)
-    write64(fd, base + REG_START_LO, base + REG_START_HI, 0)
-    write32(fd, base + REG_RATE, args.rate_q16_16)
-    write32(fd, base + REG_WATERMARK, args.watermark)
-    write64(fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, 0)
-    write64(fd, base + REG_STREAM_RING_LO, base + REG_STREAM_RING_HI, 0)
-    write32(fd, base + REG_STREAM_CTRL, 0)
-
-    debug = read32(fd, base + REG_DEBUG_CTRL)
+def build_loader_cmd(args: argparse.Namespace, manifest_path: Path, loader: str) -> list[str]:
+    common = [
+        "--port",
+        str(args.port),
+        "--manifest",
+        str(manifest_path),
+        "--h2c",
+        args.h2c,
+        "--user",
+        args.user,
+        "--ring-base",
+        f"0x{args.ring_base:x}",
+        "--ring-size",
+        f"0x{args.ring_size:x}",
+        "--prefill-bytes",
+        f"0x{args.prefill_bytes:x}",
+        "--guard-bytes",
+        f"0x{args.guard_bytes:x}",
+        "--batch-bytes",
+        f"0x{args.batch_bytes:x}",
+        "--watermark",
+        str(args.watermark),
+        "--rate-q16-16",
+        f"0x{args.rate_q16_16:x}",
+        "--tick-hz",
+        str(args.tick_hz),
+        "--poll-interval",
+        str(args.poll_interval),
+        "--timeout",
+        str(args.timeout),
+    ]
+    if args.reg_base is not None:
+        common += ["--reg-base", f"0x{args.reg_base:x}"]
+    if args.feed_timeout > 0:
+        common += ["--feed-timeout", str(args.feed_timeout)]
     if args.force_link_up:
-        debug |= 0x1
+        common.append("--force-link-up")
     if args.force_tx_ready:
-        debug |= 0x2
-    if args.no_auto_drop:
-        debug &= ~0x4
-    else:
-        debug |= 0x4
-    write32(fd, base + REG_DEBUG_CTRL, debug)
-    write32(fd, base + REG_CONTROL, 0x1)
+        common.append("--force-tx-ready")
+
+    if loader == "cpp":
+        return [
+            str(args.cpp_loader),
+            *common,
+            "--read-bytes",
+            f"0x{args.read_bytes:x}",
+            "--queue-depth",
+            str(args.queue_depth),
+        ]
+    return [args.python, str(SCRIPT_DIR / "xdma_stream_ring.py"), *common]
 
 
-def stop_and_clear(fd: int, base: int) -> None:
-    write32(fd, base + REG_CONTROL, 0x2)
-    time.sleep(0.001)
-    write32(fd, base + REG_CONTROL, 0x4)
-    time.sleep(0.001)
+def run_case(args: argparse.Namespace, frame_len: int) -> dict[str, str | int]:
+    case_dir = args.work_dir / f"len{frame_len}_pkts{args.packet_count}_gap{args.gap_ticks}"
+    stream_path = case_dir / "stream.bin"
+    manifest_path = case_dir / "stream_manifest.json"
+    manifest = make_stream(stream_path, manifest_path, args.packet_count, frame_len, args.gap_ticks)
+    loader = selected_loader(args)
+    cmd = build_loader_cmd(args, manifest_path, loader)
 
+    print(f"\ncase frame_len={frame_len} packets={args.packet_count} stream_bytes={manifest['stream_bytes']}")
+    print(f"$ {shell_line(cmd)}")
+    proc = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    print(proc.stdout, end="")
+    if proc.returncode != 0:
+        raise SystemExit(f"ring stream replay failed for frame_len={frame_len} with exit={proc.returncode}")
 
-def wait_done(fd: int, base: int, timeout_s: float) -> tuple[bool, float]:
-    start = time.perf_counter()
-    while True:
-        status = read32(fd, base + REG_STATUS)
-        running = bool(status & 0x1)
-        done = bool(status & 0x2)
-        if done and not running:
-            return True, time.perf_counter() - start
-        if time.perf_counter() - start > timeout_s:
-            return False, time.perf_counter() - start
-        time.sleep(0.005)
-
-
-def run_case(args: argparse.Namespace, h2c_fd: int, user_fd: int, base: int, frame_len: int) -> dict[str, int | float | bool]:
-    stream_path = args.work_dir / f"stream_len{frame_len}_pkts{args.packet_count}.bin"
-    stream_bytes, total_frame_bytes = make_stream(stream_path, args.packet_count, frame_len, args.gap_ticks)
-
-    print(f"\ncase frame_len={frame_len} packets={args.packet_count} stream_bytes={stream_bytes}")
-    load_start = time.perf_counter()
-    pwrite_all(h2c_fd, stream_path, args.stream_base, args.chunk_bytes)
-    load_seconds = time.perf_counter() - load_start
-
-    configure_and_start(user_fd, base, args, stream_bytes, args.packet_count)
-    completed, wall_seconds = wait_done(user_fd, base, args.timeout)
-
-    tx_pkts = read64(user_fd, base + REG_TX_PKTS_LO, base + REG_TX_PKTS_HI)
-    tx_bytes = read64(user_fd, base + REG_TX_BYTES_LO, base + REG_TX_BYTES_HI)
-    late_pkts = read64(user_fd, base + REG_LATE_LO, base + REG_LATE_HI)
-    underrun_pkts = read64(user_fd, base + REG_UNDERRUN_LO, base + REG_UNDERRUN_HI)
-    drop_pkts = read64(user_fd, base + REG_DROP_PKTS_LO, base + REG_DROP_PKTS_HI)
-    drop_beats = read64(user_fd, base + REG_DROP_BEATS_LO, base + REG_DROP_BEATS_HI)
-    stall_events = read64(user_fd, base + REG_STALL_EVT_LO, base + REG_STALL_EVT_HI)
-    ticks = read64(user_fd, base + REG_DEBUG_TICK_LO, base + REG_DEBUG_TICK_HI)
-
-    hw_seconds = ticks / args.tick_hz if ticks else wall_seconds
-    hw_gbps = (tx_bytes * 8 / hw_seconds / 1e9) if hw_seconds > 0 else 0.0
-    load_gbps = (stream_bytes * 8 / load_seconds / 1e9) if load_seconds > 0 else 0.0
-
-    result = {
+    metrics = parse_loader_output(proc.stdout)
+    row: dict[str, str | int] = {
         "frame_len": frame_len,
         "packet_count": args.packet_count,
-        "stream_bytes": stream_bytes,
-        "total_frame_bytes": total_frame_bytes,
-        "completed": completed,
-        "tx_packets": tx_pkts,
-        "tx_bytes": tx_bytes,
-        "late_packets": late_pkts,
-        "underrun_packets": underrun_pkts,
-        "drop_packets": drop_pkts,
-        "drop_beats": drop_beats,
-        "stall_events": stall_events,
-        "debug_ticks": ticks,
-        "hw_seconds": hw_seconds,
-        "hw_gbps": hw_gbps,
-        "load_seconds": load_seconds,
-        "load_gbps": load_gbps,
-        "wall_seconds": wall_seconds,
+        "gap_ticks": args.gap_ticks,
+        "stream_bytes": int(manifest["stream_bytes"]),
+        "total_frame_bytes": int(manifest["total_frame_bytes"]),
+        "loader": loader,
+        "completed": metrics.get("completed", ""),
+        "committed_packets": metrics.get("committed_packets", ""),
+        "committed_bytes": metrics.get("committed_bytes", ""),
+        "tx_packets": metrics.get("tx_packets", ""),
+        "tx_bytes": metrics.get("tx_bytes", ""),
+        "late_packets": metrics.get("late_packets", ""),
+        "underrun_packets": metrics.get("underrun_packets", ""),
+        "stream_status": metrics.get("stream_status", ""),
+        "max_ring_level": metrics.get("max_ring_level", ""),
+        "min_ring_free": metrics.get("min_ring_free", ""),
+        "load_gbps": metrics.get("load_gbps", ""),
+        "hw_gbps": metrics.get("hw_gbps", ""),
+        "load_seconds": metrics.get("load_seconds", ""),
+        "wall_seconds": metrics.get("wall_seconds", ""),
     }
     print(
-        "result "
-        f"done={completed} tx_pkts={tx_pkts} tx_bytes={tx_bytes} "
-        f"hw_gbps={hw_gbps:.3f} load_gbps={load_gbps:.3f} "
-        f"late={late_pkts} underrun={underrun_pkts} "
-        f"drop_pkts={drop_pkts} stall_events={stall_events}"
+        "summary "
+        f"frame_len={row['frame_len']} completed={row['completed']} "
+        f"tx_packets={row['tx_packets']} load_gbps={row['load_gbps']} hw_gbps={row['hw_gbps']}"
     )
-    if not completed:
-        stop_and_clear(user_fd, base)
-    return result
+    return row
 
 
 def main() -> None:
     args = parse_args()
     if args.packet_count <= 0:
         raise SystemExit("--packet-count must be positive")
+    if args.ring_size <= 0 or args.ring_size % DATA_BEAT_BYTES != 0:
+        raise SystemExit("--ring-size must be a positive 64-byte multiple")
+    if args.guard_bytes >= args.ring_size:
+        raise SystemExit("--guard-bytes must be smaller than --ring-size")
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    reg_base = TX_PORT_BASE[args.port] if args.reg_base is None else args.reg_base
 
-    h2c_fd = os.open(args.h2c, os.O_WRONLY)
-    user_fd = os.open(args.user, os.O_RDWR)
-    results = []
-    try:
-        for frame_len in args.frame_sizes:
-            if frame_len <= 0 or frame_len > 0xFFFF:
-                raise SystemExit(f"invalid frame size: {frame_len}")
-            results.append(run_case(args, h2c_fd, user_fd, reg_base, frame_len))
-    except BaseException:
-        stop_and_clear(user_fd, reg_base)
-        raise
-    finally:
-        os.close(h2c_fd)
-        os.close(user_fd)
+    rows = []
+    for frame_len in args.frame_sizes:
+        if frame_len <= 0 or frame_len > 0xFFFF:
+            raise SystemExit(f"invalid frame size: {frame_len}")
+        rows.append(run_case(args, frame_len))
 
     if args.csv is not None:
         args.csv.parent.mkdir(parents=True, exist_ok=True)
         with args.csv.open("w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(results[0].keys()))
+            writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
             writer.writeheader()
-            writer.writerows(results)
+            writer.writerows(rows)
         print(f"\nwrote {args.csv}")
 
 

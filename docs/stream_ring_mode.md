@@ -68,8 +68,7 @@ unread data.
 
 Implemented pieces:
 
-* `ddr_stream_reader` supports both finite linear stream buffers and dynamic DDR
-  rings.
+* `ddr_stream_reader` supports the dynamic DDR ring path used by `STREAM` mode.
 * `axi_lite_regs` exposes ring size, write pointer, read pointer, level, EOF,
   and stream status.
 * `trace_replay_core` feeds the existing stream parser from the DDR stream FIFO.
@@ -81,14 +80,16 @@ Implemented pieces:
   producer/consumer pipeline, large record-aligned batches, and fewer copies
   before issuing memory-mapped `XDMA H2C` writes.
 * `traffic_replay_cli.py status/regs` prints stream ring state.
-* `tb_trace_replay_core.sv` verifies that the FPGA emits one committed packet,
-  waits for the host write pointer to advance, and then resumes.
+* `tb_ddr_stream_reader_ring.sv` verifies wait-empty, wrap, invalid ring size,
+  pointer error, and overrun handling.
+* `tb_trace_replay_core.sv` verifies that invalid ring configuration exits
+  cleanly, then checks that the FPGA emits one committed packet, waits for the
+  host write pointer to advance, and resumes.
 
 Validation currently completed:
 
 ```text
-PASS: host stream replay emitted 2 packets
-PASS: DDR stream-buffer replay emitted 2 packets
+PASS: invalid DDR ring-stream configuration stops cleanly without emitting data
 PASS: DDR ring-stream replay waited for host write pointer and emitted 2 packets
 PASS: DDR preload replay emitted 3 packets
 ```
@@ -103,8 +104,8 @@ Current U200 hardware observations with
   packets and `underrun=0`.
 * C++ ring feeder no-late/no-underrun point for 1518-byte packets is currently
   about `7.59Gbps`.
-* Finite STREAM buffer can push about `96.98Gbps` with 1518-byte packets, but
-  near-line-rate tests still assert `late_packets` and `underrun_packets`.
+* The old finite-buffer `STREAM` path has been removed; new `STREAM` throughput
+  tests should use `stream_stress_test.py` with the ring loader.
 
 ## Timing Precision
 

@@ -12,6 +12,27 @@ proc source_vivado_init {subdir} {
   if {![file exists $init_file]} {
     return
   }
+  set init_files [list]
+  if {$subdir eq "ipintegrator"} {
+    set init_files [list \
+      utils.tcl mig_utils.tcl board_utils.tcl utils_dbg.tcl clkrst.tcl \
+      replace_bd_cell.tcl addr.tcl testbench.tcl sc_cosim_util.tcl \
+      utils_timing.tcl sdsoc_pfm.tcl gt_utils.tcl \
+    ]
+  } elseif {$subdir eq "xguifrmwork"} {
+    set init_files [list utils.tcl]
+  }
+  if {[llength $init_files] > 0} {
+    foreach rel_file $init_files {
+      set abs_file [file join $init_dir $rel_file]
+      if {[file exists $abs_file]} {
+        if {[catch {source -notrace $abs_file} init_err]} {
+          puts "WARNING: failed to source Vivado init file $abs_file: $init_err"
+        }
+      }
+    }
+    return
+  }
   set old_dir [pwd]
   cd $init_dir
   if {[catch {source -notrace $init_file} init_err]} {
@@ -41,6 +62,16 @@ if {![string is integer -strict $traffic_replay_port_count] || $traffic_replay_p
 }
 set enable_port1 [expr {$traffic_replay_port_count >= 2}]
 puts "Traffic replay hardware port count: $traffic_replay_port_count"
+
+set enable_rs_fec 1
+if {[info exists ::env(TRAFFIC_REPLAY_ENABLE_RS_FEC)] && $::env(TRAFFIC_REPLAY_ENABLE_RS_FEC) ne ""} {
+  set enable_rs_fec $::env(TRAFFIC_REPLAY_ENABLE_RS_FEC)
+}
+if {![string is integer -strict $enable_rs_fec] || ($enable_rs_fec != 0 && $enable_rs_fec != 1)} {
+  puts "ERROR: TRAFFIC_REPLAY_ENABLE_RS_FEC must be 0 or 1"
+  exit 1
+}
+puts "Traffic replay CMAC RS-FEC: $enable_rs_fec"
 
 set project_name traffic_replay_hw
 set bd_name traffic_replay_bd
@@ -100,7 +131,32 @@ if {[llength $sv_files] > 0} {
 }
 update_compile_order -fileset sources_1
 
-create_bd_design $bd_name
+set old_dir_for_bd_init [pwd]
+if {[info exists ::env(XILINX_VIVADO)] && $::env(XILINX_VIVADO) ne ""} {
+  set xilinx_bd_init_dir [file normalize [file join $::env(XILINX_VIVADO) scripts ipintegrator]]
+  set bd_init_dir [file join $build_dir ipintegrator_init_wrapper]
+  file mkdir $bd_init_dir
+  set bd_init_file [file join $bd_init_dir init.tcl]
+  set fh [open $bd_init_file w]
+  puts $fh "set xilinx_bd_init_dir {[string map {\\ /} $xilinx_bd_init_dir]}"
+  foreach rel_file [list \
+    utils.tcl mig_utils.tcl board_utils.tcl utils_dbg.tcl clkrst.tcl \
+    replace_bd_cell.tcl addr.tcl testbench.tcl sc_cosim_util.tcl \
+    utils_timing.tcl sdsoc_pfm.tcl gt_utils.tcl \
+  ] {
+    puts $fh "source -notrace \[file join \$xilinx_bd_init_dir {$rel_file}\]"
+  }
+  close $fh
+  if {[file isdirectory $bd_init_dir]} {
+    cd $bd_init_dir
+  }
+}
+set create_bd_rc [catch {create_bd_design $bd_name} create_bd_msg]
+cd $old_dir_for_bd_init
+if {$create_bd_rc != 0} {
+  puts "ERROR: create_bd_design failed: $create_bd_msg"
+  exit 1
+}
 current_bd_design $bd_name
 
 set const_idx 0
@@ -200,6 +256,7 @@ proc try_make_pin_external {pin name} {
 }
 
 proc configure_cmac_cell {cell eth_board refclk_board core_select gt_group} {
+  global enable_rs_fec
   set_property -dict [list \
     CONFIG.ETHERNET_BOARD_INTERFACE $eth_board \
     CONFIG.DIFFCLK_BOARD_INTERFACE $refclk_board \
@@ -211,7 +268,7 @@ proc configure_cmac_cell {cell eth_board refclk_board core_select gt_group} {
     CONFIG.GT_REF_CLK_FREQ {161.1328125} \
     CONFIG.USER_INTERFACE {LBUS} \
     CONFIG.INCLUDE_SHARED_LOGIC {2} \
-    CONFIG.INCLUDE_RS_FEC {0} \
+    CONFIG.INCLUDE_RS_FEC $enable_rs_fec \
     CONFIG.TX_FLOW_CONTROL {0} \
     CONFIG.RX_FLOW_CONTROL {0} \
     CONFIG.TX_FRAME_CRC_CHECKING {Enable FCS Insertion} \
@@ -221,6 +278,7 @@ proc configure_cmac_cell {cell eth_board refclk_board core_select gt_group} {
 }
 
 proc connect_cmac_const_pins {cell} {
+  global enable_rs_fec
   connect_const $cell/gtwiz_reset_tx_datapath 1 0
   connect_const $cell/gtwiz_reset_rx_datapath 1 0
   connect_const $cell/gt_loopback_in 12 0
@@ -232,6 +290,11 @@ proc connect_cmac_const_pins {cell} {
   connect_const $cell/ctl_tx_test_pattern 1 0
   connect_const $cell/ctl_rx_force_resync 1 0
   connect_const $cell/ctl_rx_test_pattern 1 0
+  connect_const $cell/ctl_tx_rsfec_enable 1 $enable_rs_fec
+  connect_const $cell/ctl_rx_rsfec_enable 1 $enable_rs_fec
+  connect_const $cell/ctl_rx_rsfec_enable_correction 1 $enable_rs_fec
+  connect_const $cell/ctl_rx_rsfec_enable_indication 1 $enable_rs_fec
+  connect_const $cell/ctl_rsfec_ieee_error_indication_mode 1 1
   connect_const $cell/tx_preamblein 56 0
   connect_const $cell/drp_addr 10 0
   connect_const $cell/drp_di 16 0
@@ -349,6 +412,26 @@ create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect ddr_smc
 set ddr_smc_si_count [expr {$enable_port1 ? 5 : 3}]
 set_property -dict [list CONFIG.NUM_SI $ddr_smc_si_count CONFIG.NUM_MI {1}] [get_bd_cells ddr_smc]
 
+create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice ddr_axi_regslice
+set_property -dict [list \
+  CONFIG.PROTOCOL {AXI4} \
+  CONFIG.DATA_WIDTH {512} \
+  CONFIG.ADDR_WIDTH {34} \
+  CONFIG.ID_WIDTH {4} \
+  CONFIG.MAX_BURST_LENGTH {256} \
+  CONFIG.NUM_SLR_CROSSINGS {1} \
+  CONFIG.PIPELINES_MASTER_AR {1} \
+  CONFIG.PIPELINES_MASTER_AW {1} \
+  CONFIG.PIPELINES_MASTER_B {1} \
+  CONFIG.PIPELINES_MASTER_R {1} \
+  CONFIG.PIPELINES_MASTER_W {1} \
+  CONFIG.PIPELINES_SLAVE_AR {1} \
+  CONFIG.PIPELINES_SLAVE_AW {1} \
+  CONFIG.PIPELINES_SLAVE_B {1} \
+  CONFIG.PIPELINES_SLAVE_R {1} \
+  CONFIG.PIPELINES_SLAVE_W {1} \
+] [get_bd_cells ddr_axi_regslice]
+
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect ctrl_smc
 set ctrl_smc_mi_count [expr {$enable_port1 ? 5 : 3}]
 set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI $ctrl_smc_mi_count] [get_bd_cells ctrl_smc]
@@ -457,6 +540,7 @@ connect_bd_net [get_bd_pins xdma_0/axi_aresetn] [get_bd_pins host_smc/aresetn] [
 set ddr_clk_pins [list \
   ddr4_0/c0_ddr4_ui_clk \
   ddr_smc/aclk \
+  ddr_axi_regslice/aclk \
   ctrl_smc/aclk \
   ctrl_ddr_regslice/aclk \
   xdma_to_ddr_cc/m_axi_aclk \
@@ -476,6 +560,7 @@ connect_bd_net [get_bd_pins ddr4_0/c0_ddr4_ui_clk_sync_rst] [get_bd_pins rst_ddr
 set ddr_resetn_pins [list \
   rst_ddr/peripheral_aresetn \
   ddr_smc/aresetn \
+  ddr_axi_regslice/aresetn \
   ctrl_smc/aresetn \
   ctrl_ddr_regslice/aresetn \
   xdma_to_ddr_cc/m_axi_aresetn \
@@ -553,7 +638,8 @@ if {$enable_port1} {
 } else {
   connect_bd_intf_net [get_bd_intf_pins rx_cap_0/M_AXI] [get_bd_intf_pins ddr_smc/S02_AXI]
 }
-connect_bd_intf_net [get_bd_intf_pins ddr_smc/M00_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI]
+connect_bd_intf_net [get_bd_intf_pins ddr_smc/M00_AXI] [get_bd_intf_pins ddr_axi_regslice/S_AXI]
+connect_bd_intf_net [get_bd_intf_pins ddr_axi_regslice/M_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI]
 
 connect_bd_intf_net [get_bd_intf_pins xdma_0/M_AXI_LITE] [get_bd_intf_pins axil_ctrl_cc/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins axil_ctrl_cc/M_AXI] [get_bd_intf_pins ctrl_smc/S00_AXI]
@@ -571,10 +657,12 @@ connect_bd_intf_net [get_bd_intf_pins ctrl_ddr_regslice/M_AXI] [get_bd_intf_pins
 
 connect_bd_intf_net [get_bd_intf_pins replay_core_0/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo_0/S_AXIS]
 connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo_0/M_AXIS] [get_bd_intf_pins tx_lbus_0/S_AXIS]
+connect_bd_net [get_bd_pins replay_core_0/tx_path_clear] [get_bd_pins tx_axis_fifo_0/clear] [get_bd_pins tx_lbus_0/clear]
 connect_tx_lbus_bridge tx_lbus_0 cmac_0
 if {$enable_port1} {
   connect_bd_intf_net [get_bd_intf_pins replay_core_1/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo_1/S_AXIS]
   connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo_1/M_AXIS] [get_bd_intf_pins tx_lbus_1/S_AXIS]
+  connect_bd_net [get_bd_pins replay_core_1/tx_path_clear] [get_bd_pins tx_axis_fifo_1/clear] [get_bd_pins tx_lbus_1/clear]
   connect_tx_lbus_bridge tx_lbus_1 cmac_1
 }
 

@@ -55,7 +55,8 @@ module trace_replay_core #(
   output logic                     m_tx_axis_tvalid,
   input  logic                     m_tx_axis_tready,
   output logic                     m_tx_axis_tlast,
-  output logic                     m_tx_axis_tuser
+  output logic                     m_tx_axis_tuser,
+  output logic                     tx_path_clear
 );
   logic        start_pulse;
   logic        stop_pulse;
@@ -149,6 +150,9 @@ module trace_replay_core #(
   localparam int TX_STALL_WATCHDOG_CYCLES = (TX_STALL_WATCHDOG_CYCLES_P < 2) ? 2 : TX_STALL_WATCHDOG_CYCLES_P;
   localparam int TX_STALL_CNT_W = $clog2(TX_STALL_WATCHDOG_CYCLES + 1);
   localparam logic [TX_STALL_CNT_W-1:0] TX_STALL_WATCHDOG_LEVEL = TX_STALL_WATCHDOG_CYCLES;
+  localparam int TX_PATH_CLEAR_CYCLES = 128;
+  localparam int TX_PATH_CLEAR_CNT_W = $clog2(TX_PATH_CLEAR_CYCLES + 1);
+  localparam logic [TX_PATH_CLEAR_CNT_W-1:0] TX_PATH_CLEAR_LEVEL = TX_PATH_CLEAR_CYCLES;
 
   logic [AXIS_DATA_W-1:0] stream_fifo_axis_tdata;
   logic [AXIS_KEEP_W-1:0] stream_fifo_axis_tkeep;
@@ -218,10 +222,11 @@ module trace_replay_core #(
   logic [3:0]  active_reader_state;
   logic [31:0] debug_status;
   logic [31:0] debug_axi;
+  logic [TX_PATH_CLEAR_CNT_W-1:0] tx_path_clear_count;
 
   assign sel_stream_mode_comb = (cfg_mode == MODE_STREAM);
   assign sel_ddr_mode_comb    = (cfg_mode == MODE_PRELOAD) || (cfg_mode == MODE_LOOP);
-  assign stream_ddr_mode_comb = sel_stream_mode_comb && ((cfg_trace_bytes != 64'd0) || (cfg_stream_ring_size != 64'd0));
+  assign stream_ddr_mode_comb = sel_stream_mode_comb;
   assign core_clear      = clear_pulse || stop_pulse;
   assign effective_link_up = link_up || cfg_force_link_up;
   assign core_enable     = replay_running && !pause && effective_link_up &&
@@ -241,7 +246,11 @@ module trace_replay_core #(
   assign source_error = sel_ddr_mode ? ddr_error : (stream_ddr_mode ? stream_ddr_error : 1'b0);
   assign active_reader_state = stream_ddr_mode ? stream_ddr_state : ddr_reader_state;
   assign replay_done = sel_ddr_mode ? ddr_done :
-                       (stream_ddr_mode ? (stream_ddr_done && (cfg_pkt_count != 64'd0) && (tx_pkts >= cfg_pkt_count)) : 1'b0);
+                       (stream_ddr_mode ? ((stream_ddr_error && stream_ddr_done) ||
+                                           (stream_ddr_done &&
+                                           ((cfg_pkt_count == 64'd0) ||
+                                            (tx_pkts >= cfg_pkt_count)))) : 1'b0);
+  assign tx_path_clear = (tx_path_clear_count != '0);
 
   assign m_axi_arid     = stream_ddr_mode ? stream_m_axi_arid     : ddr_m_axi_arid;
   assign m_axi_araddr   = stream_ddr_mode ? stream_m_axi_araddr   : ddr_m_axi_araddr;
@@ -256,13 +265,13 @@ module trace_replay_core #(
   assign ddr_m_axi_rvalid     = !stream_ddr_mode ? m_axi_rvalid  : 1'b0;
   assign stream_m_axi_rvalid  =  stream_ddr_mode ? m_axi_rvalid  : 1'b0;
 
-  assign parser_axis_tdata  = stream_ddr_mode ? stream_fifo_axis_tdata  : s_host_axis_tdata;
-  assign parser_axis_tkeep  = stream_ddr_mode ? stream_fifo_axis_tkeep  : s_host_axis_tkeep;
-  assign parser_axis_tvalid = stream_ddr_mode ? stream_fifo_axis_tvalid : s_host_axis_tvalid;
-  assign parser_axis_tlast  = stream_ddr_mode ? stream_fifo_axis_tlast  : s_host_axis_tlast;
+  assign parser_axis_tdata  = stream_fifo_axis_tdata;
+  assign parser_axis_tkeep  = stream_fifo_axis_tkeep;
+  assign parser_axis_tvalid = stream_fifo_axis_tvalid;
+  assign parser_axis_tlast  = stream_fifo_axis_tlast;
   assign stream_fifo_axis_tready = stream_ddr_mode ? parser_axis_tready : 1'b0;
-  assign s_host_axis_tready     = stream_ddr_mode ? 1'b0 : parser_axis_tready;
-  assign stream_prefetch_ready  = !stream_ddr_mode || stream_ddr_done || stream_prefetch_active;
+  assign s_host_axis_tready     = 1'b0;
+  assign stream_prefetch_ready  = stream_ddr_done || stream_prefetch_active;
   assign parser_enable          = core_enable && sel_stream_mode && stream_prefetch_ready;
 
   assign src_meta_valid = sel_stream_mode ? host_meta_valid : ddr_meta_valid;
@@ -440,7 +449,7 @@ module trace_replay_core #(
   ddr_stream_reader #(
     .AXI_ADDR_W_P(AXI_ADDR_W_P),
     .AXI_ID_W_P(AXI_ID_W_P),
-    .MAX_BURST_BEATS(128)
+    .MAX_BURST_BEATS(256)
   ) stream_reader_i (
     .clk(clk),
     .rstn(rstn),
@@ -504,7 +513,7 @@ module trace_replay_core #(
     .clk(clk),
     .rstn(rstn),
     .enable(parser_enable),
-    .clear(core_clear),
+    .clear(core_clear || start_pulse),
     .s_axis_tdata(parser_axis_tdata),
     .s_axis_tkeep(parser_axis_tkeep),
     .s_axis_tvalid(parser_axis_tvalid),
@@ -584,6 +593,7 @@ module trace_replay_core #(
       stream_ddr_mode <= 1'b0;
       preload_warmup_count <= '0;
       preload_warmup_done <= 1'b0;
+      tx_path_clear_count <= '0;
     end else begin
       sel_stream_mode <= sel_stream_mode_comb;
       sel_ddr_mode <= sel_ddr_mode_comb;
@@ -619,6 +629,12 @@ module trace_replay_core #(
         if (m_tx_axis_tlast) begin
           drop_pkts <= drop_pkts + 64'd1;
         end
+      end
+
+      if (core_clear || start_pulse) begin
+        tx_path_clear_count <= TX_PATH_CLEAR_LEVEL;
+      end else if (tx_path_clear_count != '0) begin
+        tx_path_clear_count <= tx_path_clear_count - {{(TX_PATH_CLEAR_CNT_W-1){1'b0}}, 1'b1};
       end
 
       if (core_clear || start_pulse || !stream_ddr_mode) begin

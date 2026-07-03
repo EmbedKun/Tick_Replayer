@@ -163,6 +163,7 @@ module rx_capture_lbus_bd_core #(
   wire [AXIS_DATA_W_P-1:0] rx_axis_tdata;
   wire [AXIS_KEEP_W_P-1:0] rx_axis_tkeep;
   wire                     rx_axis_tvalid;
+  wire                     rx_axis_tstart;
   wire                     rx_axis_tlast;
   wire                     rx_axis_tuser;
 
@@ -200,6 +201,7 @@ module rx_capture_lbus_bd_core #(
     .m_axis_tdata(rx_axis_tdata),
     .m_axis_tkeep(rx_axis_tkeep),
     .m_axis_tvalid(rx_axis_tvalid),
+    .m_axis_tstart(rx_axis_tstart),
     .m_axis_tlast(rx_axis_tlast),
     .m_axis_tuser(rx_axis_tuser)
   );
@@ -273,6 +275,7 @@ module rx_capture_lbus_bd_core #(
     .s_rx_axis_tdata(rx_axis_tdata),
     .s_rx_axis_tkeep(rx_axis_tkeep),
     .s_rx_axis_tvalid(rx_axis_tvalid),
+    .s_rx_axis_tstart(rx_axis_tstart),
     .s_rx_axis_tlast(rx_axis_tlast),
     .s_rx_axis_tuser(rx_axis_tuser)
   );

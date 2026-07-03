@@ -6,7 +6,7 @@ module axis_to_lbus_512_bd #(
   parameter SEG_COUNT = 4,
   parameter SEG_DATA_W = DATA_W / SEG_COUNT,
   parameter SEG_KEEP_W = KEEP_W / SEG_COUNT,
-  parameter FIFO_DEPTH = 8
+  parameter FIFO_DEPTH = 256
 ) (
   (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clk CLK" *)
   (* X_INTERFACE_PARAMETER = "ASSOCIATED_BUSIF S_AXIS, ASSOCIATED_RESET resetn" *)
@@ -14,6 +14,7 @@ module axis_to_lbus_512_bd #(
   (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 resetn RST" *)
   (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
   input  wire                  resetn,
+  input  wire                  clear,
 
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_AXIS TDATA" *)
   input  wire [DATA_W-1:0]     s_axis_tdata,
@@ -67,6 +68,7 @@ module axis_to_lbus_512_bd #(
   ) core_i (
     .clk(clk),
     .resetn(resetn),
+    .clear(clear),
     .s_axis_tdata(s_axis_tdata),
     .s_axis_tkeep(s_axis_tkeep),
     .s_axis_tvalid(s_axis_tvalid),

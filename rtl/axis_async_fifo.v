@@ -21,6 +21,7 @@ module axis_async_fifo #
   (* X_INTERFACE_INFO = "xilinx.com:signal:reset:1.0 m_resetn RST" *)
   (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
   input  wire                  m_resetn,
+  input  wire                  clear,
 
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_AXIS TDATA" *)
   input  wire [DATA_W-1:0]     s_axis_tdata,
@@ -70,6 +71,10 @@ module axis_async_fifo #
   (* ASYNC_REG = "TRUE" *) reg [PTR_W-1:0] rd_gray_wclk_2 = {PTR_W{1'b0}};
   (* ASYNC_REG = "TRUE" *) reg [PTR_W-1:0] wr_gray_rclk_1 = {PTR_W{1'b0}};
   (* ASYNC_REG = "TRUE" *) reg [PTR_W-1:0] wr_gray_rclk_2 = {PTR_W{1'b0}};
+  (* ASYNC_REG = "TRUE" *) reg clear_wclk_1 = 1'b0;
+  (* ASYNC_REG = "TRUE" *) reg clear_wclk_2 = 1'b0;
+  (* ASYNC_REG = "TRUE" *) reg clear_rclk_1 = 1'b0;
+  (* ASYNC_REG = "TRUE" *) reg clear_rclk_2 = 1'b0;
 
   reg wr_full = 1'b0;
   reg wr_ready_reg = 1'b0;
@@ -81,7 +86,9 @@ module axis_async_fifo #
   reg [PAYLOAD_W-1:0] out_payload_reg = {PAYLOAD_W{1'b0}};
   reg out_valid_reg = 1'b0;
 
-  wire wr_fire = s_axis_tvalid && s_axis_tready;
+  wire s_clear_active = clear_wclk_2;
+  wire m_clear_active = clear_rclk_2;
+  wire wr_fire = s_axis_tvalid && s_axis_tready && !s_clear_active;
   wire rd_empty_now = rd_gray == wr_gray_rclk_2;
   wire out_reg_ready = !out_valid_reg || m_axis_tready;
   wire out_pop = (out_count != {OUT_COUNT_W{1'b0}}) && out_reg_ready;
@@ -91,7 +98,7 @@ module axis_async_fifo #
     {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[0]} +
     {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[1]};
   wire [OUT_COUNT_W-1:0] total_buffered = out_count + outstanding_count;
-  wire rd_issue = !rd_empty_now && (total_buffered < OUT_DEPTH);
+  wire rd_issue = !m_clear_active && !rd_empty_now && (total_buffered < OUT_DEPTH);
 
   wire [PTR_W-1:0] wr_bin_next = wr_bin + {{(PTR_W-1){1'b0}}, wr_fire};
   wire [PTR_W-1:0] rd_bin_next = rd_bin + {{(PTR_W-1){1'b0}}, rd_issue};
@@ -160,9 +167,22 @@ module axis_async_fifo #
       wr_gray <= {PTR_W{1'b0}};
       rd_gray_wclk_1 <= {PTR_W{1'b0}};
       rd_gray_wclk_2 <= {PTR_W{1'b0}};
+      clear_wclk_1 <= 1'b0;
+      clear_wclk_2 <= 1'b0;
       wr_full <= 1'b0;
       wr_ready_reg <= 1'b0;
     end else begin
+      clear_wclk_1 <= clear;
+      clear_wclk_2 <= clear_wclk_1;
+
+      if (s_clear_active) begin
+        wr_bin <= {PTR_W{1'b0}};
+        wr_gray <= {PTR_W{1'b0}};
+        rd_gray_wclk_1 <= {PTR_W{1'b0}};
+        rd_gray_wclk_2 <= {PTR_W{1'b0}};
+        wr_full <= 1'b0;
+        wr_ready_reg <= 1'b0;
+      end else begin
       rd_gray_wclk_1 <= rd_gray;
       rd_gray_wclk_2 <= rd_gray_wclk_1;
       wr_full <= wr_full_next;
@@ -172,6 +192,17 @@ module axis_async_fifo #
         wr_bin <= wr_bin_next;
         wr_gray <= wr_gray_next;
       end
+      end
+    end
+  end
+
+  always @(posedge m_clk) begin
+    if (out_pop) begin
+      out_payload_reg <= out_mem[out_rd_ptr];
+    end
+
+    if (ram_return_valid) begin
+      out_mem[out_wr_ptr] <= ram_dout;
     end
   end
 
@@ -181,13 +212,28 @@ module axis_async_fifo #
       rd_gray <= {PTR_W{1'b0}};
       wr_gray_rclk_1 <= {PTR_W{1'b0}};
       wr_gray_rclk_2 <= {PTR_W{1'b0}};
+      clear_rclk_1 <= 1'b0;
+      clear_rclk_2 <= 1'b0;
       rd_valid_pipe <= {READ_PIPE_LEN{1'b0}};
       out_wr_ptr <= {OUT_PTR_W{1'b0}};
       out_rd_ptr <= {OUT_PTR_W{1'b0}};
       out_count <= {OUT_COUNT_W{1'b0}};
-      out_payload_reg <= {PAYLOAD_W{1'b0}};
       out_valid_reg <= 1'b0;
     end else begin
+      clear_rclk_1 <= clear;
+      clear_rclk_2 <= clear_rclk_1;
+
+      if (m_clear_active) begin
+        rd_bin <= {PTR_W{1'b0}};
+        rd_gray <= {PTR_W{1'b0}};
+        wr_gray_rclk_1 <= {PTR_W{1'b0}};
+        wr_gray_rclk_2 <= {PTR_W{1'b0}};
+        rd_valid_pipe <= {READ_PIPE_LEN{1'b0}};
+        out_wr_ptr <= {OUT_PTR_W{1'b0}};
+        out_rd_ptr <= {OUT_PTR_W{1'b0}};
+        out_count <= {OUT_COUNT_W{1'b0}};
+        out_valid_reg <= 1'b0;
+      end else begin
       wr_gray_rclk_1 <= wr_gray;
       wr_gray_rclk_2 <= wr_gray_rclk_1;
       rd_valid_pipe <= {rd_valid_pipe[READ_PIPE_LEN-2:0], rd_issue};
@@ -198,7 +244,6 @@ module axis_async_fifo #
       end
 
       if (out_pop) begin
-        out_payload_reg <= out_mem[out_rd_ptr];
         out_valid_reg <= 1'b1;
         out_rd_ptr <= out_rd_ptr + {{(OUT_PTR_W-1){1'b0}}, 1'b1};
       end else if (out_fire) begin
@@ -206,7 +251,6 @@ module axis_async_fifo #
       end
 
       if (ram_return_valid) begin
-        out_mem[out_wr_ptr] <= ram_dout;
         out_wr_ptr <= out_wr_ptr + {{(OUT_PTR_W-1){1'b0}}, 1'b1};
       end
 
@@ -215,6 +259,7 @@ module axis_async_fifo #
         2'b01: out_count <= out_count - {{(OUT_COUNT_W-1){1'b0}}, 1'b1};
         default: out_count <= out_count;
       endcase
+      end
     end
   end
 endmodule

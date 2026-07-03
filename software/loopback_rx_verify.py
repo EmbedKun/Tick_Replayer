@@ -84,21 +84,61 @@ def pread_all(fd: int, size: int, addr: int) -> bytes:
     return bytes(out)
 
 
+def pwrite_all_bytes(fd: int, data: bytes, addr: int) -> None:
+    off = 0
+    while off < len(data):
+        off += os.pwrite(fd, data[off:], addr + off)
+
+
+def wait_rx_cleared(user_fd: int, base: int, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    last = None
+    while time.monotonic() < deadline:
+        status = read32(user_fd, base + RX_REG_STATUS)
+        write_ptr = read32(user_fd, base + RX_REG_WRITE_PTR)
+        rx_pkts = read64(user_fd, base + RX_REG_PKTS_LO, base + RX_REG_PKTS_HI)
+        rx_bytes = read64(user_fd, base + RX_REG_BYTES_LO, base + RX_REG_BYTES_HI)
+        rx_errors = read64(user_fd, base + RX_REG_ERRS_LO, base + RX_REG_ERRS_HI)
+        cap_bytes = read64(user_fd, base + RX_REG_CAP_BYTES_LO, base + RX_REG_CAP_BYTES_HI)
+        axi_writes = read64(user_fd, base + RX_REG_AXI_WR_LO, base + RX_REG_AXI_WR_HI)
+        axi_errors = read64(user_fd, base + RX_REG_AXI_ERR_LO, base + RX_REG_AXI_ERR_HI)
+        writer_state = (status >> 7) & 0x3
+        busy_bits = status & 0x17  # awvalid, wvalid, bvalid, fifo_tvalid
+        last = (status, write_ptr, rx_pkts, rx_bytes, rx_errors, cap_bytes, axi_writes, axi_errors)
+        if (
+            writer_state == 0
+            and busy_bits == 0
+            and write_ptr == 0
+            and rx_pkts == 0
+            and rx_bytes == 0
+            and rx_errors == 0
+            and cap_bytes == 0
+            and axi_writes == 0
+            and axi_errors == 0
+        ):
+            return
+        time.sleep(0.01)
+    raise TimeoutError(f"RX clear did not settle: {last}")
+
+
 def configure_rx(user_fd: int, base: int, ring_base: int, ring_size: int, truncate_bytes: int) -> None:
     write32(user_fd, base + RX_REG_CONTROL, 0x0)
-    time.sleep(0.001)
+    write32(user_fd, base + RX_REG_CONTROL, 0x2)
+    wait_rx_cleared(user_fd, base)
     write64(user_fd, base + RX_REG_RING_BASE_LO, base + RX_REG_RING_BASE_HI, ring_base)
     write32(user_fd, base + RX_REG_RING_SIZE, ring_size)
     write32(user_fd, base + RX_REG_TRUNC_BYTES, truncate_bytes)
     write32(user_fd, base + RX_REG_CONTROL, 0x2)
-    time.sleep(0.001)
+    wait_rx_cleared(user_fd, base)
     write32(user_fd, base + RX_REG_CONTROL, 0x5)
 
 
 def main() -> None:
     args = parse_args()
-    if args.truncate_bytes > 64:
-        raise SystemExit("this checker currently compares the first 64 bytes per packet")
+    checked_bytes_per_packet = min(args.frame_len, args.truncate_bytes)
+    sample_stride = ((checked_bytes_per_packet + 63) // 64) * 64
+    if checked_bytes_per_packet <= 0 or sample_stride <= 0:
+        raise SystemExit("frame length and truncate bytes must leave at least one byte to check")
 
     pattern = [(args.frame_len, args.gap_ticks)]
     desc_path, data_path, desc_size, data_size, _payload_bytes, _expected_ticks = pmt.make_mixed_trace(
@@ -111,8 +151,10 @@ def main() -> None:
     c2h_fd = os.open(args.c2h, os.O_RDONLY)
     user_fd = os.open(args.user, os.O_RDWR)
     try:
+        sample_bytes = args.packet_count * sample_stride
         pst.pwrite_file(h2c_fd, desc_path, args.desc_base, 4 * 1024 * 1024)
         pst.pwrite_file(h2c_fd, data_path, args.data_base, 4 * 1024 * 1024)
+        pwrite_all_bytes(h2c_fd, bytes(sample_bytes), args.rx_ring_base)
         configure_rx(user_fd, rx_base, args.rx_ring_base, args.rx_ring_size, args.truncate_bytes)
 
         ns = argparse.Namespace(
@@ -141,12 +183,12 @@ def main() -> None:
         write_ptr = read32(user_fd, rx_base + RX_REG_WRITE_PTR)
         status = read32(user_fd, rx_base + RX_REG_STATUS)
 
-        sample_bytes = args.packet_count * 64
         captured = pread_all(c2h_fd, sample_bytes, args.rx_ring_base)
         mismatches = []
         for pkt_idx in range(args.packet_count):
-            expected = pst.make_frame(pkt_idx, args.frame_len)[:64]
-            actual = captured[pkt_idx * 64 : (pkt_idx + 1) * 64]
+            expected = pst.make_frame(pkt_idx, args.frame_len)[:checked_bytes_per_packet]
+            start = pkt_idx * sample_stride
+            actual = captured[start : start + checked_bytes_per_packet]
             if actual != expected:
                 for byte_idx, (exp, got) in enumerate(zip(expected, actual)):
                     if exp != got:
@@ -158,6 +200,9 @@ def main() -> None:
         print(f"tx_port           : {args.tx_port}")
         print(f"rx_port           : {args.rx_port}")
         print(f"frame_len         : {args.frame_len}")
+        print(f"truncate_bytes    : {args.truncate_bytes}")
+        print(f"checked_per_pkt   : {checked_bytes_per_packet}")
+        print(f"sample_stride     : {sample_stride}")
         print(f"gap_ticks         : {args.gap_ticks}")
         print(f"packet_count      : {args.packet_count}")
         print(f"completed         : {completed}")

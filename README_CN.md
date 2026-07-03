@@ -72,7 +72,7 @@ Vivado 生成工程、临时 trace、机器私有状态和大部分构建中间�
 * 回放模式：
   * `PRELOAD`：主机先把描述符和载荷完整预加载到 `DDR4`。
   * `LOOP`：基于 `DDR4` 的循环回放路径已经在 `RTL` 中连通。
-  * `STREAM`：主机写入有限 stream buffer，或持续补充一个 `DDR4` ring；
+  * `STREAM`：主机持续补充一个有界 `DDR4` ring；
     FPGA 读取完整 stream record 后送入时间戳调度器。本仓库包含 Python
     feeder 和吞吐更高的 C++ feeder。
 * Python 主机端工具用于 `pcap` 转换、`XDMA` 加载、寄存器控制、状态读取
@@ -167,7 +167,7 @@ Vivado block design 由 `scripts/create_hw_project.tcl` 生成。主要 IP 和 R
 | `SmartConnect` | 仲裁主机 DMA、`TX` 读者和 `RX` ring writer 对 `DDR4` 的访问，也负责 `AXI-Lite` 控制访问路由。 |
 | `trace_replay_core` | 每端口 `TX` 回放核心，包含 `AXI-Lite` 寄存器、`DDR4` trace reader、调度器和 `TX` engine。 |
 | `ddr_trace_reader` | 从 `DDR4` 读取 64 字节描述符和载荷 beat。 |
-| `ddr_stream_reader` | 在 `STREAM` 模式下读取有限 stream buffer 或主机持续补充的 `DDR4` ring。 |
+| `ddr_stream_reader` | 在 `STREAM` 模式下读取主机持续补充的 `DDR4` ring。 |
 | `host_stream_parser` | 解析一个 64 字节 stream header beat 和后续包载荷 beat。 |
 | `replay_scheduler` | 维护回放相对 tick 计数器，并根据描述符 gap 释放包。 |
 | `replay_tx_engine` | 把被调度的 payload beat 转成 512-bit `CMAC TX AXI-Stream` 帧。 |
@@ -266,7 +266,7 @@ payload_beats   = ceil(frame_len / 64)
 主机会补齐最后一个 beat，TX engine 根据 `frame_len` 生成 `TKEEP`，只发送
 有效字节。当前 `pcap2trace.py` 默认把短帧补到 60 字节，不存 Ethernet FCS。
 
-`STREAM` 模式使用 `DDR4` 中的 stream buffer。buffer 是连续的 packet record：
+`STREAM` 模式使用主机持续补充的 `DDR4` ring。ring 中的数据流是连续的 packet record：
 
 ```text
 64-byte stream header for packet 0
@@ -278,9 +278,10 @@ payload_beats   = ceil(frame_len / 64)
 
 stream header 的前 16 字节和 `replay_desc` 相同。`gap_ticks`、`frame_len`
 和 `flags` 被 FPGA stream parser 使用；`data_word_offset` 在 `STREAM` 模式
-下忽略，应写 `0`。载荷紧跟 header，并补齐到 64 字节边界。FPGA 会从
-`DESC_BASE` 读取恰好 `TRACE_BYTES` 字节，所以主机必须把 `DESC_BASE` 配成
-stream buffer 基地址，把 `TRACE_BYTES` 配成完整 stream buffer 大小。
+下忽略，应写 `0`。载荷紧跟 header，并补齐到 64 字节边界。主机只在完整
+record 通过 `XDMA H2C` 写入完成后推进 `STREAM_WR_PTR`；FPGA 消费 64 字节
+beat 时推进 `STREAM_RD_PTR`。`STREAM` 模式下 `TRACE_BYTES` 被忽略，建议写
+`0`；`DESC_BASE` 是 ring 基地址，`STREAM_RING_SIZE` 是有效 ring 大小。
 
 ## 仓库结构
 
@@ -467,16 +468,7 @@ python3 /home/user/traffic_replay_software/trace_to_stream.py \
   --out /home/user/trace_out/stream.bin
 ```
 
-加载有限 stream buffer 并启动 `STREAM` 回放：
-
-```bash
-sudo python3 /home/user/traffic_replay_software/xdma_stream_load.py \
-  --port 0 \
-  --manifest /home/user/trace_out/stream_manifest.json \
-  --stream-base 0x20000000
-```
-
-当 stream 大于选定 FPGA DDR 回放窗口时，使用 `DDR4` ring 持续补充：
+通过 `DDR4` ring 补充 stream record 并启动 `STREAM` 回放：
 
 ```bash
 sudo python3 /home/user/traffic_replay_software/xdma_stream_ring.py \
@@ -537,20 +529,14 @@ sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 r
 
 ## STREAM 模式和压力测试
 
-`STREAM` 模式由 DDR 支撑。主机使用 memory-mapped `XDMA H2C` 把 stream
-record 放入 `DDR4`；FPGA `ddr_stream_reader` 读取 512-bit AXI beat，喂给
-`host_stream_parser`，再由 replay scheduler 按 record 中的 gap 调度发包。
+`STREAM` 模式是 `DDR4` ring-buffer 模式。主机使用 memory-mapped
+`XDMA H2C` 把完整 stream record 放入 ring；FPGA `ddr_stream_reader` 读取
+512-bit AXI beat，喂给 `host_stream_parser`，再由 replay scheduler 按
+record 中的 gap 调度发包。
 
-两种 `STREAM` 用法：
-
-| 用法 | 场景 | 寄存器配置 |
-| --- | --- | --- |
-| 有限 buffer | 整个 stream 能放进一段 FPGA DDR。 | `DESC_BASE=stream_base`, `TRACE_BYTES=stream_size`, `STREAM_RING_SIZE=0`。 |
-| DDR ring | replay stream 大于选定 FPGA DDR 窗口。 | `DESC_BASE=ring_base`, `TRACE_BYTES=0`, `STREAM_RING_SIZE=ring_size`，主机推进 `STREAM_WR_PTR`，FPGA 推进 `STREAM_RD_PTR`。 |
-
-DDR ring 是面向大容量 pcap 的模式。主机拥有 producer pointer，FPGA 拥有
-consumer pointer。主机不能写超过 `ring_size - (write_ptr - read_ptr)` 的
-空间；如果写指针推进过远，FPGA 会在 `STREAM_STATUS` 中报告 overrun。
+主机拥有 producer pointer，FPGA 拥有 consumer pointer。主机不能写超过
+`ring_size - (write_ptr - read_ptr)` 的空间；如果写指针推进过远，FPGA 会在
+`STREAM_STATUS` 中报告 overrun。
 
 更多设计细节见 `docs/stream_ring_mode.md`。
 
@@ -562,7 +548,9 @@ sudo python3 /home/user/traffic_replay_software/stream_stress_test.py \
   --frame-sizes 64,128,256,512,1024,1518 \
   --packet-count 100000 \
   --gap-ticks 0 \
-  --stream-base 0x20000000 \
+  --ring-base 0x20000000 \
+  --ring-size 0x08000000 \
+  --prefill-bytes 0x04000000 \
   --csv /home/user/stream_stress.csv
 ```
 
@@ -574,7 +562,7 @@ sudo python3 /home/user/traffic_replay_software/stream_stress_test.py \
 
 压力脚本报告：
 
-* `load_gbps`：主机向 FPGA DDR 加载 stream buffer 的速率。
+* `load_gbps`：主机向 FPGA DDR ring 加载 stream record 的速率。
 * `hw_gbps`：根据 `tx_bytes` 和硬件 replay tick counter 计算的 FPGA 回放速率。
 * `late_packets` 和 `underrun_packets`：调度迟到和 payload 饥饿指标。
 
@@ -585,7 +573,7 @@ sudo python3 /home/user/traffic_replay_software/stream_stress_test.py \
 
 * `XDMA H2C` / `C2H` 确定性 `DDR4` readback。
 * synthetic `pcap` 生成、`pcap2trace.py` 转换和 `trace_to_stream.py` 转换。
-* 有限 buffer `STREAM` 吞吐 sweep。
+* `DDR4` ring `STREAM` 吞吐 sweep。
 * 超出 ring 大小的 `DDR4` ring `STREAM` 回放。
 * 可选的 `QSFP0` -> `QSFP1` RX loopback 统计和截断 sample ring capture。
 
@@ -642,16 +630,10 @@ C++ DDR-ring `STREAM`，TX0，`100000` 个 1518 字节包：
 memory-mapped `XDMA H2C pwrite` 路径持续补 ring 的速率约在 `10Gbps` 附近，
 无法无限期支撑 `100Gbps` 动态回放。
 
-有限 buffer `STREAM`，TX0，`100000` 个 1518 字节包：
-
-| Gap ticks | 完成 | TX packets | TX bytes | Replay Gbps | Late packets | Underrun packets |
-| ---: | :---: | ---: | ---: | ---: | ---: | ---: |
-| `0` | yes | `100000` | `151800000` | `96.983` | `100000` | `1012270` |
-| `36` | yes | `100000` | `151800000` | `96.986` | `99989` | `1012317` |
-
-这些有限 buffer 结果说明 FPGA 大包路径可以接近 `100Gbps`，但 zero-gap 和
-近线速测试仍会报告 `late_packets` 与 `underrun_packets`，因此这是吞吐压力
-结果，不是最终精确回放结果。
+旧的有限 buffer `STREAM` 路径已经从当前代码中移除。现在
+`stream_stress_test.py` 会生成 stream record，并通过 DDR ring loader 做动态
+补给回放，因此新的 `STREAM` 吞吐结果应理解为动态 ring-buffer 结果，而不是
+一次性 DDR buffer drain 结果。
 
 单端口 preload timing-clean build：
 
@@ -717,8 +699,7 @@ bash scripts/run_vivado.sh sim
 
 当前 `XSim` testbench 覆盖：
 
-* Host stream parser path：发出 2 个包。
-* DDR-backed `STREAM` buffer path：从 AXI read memory model 发出 2 个包。
+* 非法 `STREAM` ring 配置能够干净停止，且不会发出 TX 数据。
 * DDR-backed ring `STREAM` path：发出一个已提交包，等待主机写指针推进，再继续发出下一个包。
 * `DDR4` preload path：从 AXI read memory model 发出 3 个包。
 
@@ -728,7 +709,6 @@ bash scripts/run_vivado.sh sim
 python3 -m py_compile \
   software/traffic_replay_cli.py \
   software/xdma_load_trace.py \
-  software/xdma_stream_load.py \
   software/xdma_stream_ring.py \
   software/ddr_readback_check.py \
   software/pcap2trace.py \
@@ -767,7 +747,6 @@ sudo python3 ddr_readback_check.py
 * `XDMA` user `BAR` 上的 `AXI-Lite` 寄存器访问正常。
 * `TX0` 和 `TX1` 能从 `DDR4` 读取描述符和 payload。
 * 调度器和 `TX` engine 可以发包并更新计数。
-* DDR-backed 有限 `STREAM` 模式通过 RTL 仿真和硬件吞吐测试。
 * DDR-backed ring `STREAM` 模式通过 RTL 仿真和 U200 硬件测试。
 * `QSFP0` 和 `QSFP1` 的 `CMAC` link 能在 100G 光纤互联下 up。
 * `TX0` -> `RX1` 和 `TX1` -> `RX0` 在通过的 loopback 测试中包计数可用。
@@ -787,10 +766,6 @@ sudo python3 ddr_readback_check.py
 * 过载 `PRELOAD` 测试会填满下游 TX async FIFO/CMAC 侧，并以
   `m_tx_axis_tready=0` 停住。当前 `stop`/`clear` 会复位 replay core，
   但还没有覆盖整个每端口 TX datapath。
-* BRAM-FIFO STREAM build 功能可用，但不是 timing-clean：
-  implementation timing 为 `WNS=-0.247 ns`。
-* 有限 buffer `STREAM` 对 1518 字节包可达到约 `96.98Gbps`，但近线速测试
-  仍出现 `late_packets` 和 `underrun_packets`，因此还不是最终精确回放结果。
 * 动态 DDR ring `STREAM` 已用 C++ feeder 功能验证。当前 1518 字节包最快
   no-late/no-underrun 点约 `7.59Gbps`。memory-mapped `XDMA H2C pwrite` 在
   该系统中持续补 ring 约为 `10Gbps` 量级，无法长期喂满 `100Gbps` 回放。

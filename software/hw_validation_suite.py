@@ -25,7 +25,7 @@ PROFILES = {
         "preload_safe_cases": ["64:3", "1518:38"],
         "preload_overrate_cases": ["64:2", "1518:0"],
         "pcap_packets": 4096,
-        "finite_packets": 2000,
+        "stream_packets": 2000,
         "ring_packets": 20000,
         "ring_gap_ticks": 480,
         "ring_size": 0x0080_0000,
@@ -39,7 +39,7 @@ PROFILES = {
         "preload_safe_cases": ["64:3", "1518:38"],
         "preload_overrate_cases": ["64:2", "1518:0"],
         "pcap_packets": 100000,
-        "finite_packets": 100000,
+        "stream_packets": 100000,
         "ring_packets": 200000,
         "ring_gap_ticks": 240,
         "ring_size": 0x0200_0000,
@@ -53,7 +53,7 @@ PROFILES = {
         "preload_safe_cases": ["64:3", "1518:38"],
         "preload_overrate_cases": ["64:2", "1518:0"],
         "pcap_packets": 500000,
-        "finite_packets": 500000,
+        "stream_packets": 500000,
         "ring_packets": 1000000,
         "ring_gap_ticks": 240,
         "ring_size": 0x0400_0000,
@@ -75,7 +75,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--python", default=sys.executable or "python3")
     parser.add_argument("--port", type=int, choices=[0, 1], default=0)
     parser.add_argument("--rx-port", type=int, choices=[0, 1], default=1)
-    parser.add_argument("--stream-base", type=int_auto, default=0x2000_0000)
     parser.add_argument("--ring-base", type=int_auto, default=0x2000_0000)
     parser.add_argument("--rx-ring-base", type=int_auto, default=0x3000_0000)
     parser.add_argument("--rx-ring-size", type=int_auto, default=0x0100_0000)
@@ -83,7 +82,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ring-loader", choices=["cpp", "python"], default="cpp")
     parser.add_argument("--skip-ddr", action="store_true")
     parser.add_argument("--skip-preload", action="store_true")
-    parser.add_argument("--skip-finite", action="store_true")
     parser.add_argument("--skip-ring", action="store_true")
     parser.add_argument("--skip-rx", action="store_true")
     parser.add_argument("--force-link-up", action="store_true")
@@ -139,7 +137,7 @@ def main() -> None:
     run_dir = args.work_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{args.profile}"
     run_dir.mkdir(parents=True, exist_ok=True)
     log_path = run_dir / "validation.log"
-    csv_path = run_dir / "finite_stream_sweep.csv"
+    csv_path = run_dir / "stream_ring_sweep.csv"
 
     print(f"validation_dir    : {run_dir}")
     print(f"profile           : {args.profile}")
@@ -249,9 +247,9 @@ def main() -> None:
         log_path,
     )
 
-    if not args.skip_finite:
+    if not args.skip_ring:
         run_step(
-            "finite stream throughput sweep",
+            "stream ring throughput sweep",
             [
                 args.python,
                 script("stream_stress_test.py"),
@@ -260,13 +258,17 @@ def main() -> None:
                 "--frame-sizes",
                 "64,128,256,512,1024,1518",
                 "--packet-count",
-                str(cfg["finite_packets"]),
+                str(cfg["stream_packets"]),
                 "--gap-ticks",
                 "0",
-                "--stream-base",
-                f"0x{args.stream_base:x}",
+                "--ring-base",
+                f"0x{args.ring_base:x}",
+                "--ring-size",
+                f"0x{cfg['ring_size']:x}",
+                "--prefill-bytes",
+                f"0x{cfg['prefill']:x}",
                 "--work-dir",
-                str(run_dir / "finite_stream"),
+                str(run_dir / "stream_ring_sweep"),
                 "--csv",
                 str(csv_path),
                 "--timeout",
@@ -279,6 +281,30 @@ def main() -> None:
         )
 
     if not args.skip_ring:
+        run_step(
+            "pcap-derived ring stream replay",
+            [
+                args.python,
+                script("xdma_stream_ring.py"),
+                "--port",
+                str(args.port),
+                "--manifest",
+                str(pcap_dir / "stream_manifest.json"),
+                "--ring-base",
+                f"0x{args.ring_base:x}",
+                "--ring-size",
+                f"0x{cfg['ring_size']:x}",
+                "--prefill-bytes",
+                f"0x{cfg['prefill']:x}",
+                "--watermark",
+                str(args.watermark),
+                "--timeout",
+                str(cfg["timeout"]),
+            ]
+            + maybe_force_args(args),
+            log_path,
+        )
+
         ring_trace_dir = run_dir / "ring_trace_1518"
         run_step(
             "generate oversized ring-stream trace",
@@ -400,8 +426,12 @@ def main() -> None:
                 str(cfg["rx_packets"]),
                 "--gap-ticks",
                 "0",
-                "--stream-base",
-                f"0x{args.stream_base:x}",
+                "--ring-base",
+                f"0x{args.ring_base:x}",
+                "--ring-size",
+                f"0x{cfg['ring_size']:x}",
+                "--prefill-bytes",
+                f"0x{cfg['prefill']:x}",
                 "--work-dir",
                 str(run_dir / "rx_loopback_tx"),
                 "--timeout",
@@ -416,7 +446,7 @@ def main() -> None:
 
     run_step("tx status after", cli + ["--port", str(args.port), "status"], log_path)
     print(f"\nvalidation log    : {log_path}")
-    print(f"finite csv        : {csv_path}")
+    print(f"stream ring csv   : {csv_path}")
 
 
 if __name__ == "__main__":

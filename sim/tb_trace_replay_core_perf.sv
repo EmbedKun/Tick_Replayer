@@ -103,7 +103,8 @@ module tb_trace_replay_core_perf;
     .m_tx_axis_tvalid(tx_tvalid),
     .m_tx_axis_tready(tx_tready),
     .m_tx_axis_tlast(tx_tlast),
-    .m_tx_axis_tuser(tx_tuser)
+    .m_tx_axis_tuser(tx_tuser),
+    .tx_path_clear()
   );
 
   int unsigned case_pkt_len;

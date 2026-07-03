@@ -76,10 +76,10 @@ intentionally excluded.
 * Replay modes:
   * `PRELOAD`: host preloads descriptor and payload files into `DDR4`.
   * `LOOP`: `DDR4`-backed replay loop is wired in `RTL`.
-  * `STREAM`: host writes either a finite stream buffer or a continuously
-    refilled DDR ring through memory-mapped `XDMA H2C`; the FPGA reads complete
-    stream records and feeds the timestamp scheduler.  The repository includes
-    both a Python feeder and a higher-throughput C++ feeder for this mode.
+  * `STREAM`: host continuously refills a bounded `DDR4` ring through
+    memory-mapped `XDMA H2C`; the FPGA reads complete stream records and feeds
+    the timestamp scheduler.  The repository includes both a Python feeder and
+    a higher-throughput C++ feeder for this mode.
 * Host-side Python tools for `pcap` conversion, `XDMA` loading, control registers,
   status registers, and RX capture configuration.
 * Host-side C++ `STREAM` ring feeder with asynchronous producer/consumer loading
@@ -136,22 +136,6 @@ PCAP / generated trace
   -> QSFP0 / QSFP1
 ```
 
-DDR-backed finite `STREAM` movement:
-
-```text
-desc.bin + data.bin
-  -> trace_to_stream.py
-  -> stream.bin
-  -> xdma_stream_load.py
-  -> /dev/xdma0_h2c_0
-  -> FPGA DDR4 stream buffer
-  -> ddr_stream_reader
-  -> host_stream_parser
-  -> replay scheduler
-  -> TX packet engine
-  -> 100G CMAC TX
-```
-
 DDR-backed ring `STREAM` movement:
 
 ```text
@@ -194,7 +178,7 @@ The major IP and RTL blocks are:
 | `SmartConnect` | Arbitrates host DMA, `TX` readers, and `RX` ring writers into `DDR4`; also routes `AXI-Lite` control accesses. |
 | `trace_replay_core` | Per-port `TX` replay core with `AXI-Lite` registers, `DDR4` trace reader, scheduler, and `TX` engine. |
 | `ddr_trace_reader` | Reads 64-byte descriptors and payload beats from `DDR4`. |
-| `ddr_stream_reader` | Reads either a finite sequential stream buffer or a Host-refilled DDR ring for `STREAM` mode. |
+| `ddr_stream_reader` | Reads a Host-refilled `DDR4` ring for `STREAM` mode. |
 | `host_stream_parser` | Parses one 64-byte stream header beat followed by packet payload beats. |
 | `replay_scheduler` | Maintains a replay-relative tick counter and releases packets according to descriptor gap fields. |
 | `replay_tx_engine` | Converts scheduled payload beats into 512-bit `CMAC TX AXI-Stream` frames. |
@@ -305,8 +289,9 @@ Example descriptors from the three-packet smoke trace:
 | 1 | `30000` | `1` | `64` | `0` |
 | 2 | `30000` | `2` | `124` | `0` |
 
-`STREAM` mode uses a DDR-backed stream buffer.  The buffer is a linear sequence
-of packet records:
+`STREAM` mode uses the same packet record format inside a host-refilled `DDR4`
+ring.  The byte stream is a linear sequence of packet records; the loader wraps
+that sequence around the selected ring window:
 
 ```text
 64-byte stream header for packet 0
@@ -320,9 +305,11 @@ The stream header uses the same first 16 bytes as `replay_desc`:
 `gap_ticks`, `frame_len`, and `flags` are consumed by the FPGA stream parser.
 `data_word_offset` is ignored in `STREAM` mode and should be written as `0`.
 The payload immediately follows the header and is padded to a 64-byte boundary.
-The FPGA reads exactly `TRACE_BYTES` bytes from `DESC_BASE`, so the host must
-program `DESC_BASE` as the stream-buffer base address and `TRACE_BYTES` as the
-full stream-buffer size.
+The host commits only complete records to the ring and advances `STREAM_WR_PTR`
+after the corresponding `XDMA H2C` writes finish.  The FPGA advances
+`STREAM_RD_PTR` as it consumes 64-byte beats.  `TRACE_BYTES` is ignored in
+`STREAM` mode and should be programmed as `0`; `DESC_BASE` is the ring base and
+`STREAM_RING_SIZE` is the active ring size.
 
 ## Repository Layout
 
@@ -512,17 +499,7 @@ python3 /home/user/traffic_replay_software/trace_to_stream.py \
   --out /home/user/trace_out/stream.bin
 ```
 
-Load the stream buffer and start `STREAM` replay:
-
-```bash
-sudo python3 /home/user/traffic_replay_software/xdma_stream_load.py \
-  --port 0 \
-  --manifest /home/user/trace_out/stream_manifest.json \
-  --stream-base 0x20000000
-```
-
-Continuously feed a DDR ring when the stream is larger than the available FPGA
-DDR replay window:
+Feed the stream through the `DDR4` ring and start `STREAM` replay:
 
 ```bash
 sudo python3 /home/user/traffic_replay_software/xdma_stream_ring.py \
@@ -602,22 +579,14 @@ packet bytes.
 
 ## Stream Mode and Stress Testing
 
-`STREAM` mode is DDR-backed.  The host uses memory-mapped `XDMA H2C` writes to
-place stream records in `DDR4`; the FPGA `ddr_stream_reader` reads 512-bit AXI
-beats, feeds `host_stream_parser`, and the replay scheduler releases packets
-according to the per-record timestamp gap.
+`STREAM` mode is a `DDR4` ring-buffer mode.  The host uses memory-mapped
+`XDMA H2C` writes to place complete stream records in the ring; the FPGA
+`ddr_stream_reader` reads 512-bit AXI beats, feeds `host_stream_parser`, and the
+replay scheduler releases packets according to the per-record timestamp gap.
 
-There are two `STREAM` operating styles:
-
-| Style | Use case | Register setup |
-| --- | --- | --- |
-| Finite buffer | The whole stream fits in one FPGA DDR region. | `DESC_BASE=stream_base`, `TRACE_BYTES=stream_size`, `STREAM_RING_SIZE=0`. |
-| DDR ring | The replay stream is larger than the selected FPGA DDR window. | `DESC_BASE=ring_base`, `TRACE_BYTES=0`, `STREAM_RING_SIZE=ring_size`, Host advances `STREAM_WR_PTR`, FPGA advances `STREAM_RD_PTR`. |
-
-The DDR ring path is the intended large-PCAP mode.  Host software owns the
-producer pointer and the FPGA owns the consumer pointer.  The Host must not
-write more than `ring_size - (write_ptr - read_ptr)` bytes; if it does, the
-FPGA sets the stream overrun flag in `STREAM_STATUS`.
+Host software owns the producer pointer and the FPGA owns the consumer pointer.
+The host must not write more than `ring_size - (write_ptr - read_ptr)` bytes; if
+it does, the FPGA sets the stream overrun flag in `STREAM_STATUS`.
 
 More design detail is in
 [`docs/stream_ring_mode.md`](docs/stream_ring_mode.md).
@@ -630,7 +599,9 @@ sudo python3 /home/user/traffic_replay_software/stream_stress_test.py \
   --frame-sizes 64,128,256,512,1024,1518 \
   --packet-count 100000 \
   --gap-ticks 0 \
-  --stream-base 0x20000000 \
+  --ring-base 0x20000000 \
+  --ring-size 0x08000000 \
+  --prefill-bytes 0x04000000 \
   --csv /home/user/stream_stress.csv
 ```
 
@@ -644,7 +615,7 @@ Useful debug switches:
 
 The stress script reports:
 
-* `load_gbps`: host-to-DDR DMA load rate for the generated stream buffer.
+* `load_gbps`: host-to-DDR DMA load rate for the generated ring stream records.
 * `hw_gbps`: FPGA replay throughput computed from `tx_bytes` and the hardware
   replay tick counter.
 * `late_packets` and `underrun_packets`: scheduler and payload starvation
@@ -728,16 +699,10 @@ about `7.59Gbps` for `1518`-byte frames.  The C++ feeder improves substantially
 over the earlier Python feeder, but the current memory-mapped `XDMA H2C`
 `pwrite` path still tops out around `10Gbps` for sustained ring refilling.
 
-Finite-buffer `STREAM` stress on TX0, `100000` packets, `1518`-byte frames:
-
-| Gap ticks | Completed | TX packets | TX bytes | Replay Gbps | Late packets | Underrun packets |
-| ---: | :---: | ---: | ---: | ---: | ---: | ---: |
-| `0` | yes | `100000` | `151800000` | `96.983` | `100000` | `1012270` |
-| `36` | yes | `100000` | `151800000` | `96.986` | `99989` | `1012317` |
-
-These finite-buffer runs show that the FPGA can push close to `100Gbps` with
-large packets, but the zero-gap and near-line-rate cases are throughput stress
-tests, not precision-clean replay tests.
+The old finite-buffer `STREAM` path has been removed from the current codebase.
+`stream_stress_test.py` now generates stream records and drives the DDR ring
+loader, so new `STREAM` throughput numbers should be interpreted as dynamic
+ring-buffer results rather than one-shot DDR buffer drain results.
 
 Single-port preload timing-clean build:
 
@@ -804,11 +769,9 @@ bash scripts/run_vivado.sh sim
 
 The current `XSim` testbench covers:
 
-* Host stream parser path: emits 2 packets.
-* DDR-backed `STREAM` buffer path: emits 2 packets from an AXI read memory
-  model.
-* DDR-backed ring `STREAM` path: emits one packet, waits for the Host write
-  pointer to advance, then emits the next packet.
+* Invalid `STREAM` ring configuration stops cleanly and emits no TX data.
+* DDR-backed ring `STREAM` path emits one packet, waits for the Host write
+  pointer to advance, then emits the next packet from an AXI read memory model.
 * `DDR4` preload path: emits 3 packets from an AXI read memory model.
 
 Run syntax checks for the host tools:
@@ -817,7 +780,6 @@ Run syntax checks for the host tools:
 python3 -m py_compile \
   software/traffic_replay_cli.py \
   software/xdma_load_trace.py \
-  software/xdma_stream_load.py \
   software/xdma_stream_ring.py \
   software/ddr_readback_check.py \
   software/pcap2trace.py \
@@ -858,8 +820,6 @@ Hardware smoke tests to date prove:
 * `AXI-Lite` register access works through the `XDMA` user `BAR`.
 * `TX0` and `TX1` can read descriptors and payloads from `DDR4`.
 * The scheduler and `TX` engine release packets and update counters.
-* DDR-backed finite `STREAM` mode passes `RTL` simulation and hardware
-  throughput testing with `stream_stress_test.py`.
 * DDR-backed ring `STREAM` mode passes `RTL` simulation and U200 hardware tests:
   the reader consumes committed bytes, waits while the Host producer pointer is
   unchanged, then resumes when software advances `STREAM_WR_PTR`.
@@ -889,12 +849,6 @@ Hardware smoke tests to date prove:
 * Over-rate preload tests now use `auto_tx_drop` to avoid a hung replay core.
   Any nonzero `drop_packets`/`stall_events` result is a robustness pass, not a
   valid lossless replay result.
-* The archived BRAM-FIFO STREAM build is functional but not timing-clean:
-  final implementation timing is `WNS=-0.247 ns`.
-* The finite-buffer `STREAM` path reaches about `96.98Gbps` for 1518-byte
-  packets, but near-line-rate tests still report `late_packets` and
-  `underrun_packets`.  This is a throughput stress result, not a final
-  precision replay result.
 * Dynamic DDR ring `STREAM` is functionally verified with the C++ feeder.  The
   current no-late/no-underrun point is about `7.59Gbps` for 1518-byte packets.
   The memory-mapped `XDMA H2C` `pwrite` path sustains roughly `10Gbps` in this
@@ -904,11 +858,9 @@ Hardware smoke tests to date prove:
   a lower-copy host loader, and FPGA-side prefetch with multiple outstanding DDR
   reads.  The current repository has the C++ memory-mapped feeder and deeper
   BRAM prefetch FIFO; it does not yet replace the PCIe path with QDMA.
-* A 500000-packet finite-buffer long sweep exposed a replay-path recovery issue:
-  after a timeout, normal `stop`/`clear` did not always restore TX operation.
-  Reprogramming the same bitstream recovered the system.  The next RTL fix
-  should add a stronger per-port soft reset covering the stream reader,
-  scheduler, prefetch FIFO, and TX handshake state.
+* The current stream reader now reports invalid ring size, producer-pointer
+  regression, and ring overrun through `STREAM_STATUS`.  Long-duration hardware
+  stress should still be repeated after each timing-clean bitstream.
 * The `DDR4` trace reader is intentionally simple; descriptor caching, payload
   prefetch, deeper FIFOs, and multiple outstanding reads are still future work.
 * `RX` capture is a statistics and recent-packet debug window, not a full-rate

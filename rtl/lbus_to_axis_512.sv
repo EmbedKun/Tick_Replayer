@@ -38,6 +38,7 @@ module lbus_to_axis_512 #(
   output logic [DATA_W-1:0]    m_axis_tdata,
   output logic [KEEP_W-1:0]    m_axis_tkeep,
   output logic                 m_axis_tvalid,
+  output logic                 m_axis_tstart,
   output logic                 m_axis_tlast,
   output logic                 m_axis_tuser
 );
@@ -48,6 +49,7 @@ module lbus_to_axis_512 #(
   logic [SEG_COUNT-1:0] seg_ena;
   logic [SEG_COUNT-1:0] seg_sop;
   logic [SEG_COUNT-1:0] seg_eop;
+  logic [SEG_COUNT-1:0] seg_eop_valid;
   logic [3:0] seg_mty [0:SEG_COUNT-1];
   logic [SEG_COUNT-1:0] seg_err;
 
@@ -64,6 +66,7 @@ module lbus_to_axis_512 #(
     seg_mty[2] = rx_mtyout2;
     seg_mty[3] = rx_mtyout3;
     seg_err = {rx_errout3, rx_errout2, rx_errout1, rx_errout0};
+    seg_eop_valid = seg_eop & seg_ena;
   end
 
   function automatic [SEG_DATA_W-1:0] map_lbus_segment(
@@ -107,16 +110,18 @@ module lbus_to_axis_512 #(
       m_axis_tdata  <= '0;
       m_axis_tkeep  <= '0;
       m_axis_tvalid <= 1'b0;
+      m_axis_tstart <= 1'b0;
       m_axis_tlast  <= 1'b0;
       m_axis_tuser  <= 1'b0;
     end else begin
       m_axis_tvalid <= |seg_ena;
-      m_axis_tlast  <= |seg_eop;
-      m_axis_tuser  <= |(seg_err & seg_ena);
+      m_axis_tstart <= |(seg_sop & seg_ena);
+      m_axis_tlast  <= |seg_eop_valid;
+      m_axis_tuser  <= |(seg_err & seg_eop_valid);
 
       for (int seg = 0; seg < SEG_COUNT; seg++) begin
         m_axis_tdata[seg*SEG_DATA_W +: SEG_DATA_W] <= map_lbus_segment(seg_data[seg]);
-        m_axis_tkeep[seg*SEG_KEEP_W +: SEG_KEEP_W] <= keep_from_mty(seg_ena[seg], seg_eop[seg], seg_mty[seg]);
+        m_axis_tkeep[seg*SEG_KEEP_W +: SEG_KEEP_W] <= keep_from_mty(seg_ena[seg], seg_eop_valid[seg], seg_mty[seg]);
       end
     end
   end

@@ -140,6 +140,7 @@ module rx_capture_core #(
   input  wire [AXIS_KEEP_W_P-1:0]   s_rx_axis_tkeep,
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_RX_AXIS TVALID" *)
   input  wire                       s_rx_axis_tvalid,
+  input  wire                       s_rx_axis_tstart,
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_RX_AXIS TLAST" *)
   input  wire                       s_rx_axis_tlast,
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_RX_AXIS TUSER" *)
@@ -166,6 +167,9 @@ module rx_capture_core #(
   localparam logic [AXIL_ADDR_W-1:0] REG_AXI_ERR_LO    = 16'h0058;
   localparam logic [AXIL_ADDR_W-1:0] REG_AXI_ERR_HI    = 16'h005c;
   localparam logic [AXIL_ADDR_W-1:0] REG_DEBUG         = 16'h0060;
+  localparam int RX_CLEAR_CYCLES = 128;
+  localparam int RX_CLEAR_CNT_W = $clog2(RX_CLEAR_CYCLES + 1);
+  localparam logic [RX_CLEAR_CNT_W-1:0] RX_CLEAR_LEVEL = RX_CLEAR_CYCLES;
 
   logic [AXIL_ADDR_W-1:0] awaddr_q;
   logic aw_hold;
@@ -174,6 +178,8 @@ module rx_capture_core #(
   logic [3:0] wstrb_q;
   logic do_write;
   logic stats_clear_req_q;
+  logic [RX_CLEAR_CNT_W-1:0] rx_fifo_clear_count_q;
+  logic rx_fifo_clear;
 
   logic cfg_enable;
   logic cfg_capture_enable;
@@ -182,6 +188,8 @@ module rx_capture_core #(
   logic [31:0] cfg_trunc_bytes;
   (* ASYNC_REG = "TRUE" *) logic cfg_enable_rx_meta;
   (* ASYNC_REG = "TRUE" *) logic cfg_enable_rx_sync;
+  (* ASYNC_REG = "TRUE" *) logic rx_clear_rx_meta;
+  (* ASYNC_REG = "TRUE" *) logic rx_clear_rx_sync;
 
   wire fifo_s_ready;
   wire fifo_tvalid;
@@ -190,6 +198,17 @@ module rx_capture_core #(
   wire [AXIS_KEEP_W_P-1:0] fifo_tkeep;
   wire fifo_tlast;
   wire fifo_tuser;
+  wire fifo_tstart;
+  wire [1:0] fifo_tuser_vec;
+  logic fifo_pipe_valid_q;
+  logic [AXIS_DATA_W_P-1:0] fifo_pipe_tdata_q;
+  logic [AXIS_KEEP_W_P-1:0] fifo_pipe_tkeep_q;
+  logic fifo_pipe_tlast_q;
+  logic fifo_pipe_tuser_q;
+  logic fifo_pipe_tstart_q;
+  wire rx_pipe_flush;
+  wire fifo_pipe_consume;
+  wire fifo_pipe_can_load;
 
   logic rx_overflow_seen;
   (* ASYNC_REG = "TRUE" *) logic rx_overflow_meta;
@@ -238,7 +257,12 @@ module rx_capture_core #(
   assign m_axi_arvalid = 1'b0;
   assign m_axi_rready  = 1'b1;
 
-  assign fifo_tready = cfg_enable && (writer_state_q == 2'd0);
+  assign rx_fifo_clear = (rx_fifo_clear_count_q != '0);
+  assign rx_pipe_flush = stats_clear_req_q || rx_fifo_clear || !cfg_enable;
+  assign fifo_pipe_consume = fifo_pipe_valid_q && !rx_pipe_flush &&
+                             (writer_state_q == 2'd0);
+  assign fifo_pipe_can_load = !fifo_pipe_valid_q || fifo_pipe_consume;
+  assign fifo_tready = !rx_pipe_flush && fifo_pipe_can_load;
 
   function automatic [31:0] apply_wstrb(
     input [31:0] old_value,
@@ -282,41 +306,50 @@ module rx_capture_core #(
     end
   endfunction
 
-  wire rx_fifo_push = cfg_enable_rx_sync && s_rx_axis_tvalid && fifo_s_ready;
+  wire rx_fifo_push = cfg_enable_rx_sync && !rx_clear_rx_sync &&
+                      s_rx_axis_tvalid && fifo_s_ready;
 
   axis_async_fifo #(
     .DATA_W(AXIS_DATA_W_P),
     .KEEP_W(AXIS_KEEP_W_P),
-    .USER_W(1),
+    .USER_W(2),
     .DEPTH_LOG2(5)
   ) rx_fifo_i (
     .s_clk(rx_clk),
     .s_resetn(rx_resetn),
     .m_clk(clk),
     .m_resetn(resetn),
+    .clear(rx_fifo_clear),
     .s_axis_tdata(s_rx_axis_tdata),
     .s_axis_tkeep(s_rx_axis_tkeep),
     .s_axis_tvalid(rx_fifo_push),
     .s_axis_tready(fifo_s_ready),
     .s_axis_tlast(s_rx_axis_tlast),
-    .s_axis_tuser(s_rx_axis_tuser),
+    .s_axis_tuser({s_rx_axis_tstart, s_rx_axis_tuser}),
     .m_axis_tdata(fifo_tdata),
     .m_axis_tkeep(fifo_tkeep),
     .m_axis_tvalid(fifo_tvalid),
     .m_axis_tready(fifo_tready),
     .m_axis_tlast(fifo_tlast),
-    .m_axis_tuser(fifo_tuser)
+    .m_axis_tuser(fifo_tuser_vec)
   );
+
+  assign fifo_tuser  = fifo_tuser_vec[0];
+  assign fifo_tstart = fifo_tuser_vec[1];
 
   always_ff @(posedge rx_clk or negedge rx_resetn) begin
     if (!rx_resetn) begin
       cfg_enable_rx_meta <= 1'b0;
       cfg_enable_rx_sync <= 1'b0;
+      rx_clear_rx_meta <= 1'b0;
+      rx_clear_rx_sync <= 1'b0;
       rx_overflow_seen <= 1'b0;
     end else begin
       cfg_enable_rx_meta <= cfg_enable;
       cfg_enable_rx_sync <= cfg_enable_rx_meta;
-      if (!cfg_enable_rx_sync) begin
+      rx_clear_rx_meta <= rx_fifo_clear;
+      rx_clear_rx_sync <= rx_clear_rx_meta;
+      if (!cfg_enable_rx_sync || rx_clear_rx_sync) begin
         rx_overflow_seen <= 1'b0;
       end else if (s_rx_axis_tvalid && !fifo_s_ready) begin
         rx_overflow_seen <= 1'b1;
@@ -325,12 +358,31 @@ module rx_capture_core #(
   end
 
   always_ff @(posedge clk) begin
-    if (!resetn) begin
+    if (!resetn || rx_fifo_clear) begin
       rx_overflow_meta <= 1'b0;
       rx_overflow_sync <= 1'b0;
     end else begin
       rx_overflow_meta <= rx_overflow_seen;
       rx_overflow_sync <= rx_overflow_meta;
+    end
+  end
+
+  always_ff @(posedge clk) begin
+    if (!resetn) begin
+      fifo_pipe_valid_q <= 1'b0;
+    end else if (rx_pipe_flush) begin
+      fifo_pipe_valid_q <= 1'b0;
+    end else begin
+      if (fifo_tvalid && fifo_tready) begin
+        fifo_pipe_tdata_q  <= fifo_tdata;
+        fifo_pipe_tkeep_q  <= fifo_tkeep;
+        fifo_pipe_tlast_q  <= fifo_tlast;
+        fifo_pipe_tuser_q  <= fifo_tuser;
+        fifo_pipe_tstart_q <= fifo_tstart;
+        fifo_pipe_valid_q  <= 1'b1;
+      end else if (fifo_pipe_consume) begin
+        fifo_pipe_valid_q <= 1'b0;
+      end
     end
   end
 
@@ -347,6 +399,7 @@ module rx_capture_core #(
       stats_clear_req_q  <= 1'b0;
       wdata_q            <= 32'd0;
       wstrb_q            <= 4'd0;
+      rx_fifo_clear_count_q <= '0;
       cfg_enable         <= 1'b0;
       cfg_capture_enable <= 1'b0;
       cfg_ring_base      <= 64'd0;
@@ -376,6 +429,12 @@ module rx_capture_core #(
       stat_rx_bytes_inc_valid_q <= 1'b0;
       stats_clear_req_q <= 1'b0;
       if (stats_clear_req_q) begin
+        rx_fifo_clear_count_q <= RX_CLEAR_LEVEL;
+      end else if (rx_fifo_clear_count_q != '0) begin
+        rx_fifo_clear_count_q <= rx_fifo_clear_count_q - {{(RX_CLEAR_CNT_W-1){1'b0}}, 1'b1};
+      end
+
+      if (stats_clear_req_q) begin
         write_ptr_q         <= 32'd0;
         capture_remaining_q <= 32'd0;
         in_packet_q         <= 1'b0;
@@ -387,6 +446,22 @@ module rx_capture_core #(
         stat_axi_errors_q   <= 64'd0;
         stat_rx_bytes_inc_q <= 7'd0;
         stat_rx_bytes_inc_valid_q <= 1'b0;
+        writer_state_q      <= 2'd0;
+        aw_done_q           <= 1'b0;
+        w_done_q            <= 1'b0;
+        m_axi_awaddr        <= '0;
+        m_axi_awvalid       <= 1'b0;
+        m_axi_wdata         <= '0;
+        m_axi_wstrb         <= '0;
+        m_axi_wvalid        <= 1'b0;
+        m_axi_bready        <= 1'b1;
+      end else if (rx_fifo_clear) begin
+        writer_state_q      <= 2'd0;
+        aw_done_q           <= 1'b0;
+        w_done_q            <= 1'b0;
+        m_axi_awvalid       <= 1'b0;
+        m_axi_wvalid        <= 1'b0;
+        m_axi_bready        <= 1'b1;
       end else if (stat_rx_bytes_inc_valid_q) begin
         stat_rx_bytes_q <= stat_rx_bytes_q + {57'd0, stat_rx_bytes_inc_q};
       end
@@ -453,41 +528,46 @@ module rx_capture_core #(
           REG_AXI_WR_HI:    s_axil_rdata <= stat_axi_writes_q[63:32];
           REG_AXI_ERR_LO:   s_axil_rdata <= stat_axi_errors_q[31:0];
           REG_AXI_ERR_HI:   s_axil_rdata <= stat_axi_errors_q[63:32];
-          REG_DEBUG:        s_axil_rdata <= {8'd0, capture_remaining_q[15:0], 5'd0, in_packet_q, writer_state_q};
+          REG_DEBUG:        s_axil_rdata <= {7'd0, rx_fifo_clear, capture_remaining_q[15:0], 5'd0, in_packet_q, writer_state_q};
           default:          s_axil_rdata <= 32'h0;
         endcase
       end else if (s_axil_rvalid && s_axil_rready) begin
         s_axil_rvalid <= 1'b0;
       end
 
-      if (!stats_clear_req_q) begin
+      if (!rx_pipe_flush) begin
         case (writer_state_q)
         2'd0: begin
-          if (fifo_tvalid && fifo_tready) begin
+          if (fifo_pipe_consume) begin
             automatic logic [31:0] rem_before;
             automatic logic [6:0] beat_bytes;
             automatic logic do_capture;
+            automatic logic packet_beat;
 
-            rem_before = in_packet_q ? capture_remaining_q : cfg_trunc_bytes;
-            beat_bytes = popcount_keep(fifo_tkeep);
-            do_capture = cfg_capture_enable && (cfg_ring_size != 32'd0) && (rem_before != 32'd0);
+            packet_beat = in_packet_q || fifo_pipe_tstart_q;
+            rem_before = fifo_pipe_tstart_q ? cfg_trunc_bytes : capture_remaining_q;
+            beat_bytes = popcount_keep(fifo_pipe_tkeep_q);
+            do_capture = packet_beat && cfg_capture_enable && (cfg_ring_size != 32'd0) && (rem_before != 32'd0);
 
             // The debug ring stores full 512-bit beats; TKEEP-derived counters
             // still tell software how many bytes in each beat were meaningful.
-            m_axi_wdata <= fifo_tdata;
+            m_axi_wdata <= fifo_pipe_tdata_q;
             m_axi_wstrb <= {AXIS_KEEP_W_P{1'b1}};
-            stat_rx_bytes_inc_q <= beat_bytes;
-            stat_rx_bytes_inc_valid_q <= 1'b1;
-            if (fifo_tlast) begin
-              stat_rx_pkts_q <= stat_rx_pkts_q + 64'd1;
-              if (fifo_tuser) begin
-                stat_rx_errs_q <= stat_rx_errs_q + 64'd1;
+
+            if (packet_beat) begin
+              stat_rx_bytes_inc_q <= beat_bytes;
+              stat_rx_bytes_inc_valid_q <= 1'b1;
+              if (fifo_pipe_tlast_q) begin
+                stat_rx_pkts_q <= stat_rx_pkts_q + 64'd1;
+                if (fifo_pipe_tuser_q) begin
+                  stat_rx_errs_q <= stat_rx_errs_q + 64'd1;
+                end
+                in_packet_q <= 1'b0;
+                capture_remaining_q <= 32'd0;
+              end else begin
+                in_packet_q <= 1'b1;
+                capture_remaining_q <= (rem_before > AXIS_KEEP_W_P) ? (rem_before - AXIS_KEEP_W_P) : 32'd0;
               end
-              in_packet_q <= 1'b0;
-              capture_remaining_q <= 32'd0;
-            end else begin
-              in_packet_q <= 1'b1;
-              capture_remaining_q <= (rem_before > AXIS_KEEP_W_P) ? (rem_before - AXIS_KEEP_W_P) : 32'd0;
             end
 
             if (do_capture) begin
