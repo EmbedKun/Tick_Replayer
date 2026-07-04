@@ -167,6 +167,18 @@ module rx_capture_core #(
   localparam logic [AXIL_ADDR_W-1:0] REG_AXI_ERR_LO    = 16'h0058;
   localparam logic [AXIL_ADDR_W-1:0] REG_AXI_ERR_HI    = 16'h005c;
   localparam logic [AXIL_ADDR_W-1:0] REG_DEBUG         = 16'h0060;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_COUNT_LO  = 16'h0064;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_COUNT_HI  = 16'h0068;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_SUM_LO    = 16'h006c;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_SUM_HI    = 16'h0070;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_MIN_LO    = 16'h0074;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_MIN_HI    = 16'h0078;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_MAX_LO    = 16'h007c;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_MAX_HI    = 16'h0080;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_LAST_LO   = 16'h0084;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_LAST_HI   = 16'h0088;
+  localparam logic [AXIL_ADDR_W-1:0] REG_RX_TICK_LO    = 16'h008c;
+  localparam logic [AXIL_ADDR_W-1:0] REG_RX_TICK_HI    = 16'h0090;
   localparam int RX_CLEAR_CYCLES = 128;
   localparam int RX_CLEAR_CNT_W = $clog2(RX_CLEAR_CYCLES + 1);
   localparam logic [RX_CLEAR_CNT_W-1:0] RX_CLEAR_LEVEL = RX_CLEAR_CYCLES;
@@ -225,6 +237,26 @@ module rx_capture_core #(
   logic [63:0] stat_axi_errors_q;
   logic [6:0]  stat_rx_bytes_inc_q;
   logic        stat_rx_bytes_inc_valid_q;
+  logic [63:0] rx_tick_rx_q;
+  logic [63:0] rx_prev_start_tick_rx_q;
+  logic        rx_have_prev_start_rx_q;
+  logic [63:0] stat_gap_count_rx_q;
+  logic [63:0] stat_gap_sum_rx_q;
+  logic [63:0] stat_gap_min_rx_q;
+  logic [63:0] stat_gap_max_rx_q;
+  logic [63:0] stat_gap_last_rx_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] rx_tick_meta_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] rx_tick_sync_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_count_meta_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_count_sync_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_sum_meta_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_sum_sync_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_min_meta_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_min_sync_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_max_meta_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_max_sync_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_last_meta_q;
+  (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_last_sync_q;
 
   logic [1:0] writer_state_q;
   logic aw_done_q;
@@ -308,6 +340,9 @@ module rx_capture_core #(
 
   wire rx_fifo_push = cfg_enable_rx_sync && !rx_clear_rx_sync &&
                       s_rx_axis_tvalid && fifo_s_ready;
+  wire rx_start_event = cfg_enable_rx_sync && !rx_clear_rx_sync &&
+                        s_rx_axis_tvalid && s_rx_axis_tstart;
+  wire [63:0] rx_gap_candidate = rx_tick_rx_q - rx_prev_start_tick_rx_q;
 
   axis_async_fifo #(
     .DATA_W(AXIS_DATA_W_P),
@@ -344,6 +379,14 @@ module rx_capture_core #(
       rx_clear_rx_meta <= 1'b0;
       rx_clear_rx_sync <= 1'b0;
       rx_overflow_seen <= 1'b0;
+      rx_tick_rx_q <= 64'd0;
+      rx_prev_start_tick_rx_q <= 64'd0;
+      rx_have_prev_start_rx_q <= 1'b0;
+      stat_gap_count_rx_q <= 64'd0;
+      stat_gap_sum_rx_q <= 64'd0;
+      stat_gap_min_rx_q <= 64'd0;
+      stat_gap_max_rx_q <= 64'd0;
+      stat_gap_last_rx_q <= 64'd0;
     end else begin
       cfg_enable_rx_meta <= cfg_enable;
       cfg_enable_rx_sync <= cfg_enable_rx_meta;
@@ -351,8 +394,34 @@ module rx_capture_core #(
       rx_clear_rx_sync <= rx_clear_rx_meta;
       if (!cfg_enable_rx_sync || rx_clear_rx_sync) begin
         rx_overflow_seen <= 1'b0;
+        rx_tick_rx_q <= 64'd0;
+        rx_prev_start_tick_rx_q <= 64'd0;
+        rx_have_prev_start_rx_q <= 1'b0;
+        stat_gap_count_rx_q <= 64'd0;
+        stat_gap_sum_rx_q <= 64'd0;
+        stat_gap_min_rx_q <= 64'd0;
+        stat_gap_max_rx_q <= 64'd0;
+        stat_gap_last_rx_q <= 64'd0;
       end else if (s_rx_axis_tvalid && !fifo_s_ready) begin
         rx_overflow_seen <= 1'b1;
+      end
+      if (cfg_enable_rx_sync && !rx_clear_rx_sync) begin
+        rx_tick_rx_q <= rx_tick_rx_q + 64'd1;
+        if (rx_start_event) begin
+          if (rx_have_prev_start_rx_q) begin
+            stat_gap_count_rx_q <= stat_gap_count_rx_q + 64'd1;
+            stat_gap_sum_rx_q   <= stat_gap_sum_rx_q + rx_gap_candidate;
+            stat_gap_last_rx_q  <= rx_gap_candidate;
+            if ((stat_gap_count_rx_q == 64'd0) || (rx_gap_candidate < stat_gap_min_rx_q)) begin
+              stat_gap_min_rx_q <= rx_gap_candidate;
+            end
+            if ((stat_gap_count_rx_q == 64'd0) || (rx_gap_candidate > stat_gap_max_rx_q)) begin
+              stat_gap_max_rx_q <= rx_gap_candidate;
+            end
+          end
+          rx_prev_start_tick_rx_q <= rx_tick_rx_q;
+          rx_have_prev_start_rx_q <= 1'b1;
+        end
       end
     end
   end
@@ -361,9 +430,33 @@ module rx_capture_core #(
     if (!resetn || rx_fifo_clear) begin
       rx_overflow_meta <= 1'b0;
       rx_overflow_sync <= 1'b0;
+      rx_tick_meta_q <= 64'd0;
+      rx_tick_sync_q <= 64'd0;
+      stat_gap_count_meta_q <= 64'd0;
+      stat_gap_count_sync_q <= 64'd0;
+      stat_gap_sum_meta_q <= 64'd0;
+      stat_gap_sum_sync_q <= 64'd0;
+      stat_gap_min_meta_q <= 64'd0;
+      stat_gap_min_sync_q <= 64'd0;
+      stat_gap_max_meta_q <= 64'd0;
+      stat_gap_max_sync_q <= 64'd0;
+      stat_gap_last_meta_q <= 64'd0;
+      stat_gap_last_sync_q <= 64'd0;
     end else begin
       rx_overflow_meta <= rx_overflow_seen;
       rx_overflow_sync <= rx_overflow_meta;
+      rx_tick_meta_q <= rx_tick_rx_q;
+      rx_tick_sync_q <= rx_tick_meta_q;
+      stat_gap_count_meta_q <= stat_gap_count_rx_q;
+      stat_gap_count_sync_q <= stat_gap_count_meta_q;
+      stat_gap_sum_meta_q <= stat_gap_sum_rx_q;
+      stat_gap_sum_sync_q <= stat_gap_sum_meta_q;
+      stat_gap_min_meta_q <= stat_gap_min_rx_q;
+      stat_gap_min_sync_q <= stat_gap_min_meta_q;
+      stat_gap_max_meta_q <= stat_gap_max_rx_q;
+      stat_gap_max_sync_q <= stat_gap_max_meta_q;
+      stat_gap_last_meta_q <= stat_gap_last_rx_q;
+      stat_gap_last_sync_q <= stat_gap_last_meta_q;
     end
   end
 
@@ -529,6 +622,18 @@ module rx_capture_core #(
           REG_AXI_ERR_LO:   s_axil_rdata <= stat_axi_errors_q[31:0];
           REG_AXI_ERR_HI:   s_axil_rdata <= stat_axi_errors_q[63:32];
           REG_DEBUG:        s_axil_rdata <= {7'd0, rx_fifo_clear, capture_remaining_q[15:0], 5'd0, in_packet_q, writer_state_q};
+          REG_GAP_COUNT_LO: s_axil_rdata <= stat_gap_count_sync_q[31:0];
+          REG_GAP_COUNT_HI: s_axil_rdata <= stat_gap_count_sync_q[63:32];
+          REG_GAP_SUM_LO:   s_axil_rdata <= stat_gap_sum_sync_q[31:0];
+          REG_GAP_SUM_HI:   s_axil_rdata <= stat_gap_sum_sync_q[63:32];
+          REG_GAP_MIN_LO:   s_axil_rdata <= stat_gap_min_sync_q[31:0];
+          REG_GAP_MIN_HI:   s_axil_rdata <= stat_gap_min_sync_q[63:32];
+          REG_GAP_MAX_LO:   s_axil_rdata <= stat_gap_max_sync_q[31:0];
+          REG_GAP_MAX_HI:   s_axil_rdata <= stat_gap_max_sync_q[63:32];
+          REG_GAP_LAST_LO:  s_axil_rdata <= stat_gap_last_sync_q[31:0];
+          REG_GAP_LAST_HI:  s_axil_rdata <= stat_gap_last_sync_q[63:32];
+          REG_RX_TICK_LO:   s_axil_rdata <= rx_tick_sync_q[31:0];
+          REG_RX_TICK_HI:   s_axil_rdata <= rx_tick_sync_q[63:32];
           default:          s_axil_rdata <= 32'h0;
         endcase
       end else if (s_axil_rvalid && s_axil_rready) begin

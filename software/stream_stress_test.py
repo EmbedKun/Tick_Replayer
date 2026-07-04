@@ -58,6 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tick-hz", type=int_auto, default=DEFAULT_TICK_HZ)
     parser.add_argument("--rate-q16-16", type=int_auto, default=0x0001_0000)
     parser.add_argument("--watermark", type=int_auto, default=4096)
+    parser.add_argument("--start-time", type=int_auto, default=0)
     parser.add_argument("--force-link-up", action="store_true")
     parser.add_argument("--force-tx-ready", action="store_true")
     parser.add_argument("--timeout", type=float, default=60.0)
@@ -150,6 +151,8 @@ def build_loader_cmd(args: argparse.Namespace, manifest_path: Path, loader: str)
         f"0x{args.batch_bytes:x}",
         "--watermark",
         str(args.watermark),
+        "--start-time",
+        str(args.start_time),
         "--rate-q16-16",
         f"0x{args.rate_q16_16:x}",
         "--tick-hz",

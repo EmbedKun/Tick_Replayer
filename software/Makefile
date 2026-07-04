@@ -6,10 +6,13 @@ LDLIBS ?=
 
 .PHONY: all clean
 
-all: xdma_stream_ring_fast
+all: xdma_stream_ring_fast xdma_h2c_bench
 
 xdma_stream_ring_fast: xdma_stream_ring_fast.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS)
 
+xdma_h2c_bench: xdma_h2c_bench.cpp
+	$(CXX) $(CXXFLAGS) -o $@ $< $(LDLIBS)
+
 clean:
-	rm -f xdma_stream_ring_fast
+	rm -f xdma_stream_ring_fast xdma_h2c_bench

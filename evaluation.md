@@ -1,5 +1,214 @@
 # Tick_Replayer 板上评测报告
 
+## 2026-07-04 增量评测：RX 调度精度、stream 装载上限与当前限制
+
+本节记录在 `rxgap_precision_stream_loader_20260704` 这一轮上板后的增量结论。硬件 bitstream 基于当前双端口工程生成，新增了 RX 侧 SOP-to-SOP gap 统计寄存器，用来从接收端真实观测 `preload` 回放间隔；stream 部分只改 host loader 软件，不改变 FPGA 数据通路和时序。
+
+### 0. 资源、时序和当前版本状态
+
+当前实现报告来自：
+
+```text
+/home/user/traffic_replay_rxgap_20260704_src/reports/hw_impl_timing_summary.rpt
+/home/user/traffic_replay_rxgap_20260704_src/reports/hw_impl_utilization.rpt
+```
+
+资源占用如下：
+
+| 资源 | 使用量 | 总量 | 占比 |
+| --- | ---: | ---: | ---: |
+| `CLB LUTs` | `135886` | `1182240` | `11.49%` |
+| `CLB Registers` | `139967` | `2364480` | `5.92%` |
+| `Block RAM Tile` | `531.5` | `2160` | `24.61%` |
+| `URAM` | `0` | `960` | `0.00%` |
+| `DSPs` | `3` | `6840` | `0.04%` |
+| `PLL` | `3` | `60` | `5.00%` |
+| `MMCM` | `2` | `30` | `6.67%` |
+
+时序已经收敛：
+
+```text
+WNS(ns)  TNS(ns)  TNS Failing Endpoints  WHS(ns)  THS(ns)
+  0.024    0.000                      0    0.001    0.000
+All user specified timing constraints are met.
+```
+
+本轮时序优化/保持方式：
+
+- `preload` 发送主路径继续保持 300 MHz：descriptor/payload 读取、调度、packet engine 和 AXI-Stream FIFO 之间用分级流水和 FIFO 解耦，减少跨模块组合回压。
+- DDR 读路径已经做过 register slice / prefetch / FIFO 化，避免 `AR` 发起、payload 扫描和 CMAC 发送直接形成长组合路径。
+- 新增 RX gap 统计放在 CMAC RX 时钟域，只做 SOP 间隔计数；AXI-Lite 侧读取的是同步后的统计值，避免把 RX 统计逻辑接进 300 MHz TX 临界路径。
+- stream loader 的优化均在 host 软件中完成，不会影响 bitstream 的 timing。
+
+当前 limitations：
+
+- `stream ring buffer` 的动态装载吞吐还没有接近 100 Gbps，瓶颈在 host loader + memory-mapped XDMA char-device + SSD/主机内存拷贝路径。
+- 当前 bitstream 只使用一组 DDR4/MIG 作为 replay/capture 缓存，尚未把 U200 的 4 组 DDR4 全部打开成 64 GB 可用空间。
+- RX 侧调度精度目前是 aggregate 统计：`count/min/max/last/sum/avg`，还不是每个包 timestamp 的完整 trace buffer。
+- 动态 100 Gbps 需要 QDMA 或 XDMA AXI4-Stream H2C、多队列/多通道、pinned hugepage 或内核态 loader，以及 FPGA 侧更深 stream prefetch；这不是当前 timing-clean bitstream 的小修小补。
+
+### 1. preload 模式真实调度精度测试
+
+测试方法：用 QSFP 光纤将 TX0 回环到 RX1，在 RX 侧新增 SOP-to-SOP gap 统计。TX 侧仍按 `preload` descriptor 中的 `gap_ticks` 调度，RX 侧在 CMAC RX 时钟域计数，因此它测到的是“包真正从线侧回到接收端后的间隔”，不是单纯读取 TX 寄存器。
+
+命令示例：
+
+```bash
+cd /home/user/traffic_replay_software
+python3 preload_rx_precision_check.py \
+  --tx-port 0 --rx-port 1 \
+  --frame-len 64 --packet-count 1000 --gap-ticks 3000 \
+  --tx-tick-hz 300000000 --rx-tick-hz 322265625 \
+  --max-error-rx-cycles 16
+
+python3 preload_rx_precision_check.py \
+  --tx-port 0 --rx-port 1 \
+  --frame-len 64 --packet-count 2000 --gap-ticks 300 \
+  --tx-tick-hz 300000000 --rx-tick-hz 322265625 \
+  --max-error-rx-cycles 16
+```
+
+结果摘要：
+
+```text
+### preload rx precision gap3000 64B
+expected_rx_gap   : 3222.656250
+packet_count      : 1000
+tx_packets        : 1000
+rx_packets        : 1000
+drop_packets      : 0
+late_packets      : 0
+underrun_packets  : 0
+rx_errors         : 0
+rx_gap_count      : 999
+rx_gap_min        : 3220
+rx_gap_max        : 3225
+rx_gap_avg        : 3222.655656
+rx_gap_min_error  : -2.656250 cycles (-8.242 ns)
+rx_gap_max_error  : 2.343750 cycles (7.273 ns)
+rx_gap_avg_error  : -0.000594 cycles (-0.002 ns)
+PASS: RX-side SOP gap statistics match requested PRELOAD spacing
+
+### preload rx precision gap300 64B
+expected_rx_gap   : 322.265625
+packet_count      : 2000
+tx_packets        : 2000
+rx_packets        : 2000
+drop_packets      : 0
+late_packets      : 0
+underrun_packets  : 0
+rx_errors         : 0
+rx_gap_count      : 1999
+rx_gap_min        : 318
+rx_gap_max        : 326
+rx_gap_avg        : 322.265133
+rx_gap_min_error  : -4.265625 cycles (-13.236 ns)
+rx_gap_max_error  : 3.734375 cycles (11.588 ns)
+rx_gap_avg_error  : -0.000492 cycles (-0.002 ns)
+PASS: RX-side SOP gap statistics match requested PRELOAD spacing
+```
+
+结论：
+
+- `gap=3000` 和 `gap=300` 两组都没有 TX drop、late、underrun，也没有 RX error。
+- RX 侧平均 gap 误差接近 `0 ns`；min/max 抖动在约 `±14 ns` 以内。
+- 这里的 min/max 包含 TX 300 MHz tick 到 CMAC RX 时钟域的跨域观测、CMAC/光纤回环路径以及统计采样误差；平均值更能反映调度器长期精度。
+
+### 2. stream 模式装载速率、平台上限和本轮实现
+
+本轮对 `xdma_stream_ring_fast` 保留了一类 correctness-safe 的 host 侧优化：
+
+- 固定长度 stream manifest fast path：当 `manifest.json` 中有 `frame_len` 且 `stream_bytes == packet_count * record_len` 时，loader 按固定 `record_len = 64B header + aligned payload` 切 batch，不再逐包扫描 header。
+
+raw 平台能力先分开测量：
+
+```text
+XDMA H2C raw, addr=0x80000000, total=8GiB, threads=2:
+throughput_gbps   : 83.675
+
+同一 stream 文件 cached read:
+cached_read_elapsed=0.20    # 1.6GB，约 64Gbps
+
+同一 stream 文件 direct read:
+direct_read_elapsed=0.54    # 1.6GB，约 23.7Gbps
+
+同一 DDR 地址 raw H2C, addr=0x40000000, total=1.6GB:
+threads=1 throughput_gbps   : 51.157
+threads=2 throughput_gbps   : 64.305
+
+两块 SSD 并发 direct read, 4GiB + 4GiB:
+concurrent_read_gbps=53.891
+```
+
+因此这个平台的理论/实测边界可以分三层看：
+
+| 路径 | 上限/实测 | 说明 |
+| --- | ---: | --- |
+| PCIe Gen3 x16 编码后理论 | 约 `126 Gbps` | 128b/130b 后的物理上界，不等于应用可达 |
+| 当前 XDMA memory-mapped H2C raw | 约 `84 Gbps` | host DRAM 中已有数据时的长时间实测上限 |
+| 两块 SSD 并发 direct read | 约 `54 Gbps` | 从 SSD 持续读原始数据时的存储侧实测上限 |
+| 当前 stream loader 端到端 | 最终实测 `12.956 Gbps` | 读 `stream.bin`、切 record、写 XDMA H2C、推进 ring pointer 的整体速度 |
+
+优化前后对比：
+
+```text
+优化前，有限 buffer 预填 1.6GB stream:
+load_gbps         : 12.817
+
+固定 record fast path:
+load_gbps         : 13.134
+
+最终保留版本，重新烧录并恢复 XDMA 后复测:
+load_gbps         : 12.956
+```
+
+真正动态 ring overrate 测试：
+
+```text
+frame_len         : 1518
+packet_count      : 1000000
+ring_size         : 536870912
+gap_ticks         : 38
+committed_bytes   : 1600000000
+tx_packets        : 1000000
+tx_bytes          : 1518000000
+late_packets      : 975434
+underrun_packets  : 2676
+load_gbps         : 1.397
+hw_gbps           : 0.905
+```
+
+解释：
+
+- 有限 buffer/no-wait 测的是“loader 能多快把 stream 记录写入 FPGA DDR ring”，当前最终实测约 `13.0 Gbps`。
+- 动态 overrate 测的是“FPGA 一边接近 100G 消费、一边 host 往小 ring 里补数据”的真实模式。因为 loader 远低于 100G，ring 很快被读空，随后进入 late/underrun，整体有效回放速率降到约 `1 Gbps` 量级。
+- 在不改 DMA 接口形态的前提下，继续优化 userspace loader 预计最多接近 raw XDMA 与 SSD 读速的较小值：host DRAM 缓存场景上界约 `80Gbps`，双 SSD 持续供数场景上界约 `50Gbps`。当前 `13Gbps` 说明仍有软件路径优化空间，但单靠 memory-mapped `/dev/xdma0_h2c_0` + 普通文件读写，很难保证 100Gbps 动态装载。
+- 想让 stream ring buffer 真正逼近 100Gbps，建议下一阶段改 QDMA/AXI4-Stream H2C 或至少多 XDMA H2C channel + pinned hugepage + io_uring/direct I/O + kernel bypass loader；FPGA 侧也需要把 stream reader 做成更深 prefetch 和多 outstanding。
+
+### 3. DDR 64GB 是否能全部开启
+
+U200 板卡物理上有 4 组 DDR4，总容量 64GB；当前工程为了先把 CMAC/XDMA/调度器/loopback 跑通，只打开了一组 DDR4/MIG，因此当前 replay/cache 的真实可用空间按单 bank 设计，约 16GB 地址空间内规划 descriptor、payload、stream ring 和 RX sample。
+
+能不能全部打开：可以，但不建议在当前 timing-clean release 上直接硬改。
+
+需要做的事情：
+
+- 在 BD/Tcl 中实例化 4 个 DDR4/MIG 控制器，并接入各自的板级引脚/参考时钟/复位约束。
+- 设计地址映射：按高地址 bit 选择 bank，或者做 stripe/interleave。`preload` 大 trace 更适合顺序 bank window；stream ring 更适合固定 bank 或按大块切换。
+- 修改 XDMA M_AXI 到 DDR 的 SmartConnect/interconnect，让 host 能访问 64GB 地址空间。
+- 修改 replay reader，让 descriptor/payload/ring 地址能跨 bank，或者先约束每个 trace segment 不跨 bank。
+- 重新跑仿真、综合、实现和上板 H2C/C2H 全地址回读；4 MIG 会显著增加布线和时钟资源压力，可能破坏当前 `WNS=+0.024ns` 的余量。
+
+结论：64GB 是下一阶段架构升级项，不应该和当前 RX 精度统计、stream loader 软件优化混在同一个 release 里做。当前 release 保持单 DDR bank，是为了不影响已验证的 preload/loop/stream 基础功能和 300MHz timing。
+
+### 4. 本轮未完成工作
+
+- stream ring buffer 仍未达到 100Gbps；当前实现已经更鲁棒，但动态装载吞吐受 host loader 和 XDMA memory-mapped 路径限制。
+- RX 调度精度目前只有 aggregate gap 统计，后续可以增加 RX timestamp ring，把每个包的 SOP tick、len、hash 写入 DDR，host 再读回做完整分布统计。
+- 64GB DDR 尚未打开；需要新分支单独做多 MIG 地址空间和 timing 收敛。
+- 并行 pwrite、aligned DMA buffer、no-zero buffer 等激进 host loader 优化做过探索，但完整 stream safe case 发现会破坏回放正确性或触发 XDMA 异常，因此没有保留。后续应转向经过正确性验证的 pinned reusable buffers、direct I/O、io_uring、QDMA streaming H2C 或内核态 loader。
+- 本轮极限/错误 stream 测试曾让 XDMA `C2H0-MM` 进入 BUSY timeout；最终通过重新烧录 bitstream、PCIe remove/rescan 和 chmod 设备节点恢复。后续需要把这类恢复步骤脚本化，或者在硬件/驱动侧增加更干净的 DMA channel reset。
+
 本文记录当前 `timing10_ddr_regslice_20260704` bitstream 在远程 U200 板卡上的完整板上评测结果。测试覆盖 `preload`、`loop`、`stream ring buffer` 三种回放模式，以及 `XDMA H2C/C2H`、AXI-Lite 控制平面热刷新、TX/RX 光纤回环、过载鲁棒性、调度 tick 精度和可回放 trace 容量边界。
 
 测试没有重新烧录 bitstream；所有模式切换、清空、重新装载和启动都通过 `/dev/xdma0_user` 暴露的 AXI-Lite 寄存器完成。
@@ -792,4 +1001,3 @@ python3 loopback_rx_verify.py --tx-port 1 --rx-port 0 \
   --packet-count 300 --frame-len 1518 --truncate-bytes 1536 \
   --gap-ticks 2000 --rx-ring-base 0x34000000
 ```
-

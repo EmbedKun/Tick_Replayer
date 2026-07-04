@@ -84,6 +84,18 @@ RX_REG_AXI_WR_HI = 0x0054
 RX_REG_AXI_ERR_LO = 0x0058
 RX_REG_AXI_ERR_HI = 0x005C
 RX_REG_DEBUG = 0x0060
+RX_REG_GAP_COUNT_LO = 0x0064
+RX_REG_GAP_COUNT_HI = 0x0068
+RX_REG_GAP_SUM_LO = 0x006C
+RX_REG_GAP_SUM_HI = 0x0070
+RX_REG_GAP_MIN_LO = 0x0074
+RX_REG_GAP_MIN_HI = 0x0078
+RX_REG_GAP_MAX_LO = 0x007C
+RX_REG_GAP_MAX_HI = 0x0080
+RX_REG_GAP_LAST_LO = 0x0084
+RX_REG_GAP_LAST_HI = 0x0088
+RX_REG_TICK_LO = 0x008C
+RX_REG_TICK_HI = 0x0090
 
 
 REG_NAMES = [
@@ -162,6 +174,18 @@ RX_REG_NAMES = [
     ("AXI_ERR_LO", RX_REG_AXI_ERR_LO),
     ("AXI_ERR_HI", RX_REG_AXI_ERR_HI),
     ("DEBUG", RX_REG_DEBUG),
+    ("GAP_COUNT_LO", RX_REG_GAP_COUNT_LO),
+    ("GAP_COUNT_HI", RX_REG_GAP_COUNT_HI),
+    ("GAP_SUM_LO", RX_REG_GAP_SUM_LO),
+    ("GAP_SUM_HI", RX_REG_GAP_SUM_HI),
+    ("GAP_MIN_LO", RX_REG_GAP_MIN_LO),
+    ("GAP_MIN_HI", RX_REG_GAP_MIN_HI),
+    ("GAP_MAX_LO", RX_REG_GAP_MAX_LO),
+    ("GAP_MAX_HI", RX_REG_GAP_MAX_HI),
+    ("GAP_LAST_LO", RX_REG_GAP_LAST_LO),
+    ("GAP_LAST_HI", RX_REG_GAP_LAST_HI),
+    ("RX_TICK_LO", RX_REG_TICK_LO),
+    ("RX_TICK_HI", RX_REG_TICK_HI),
 ]
 
 
@@ -252,6 +276,14 @@ def print_rx_status(fd: int, base: int) -> None:
     print(f"axi_writes        : {read64(fd, base + RX_REG_AXI_WR_LO, base + RX_REG_AXI_WR_HI)}")
     print(f"axi_errors        : {read64(fd, base + RX_REG_AXI_ERR_LO, base + RX_REG_AXI_ERR_HI)}")
     print(f"debug             : 0x{read32(fd, base + RX_REG_DEBUG):08x}")
+    gap_count = read64(fd, base + RX_REG_GAP_COUNT_LO, base + RX_REG_GAP_COUNT_HI)
+    gap_sum = read64(fd, base + RX_REG_GAP_SUM_LO, base + RX_REG_GAP_SUM_HI)
+    print(f"rx_gap_count      : {gap_count}")
+    print(f"rx_gap_min        : {read64(fd, base + RX_REG_GAP_MIN_LO, base + RX_REG_GAP_MIN_HI)}")
+    print(f"rx_gap_max        : {read64(fd, base + RX_REG_GAP_MAX_LO, base + RX_REG_GAP_MAX_HI)}")
+    print(f"rx_gap_last       : {read64(fd, base + RX_REG_GAP_LAST_LO, base + RX_REG_GAP_LAST_HI)}")
+    print(f"rx_gap_avg        : {(gap_sum / gap_count) if gap_count else 0:.6f}")
+    print(f"rx_tick           : {read64(fd, base + RX_REG_TICK_LO, base + RX_REG_TICK_HI)}")
 
 
 def parse_args() -> argparse.Namespace:

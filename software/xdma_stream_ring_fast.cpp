@@ -96,6 +96,8 @@ struct Args {
   uint32_t rate_q16_16 = 0x00010000U;
   uint32_t watermark = 4096;
   uint64_t tick_hz = DEFAULT_TICK_HZ;
+  uint64_t fixed_record_len = 0;
+  uint64_t fixed_frame_len = 0;
   double poll_interval = 0.0002;
   double timeout = 60.0;
   double feed_timeout = 0.0;
@@ -352,7 +354,17 @@ static uint64_t load_manifest(Args &args) {
     }
     args.stream = args.manifest.parent_path() / fs::path(stream_file).filename();
   }
-  return find_json_uint(text, "packet_count");
+  uint64_t packet_count = find_json_uint(text, "packet_count");
+  uint64_t frame_len = find_json_uint(text, "frame_len");
+  uint64_t stream_bytes = find_json_uint(text, "stream_bytes");
+  if (packet_count != 0 && frame_len != 0) {
+    uint64_t record_len = DATA_BEAT_BYTES + align_up(frame_len, DATA_BEAT_BYTES);
+    if (stream_bytes == 0 || stream_bytes == packet_count * record_len) {
+      args.fixed_frame_len = frame_len;
+      args.fixed_record_len = record_len;
+    }
+  }
+  return packet_count;
 }
 
 static void write_all_at(int fd, const void *buf, size_t len, uint64_t offset) {
@@ -549,14 +561,20 @@ static void producer_thread(const Args &args, ChunkQueue &queue,
 
       size_t pos = 0;
       uint64_t packets = 0;
-      while (data.size() - pos >= DATA_BEAT_BYTES) {
-        uint16_t frame_len = load_le16(data.data() + pos + 12);
-        uint64_t record_len = DATA_BEAT_BYTES + align_up(frame_len, DATA_BEAT_BYTES);
-        if (data.size() - pos < record_len) {
-          break;
+      if (args.fixed_record_len != 0) {
+        pos = data.size() / static_cast<size_t>(args.fixed_record_len) *
+              static_cast<size_t>(args.fixed_record_len);
+        packets = pos / args.fixed_record_len;
+      } else {
+        while (data.size() - pos >= DATA_BEAT_BYTES) {
+          uint16_t frame_len = load_le16(data.data() + pos + 12);
+          uint64_t record_len = DATA_BEAT_BYTES + align_up(frame_len, DATA_BEAT_BYTES);
+          if (data.size() - pos < record_len) {
+            break;
+          }
+          pos += static_cast<size_t>(record_len);
+          ++packets;
         }
-        pos += static_cast<size_t>(record_len);
-        ++packets;
       }
 
       if (pos != 0) {
@@ -738,6 +756,10 @@ int main(int argc, char **argv) {
 
       std::cout << std::boolalpha;
       std::cout << "stream_file       : " << args.stream << "\n";
+      if (args.fixed_record_len != 0) {
+        std::cout << "fixed_frame_len   : " << args.fixed_frame_len << "\n";
+        std::cout << "fixed_record_len  : " << args.fixed_record_len << "\n";
+      }
       std::cout << "ring_base         : 0x" << std::hex << args.ring_base << std::dec << "\n";
       std::cout << "ring_size         : " << args.ring_size << "\n";
       std::cout << "committed_bytes   : " << write_count << "\n";

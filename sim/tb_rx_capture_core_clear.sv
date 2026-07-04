@@ -24,6 +24,11 @@ module tb_rx_capture_core_clear;
   localparam logic [15:0] REG_AXI_WR_LO     = 16'h0050;
   localparam logic [15:0] REG_AXI_ERR_LO    = 16'h0058;
   localparam logic [15:0] REG_DEBUG         = 16'h0060;
+  localparam logic [15:0] REG_GAP_COUNT_LO  = 16'h0064;
+  localparam logic [15:0] REG_GAP_SUM_LO    = 16'h006c;
+  localparam logic [15:0] REG_GAP_MIN_LO    = 16'h0074;
+  localparam logic [15:0] REG_GAP_MAX_LO    = 16'h007c;
+  localparam logic [15:0] REG_GAP_LAST_LO   = 16'h0084;
 
   logic clk = 1'b0;
   logic rx_clk = 1'b0;
@@ -229,6 +234,11 @@ module tb_rx_capture_core_clear;
     logic [31:0] axi_writes;
     logic [31:0] axi_errors;
     logic [31:0] debug;
+    logic [31:0] gap_count;
+    logic [31:0] gap_sum;
+    logic [31:0] gap_min;
+    logic [31:0] gap_max;
+    logic [31:0] gap_last;
     begin
       repeat (260) @(posedge clk);
       axil_read(REG_STATUS, status);
@@ -240,6 +250,11 @@ module tb_rx_capture_core_clear;
       axil_read(REG_AXI_WR_LO, axi_writes);
       axil_read(REG_AXI_ERR_LO, axi_errors);
       axil_read(REG_DEBUG, debug);
+      axil_read(REG_GAP_COUNT_LO, gap_count);
+      axil_read(REG_GAP_SUM_LO, gap_sum);
+      axil_read(REG_GAP_MIN_LO, gap_min);
+      axil_read(REG_GAP_MAX_LO, gap_max);
+      axil_read(REG_GAP_LAST_LO, gap_last);
       if (((status >> 7) & 32'h3) != 0) begin
         $fatal(1, "RX writer state not idle after clear status=0x%08x debug=0x%08x", status, debug);
       end
@@ -247,9 +262,11 @@ module tb_rx_capture_core_clear;
         $fatal(1, "RX busy bits set after clear status=0x%08x debug=0x%08x", status, debug);
       end
       if (write_ptr != 0 || rx_pkts != 0 || rx_bytes != 0 || rx_errs != 0 ||
-          cap_bytes != 0 || axi_writes != 0 || axi_errors != 0) begin
-        $fatal(1, "RX clear did not reset regs wp=%0d pkts=%0d bytes=%0d errs=%0d cap=%0d wr=%0d axierr=%0d",
-               write_ptr, rx_pkts, rx_bytes, rx_errs, cap_bytes, axi_writes, axi_errors);
+          cap_bytes != 0 || axi_writes != 0 || axi_errors != 0 ||
+          gap_count != 0 || gap_sum != 0 || gap_min != 0 || gap_max != 0 || gap_last != 0) begin
+        $fatal(1, "RX clear did not reset regs wp=%0d pkts=%0d bytes=%0d errs=%0d cap=%0d wr=%0d axierr=%0d gap_count=%0d gap_sum=%0d gap_min=%0d gap_max=%0d gap_last=%0d",
+               write_ptr, rx_pkts, rx_bytes, rx_errs, cap_bytes, axi_writes, axi_errors,
+               gap_count, gap_sum, gap_min, gap_max, gap_last);
       end
     end
   endtask
@@ -394,16 +411,31 @@ module tb_rx_capture_core_clear;
       logic [31:0] rx_errs;
       logic [31:0] cap_bytes;
       logic [31:0] axi_writes;
+      logic [31:0] gap_count;
+      logic [31:0] gap_sum;
+      logic [31:0] gap_min;
+      logic [31:0] gap_max;
+      logic [31:0] gap_last;
       axil_read(REG_WRITE_PTR, write_ptr);
       axil_read(REG_RX_PKTS_LO, rx_pkts);
       axil_read(REG_RX_BYTES_LO, rx_bytes);
       axil_read(REG_RX_ERRS_LO, rx_errs);
       axil_read(REG_CAP_BYTES_LO, cap_bytes);
       axil_read(REG_AXI_WR_LO, axi_writes);
+      axil_read(REG_GAP_COUNT_LO, gap_count);
+      axil_read(REG_GAP_SUM_LO, gap_sum);
+      axil_read(REG_GAP_MIN_LO, gap_min);
+      axil_read(REG_GAP_MAX_LO, gap_max);
+      axil_read(REG_GAP_LAST_LO, gap_last);
       if (write_ptr != 32'd512 || rx_pkts != 32'd8 || rx_bytes != 32'd1024 ||
           rx_errs != 32'd0 || cap_bytes != 32'd512 || axi_writes != 32'd8) begin
         $fatal(1, "unexpected RX stats wp=%0d pkts=%0d bytes=%0d errs=%0d cap=%0d axiwr=%0d",
                write_ptr, rx_pkts, rx_bytes, rx_errs, cap_bytes, axi_writes);
+      end
+      if (gap_count != 32'd7 || gap_min == 32'd0 || gap_min != gap_max ||
+          gap_last != gap_min || gap_sum != (gap_min * gap_count)) begin
+        $fatal(1, "unexpected RX gap stats count=%0d sum=%0d min=%0d max=%0d last=%0d",
+               gap_count, gap_sum, gap_min, gap_max, gap_last);
       end
     end
 

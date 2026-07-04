@@ -39,3 +39,10 @@ Archived versions currently kept in this repository:
     (WNS=0.024 ns, TNS=0.000 ns).  H2C/C2H DDR readback passed, PRELOAD
     large/mixed traces passed, STREAM gap0 recovery passed, and both optical
     loopback directions passed RX sample verification.
+
+  20260704_rxgap_precision_stream_loader_timing_clean
+    Timing-clean image with RX-side SOP gap statistics for PRELOAD scheduling
+    precision measurement.  Routed timing is met (WNS=0.024 ns, TNS=0.000 ns).
+    TX0->RX1 preload precision was measured from the RX side; average gap error
+    was about -0.002 ns for both gap=3000 and gap=300 tests.  The archive also
+    records the accompanying stream-loader software optimization results.
