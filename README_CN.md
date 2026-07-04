@@ -1,781 +1,480 @@
 <div align="center">
 
-<h1>Tick Replayer</h1>
+# Tick Replayer
 
-<p><strong>面向 Xilinx Alveo U200 的 DDR 后备双端口 100G FPGA 流量回放原型。</strong></p>
+**基于 FPGA DDR 的 100G 流量回放原型，使用硬件 tick 调度包间隔。**
 
-<p>
-  <code>FPGA</code> /
-  <code>100G Ethernet</code> /
-  <code>Xilinx Alveo U200</code> /
-  <code>PCIe XDMA</code> /
-  <code>DDR4</code> /
-  <code>CMAC</code> /
-  <code>PCAP replay</code>
-</p>
+`FPGA` / `100G Ethernet` / `PCIe XDMA` / `DDR4` / `CMAC` / `PCAP Replay`
 
-<p><a href="README.md">English README</a></p>
+[English README](README.md)
 
 </div>
 
-## 概览
+## 项目概述
 
-`Tick Replayer` 从 Linux 主机通过 `PCIe XDMA` 将包描述符和包载荷写入
-FPGA `DDR4`，再由 FPGA 按描述符中的包间隔调度信息，通过 100G `CMAC`
-端口发出流量。
+`Tick Replayer` 是面向 Xilinx Alveo U200 的 FPGA 流量回放原型。Linux 主机先
+把 `pcap` 转换成包描述符和包载荷文件，再通过 `PCIe XDMA` 写入 FPGA `DDR4`，
+随后通过 `AXI-Lite` 寄存器控制 FPGA 从 100G `CMAC` 端口按包间隔发出流量。
 
-仓库名 `Tick_Replayer` 里的 `Tick` 指的是 FPGA 回放时钟 tick。pcap 中
-相邻包的时间戳差值会被转换成 `gap_ticks`，硬件调度器用回放相对计时器
-和这些 tick 值比较，决定每个包的释放时刻。所以这个项目不只是把包发出去，
-而是围绕“以硬件 tick 为单位的精确时间调度”来做流量回放。
+项目名里的 `Tick` 指硬件回放时钟 tick。`pcap` 中相邻包的时间戳差会被转换成
+`gap_ticks`，FPGA 调度器用一个相对回放计数器决定每个包的释放时刻。因此这个项目
+关注的不只是“把包发出去”，而是下面四个问题：
 
-当前设计是一个双端口原型。`QSFP0` 和 `QSFP1` 各自有独立的发送回放
-流水线，每个接收方向都有轻量级统计和最近包采样能力。两个 `QSFP`
-端口可以同时收发，用于让一块 FPGA 模拟双向 trace 中的两端流量。
+- 最大能回放多大的 `pcap` 或 trace。
+- 最大能达到多少回放吞吐。
+- 包间隔回放精度有多高。
+- 主机侧软件工具如何完成转换、装载、控制和验证。
 
-本仓库以源代码和可复现流程为中心，包含 `RTL`、Vivado Tcl 脚本、约束、
-仿真、主机端工具、文档、验证截图，以及若干带说明的 bitstream 归档。
-Vivado 生成工程、临时 trace、机器私有状态和大部分构建中间文件不纳入
-源码管理。
+当前设计是双端口原型。`QSFP0` 和 `QSFP1` 各自有独立的 TX replay 通路，也各自有
+轻量级 RX 统计和采样通路。因此一块 FPGA 可以同时在两个高速口收发，为后续模拟
+双向 trace 的两端打基础。
 
 ## 目录
 
-* [功能特性](#功能特性)
-* [系统架构](#系统架构)
-* [FPGA 数据通路](#fpga-数据通路)
-* [Trace 描述符格式](#trace-描述符格式)
-* [仓库结构](#仓库结构)
-* [环境要求](#环境要求)
-* [构建](#构建)
-* [Bitstream 归档](#bitstream-归档)
-* [烧录和 PCIe 重扫](#烧录和-pcie-重扫)
-* [主机端工具](#主机端工具)
-* [STREAM 模式和压力测试](#stream-模式和压力测试)
-* [硬件验证套件](#硬件验证套件)
-* [PRELOAD 模式状态](#preload-模式状态)
-* [验证情况](#验证情况)
-* [当前限制](#当前限制)
+- [当前状态](#当前状态)
+- [系统架构](#系统架构)
+- [最大回放容量](#最大回放容量)
+- [最大回放吞吐](#最大回放吞吐)
+- [回放精度](#回放精度)
+- [主机侧软件工具](#主机侧软件工具)
+- [回放模式](#回放模式)
+- [Trace 描述符格式](#trace-描述符格式)
+- [构建和烧录](#构建和烧录)
+- [验证命令](#验证命令)
+- [仓库结构](#仓库结构)
+- [当前限制](#当前限制)
+- [后续计划](#后续计划)
 
-## 功能特性
+## 当前状态
 
-* 目标板卡为 `Xilinx Alveo U200`。
-* 基于 Xilinx `XDMA` 的 `PCIe Gen3 x16` endpoint。
-* 一路 memory-mapped `XDMA H2C`/`C2H` 通道用于访问 FPGA `DDR4`。
-* 通过 `XDMA` user `BAR` 暴露 `AXI-Lite` 控制面。
-* `DDR4` 存储待回放 trace 的描述符和包载荷。
-* 双 100G `CMAC` 数据通路：
-  * `TX0` replay core 到 `QSFP0`。
-  * `TX1` replay core 到 `QSFP1`。
-  * `RX0` capture/stat core 来自 `QSFP0`。
-  * `RX1` capture/stat core 来自 `QSFP1`。
-* 描述符包含每包间隔、载荷偏移、帧长和 flags。
-* 回放模式：
-  * `PRELOAD`：主机先把描述符和载荷完整预加载到 `DDR4`。
-  * `LOOP`：基于 `DDR4` 的循环回放路径已经在 `RTL` 中连通。
-  * `STREAM`：主机持续补充一个有界 `DDR4` ring；
-    FPGA 读取完整 stream record 后送入时间戳调度器。本仓库包含 Python
-    feeder 和吞吐更高的 C++ feeder。
-* Python 主机端工具用于 `pcap` 转换、`XDMA` 加载、寄存器控制、状态读取
-  和 RX capture 配置。
-* C++ `STREAM` ring feeder 使用异步 producer/consumer、大批量 record 对齐
-  写入和更少内存拷贝。
-* 已用 `QSFP0` 与 `QSFP1` 的 100G 光纤互联验证双向 `TX`/`RX` 计数和
-  `DDR4` ring 读回。
+| 项目 | 状态 |
+| --- | --- |
+| 目标板卡 | Xilinx Alveo U200 |
+| PCIe | Xilinx `XDMA`，Gen3 x16，memory-mapped `H2C`/`C2H` |
+| Ethernet | 双 100G `CMAC`，连接 `QSFP0` 和 `QSFP1` |
+| 控制面 | `XDMA` user `BAR` 到 `AXI-Lite` 寄存器 |
+| Trace 存储 | 当前工程使用一个 U200 `DDR4` bank，地址窗口 `16GiB` |
+| 回放模式 | `PRELOAD`、`LOOP`、`STREAM` ring buffer |
+| RX 功能 | 包/字节/error 计数，最近包采样，SOP-to-SOP 间隔统计 |
+| 时序归档 | `bitstreams/20260704_rxgap_precision_stream_loader_timing_clean` 记录 `WNS=+0.024 ns` |
+| 全 64GB DDR | 计划中。当前公开 build 还没有启用 U200 四个 DDR bank |
 
 ## 系统架构
 
-### 架构图
+![Tick Replayer architecture](docs/images/replay_arch.png)
 
-![Tick Replayer block diagram](docs/images/replay_arch.png)
+图中 `APP` 是主机侧 trace 生成、`XDMA` 装载和回放控制工具；`XDMA Driver` 是
+Xilinx DMA Linux 驱动，暴露 `H2C`、`C2H` 和 user `BAR` 字符设备；`PCIe XDMA IP`
+是 Xilinx PCI Express DMA endpoint；`AXIL M` 是访问控制/状态寄存器的
+`AXI-Lite` master；`AXI M` 是访问 DDR 的 memory-mapped AXI master；`SmartConnect`
+是 Xilinx AXI 互联和仲裁结构；`DDR4` 保存 TX 描述符、TX 载荷、STREAM ring 和
+RX sample；`TX Replay Core` 包含描述符/载荷预取、时间戳调度和发包引擎；
+`RX Capture Core` 负责接收统计、最近包采样和 SOP-to-SOP 间隔测量；`CMAC` 是
+Xilinx 100G Ethernet MAC；`QSFP` 是 100G 光口。
 
-图中模块含义如下。`APP` 是主机端脚本，用于 `pcap` 处理、trace 生成、
-`XDMA` 加载和回放控制；`XDMA Driver` 是 Linux 上的 Xilinx DMA 驱动，
-暴露 `H2C`、`C2H` 和 user `BAR` 字符设备；`PCIe XDMA IP` 是 Xilinx PCI
-Express DMA endpoint；`AXIL M` 是 `XDMA` 发起 `AXI-Lite` 控制访问的
-master；`AXI M` 是用于 `H2C`/`C2H` DDR 访问的 memory-mapped AXI master；
-`H2C` 表示 host-to-card DMA；`C2H` 表示 card-to-host DMA；`BAR` 是 PCIe
-Base Address Register 映射出来的寄存器窗口；`SmartConnect` 是 Xilinx AXI
-互联和仲裁结构；`DDR4` 是 FPGA 外部存储，用于 `TX` 描述符、`TX` 载荷
-和 `RX` sample ring；`TX DESC` 是发送包描述符存储；`TX DATA` 是发送包
-载荷存储；`RX SAMPLE` 是截断后的接收采样 ring；`TX Replay Core` 包含
-描述符/载荷预取、回放调度器和发送包引擎；`Sched` 是由包间隔驱动的回放
-调度器；`RX Capture Core` 做接收统计和 sample 写入；`FIFO` 是
-`AXI-Stream` 跨时钟/缓冲；`CMAC` 是 Xilinx 100G Ethernet MAC；`QSFP`
-是 100G 光口。
-
-主机准备 trace 并通过 `PCIe` 控制 FPGA。FPGA 将 trace 存在 `DDR4` 中，
-再由每端口独立的 replay core 喂给 100G `CMAC` 发送接口。接收方向不把
-所有包上传主机，只维护统计，并可把最近一段截断包窗口写进 `DDR4`，供
-软件通过 `XDMA C2H` 检查。
-
-PRELOAD 数据流：
+`PRELOAD` 数据路径：
 
 ```text
-PCAP / generated trace
+pcap
   -> pcap2trace.py
   -> desc.bin + data.bin + manifest.json
   -> xdma_load_trace.py
   -> /dev/xdma0_h2c_0
-  -> XDMA M_AXI
-  -> DDR4 descriptor/data regions
+  -> FPGA DDR4
   -> ddr_trace_reader
-  -> replay scheduler
-  -> TX packet engine
-  -> 100G CMAC TX
+  -> replay_scheduler
+  -> replay_tx_engine
+  -> AXI-Stream FIFO
+  -> CMAC TX
+  -> QSFP
 ```
 
-STREAM ring 数据流：
+`STREAM` ring 数据路径：
 
 ```text
-large stream.bin
-  -> xdma_stream_ring_fast 或 xdma_stream_ring.py
-  -> host software batches complete stream records in host memory
+large pcap / stream file on host storage
+  -> host loader 批量组织完整 stream record
   -> /dev/xdma0_h2c_0
-  -> XDMA M_AXI
-  -> DDR4 STREAM ring
-  -> host advances STREAM_WR_PTR
-  -> FPGA consumes committed records and advances STREAM_RD_PTR
+  -> FPGA DDR4 ring
+  -> host 写入完成后推进 STREAM_WR_PTR
+  -> FPGA 消费 record 后推进 STREAM_RD_PTR
   -> host_stream_parser
-  -> replay scheduler
-  -> TX packet engine
-  -> 100G CMAC TX
+  -> replay_scheduler
+  -> CMAC TX
 ```
 
-控制和调试路径：
+RX 侧默认不把所有包上传主机，而是维护计数器；需要时可以保存最近的截断包窗口，
+并记录收到包之间的 SOP-to-SOP 间隔，用来验证回放精度。
+
+## 最大回放容量
+
+容量取决于回放模式。
+
+### PRELOAD 容量
+
+`PRELOAD` 要求整份 trace 在回放前完整放入 FPGA DDR。存入 DDR 的 trace 大小不等于
+原始 `pcap` 大小。每个包占用：
 
 ```text
-traffic_replay_cli.py
-  -> /dev/xdma0_user
-  -> XDMA AXI-Lite master
-  -> control SmartConnect
-  -> TX/RX control and status registers
-
-RX capture DDR ring
-  -> /dev/xdma0_c2h_0
-  -> host-side debug readback
+preload_trace_bytes_per_packet = 64 + align64(frame_len)
 ```
 
-## FPGA 数据通路
+其中 `64` 是固定描述符大小，`align64(frame_len)` 是按 64 字节对齐后的包载荷空间。
 
-Vivado block design 由 `scripts/create_hw_project.tcl` 生成。主要 IP 和 RTL
-模块如下：
+当前工程使用一个 U200 `DDR4` bank，按 `16GiB` trace 空间估算：
 
-| 模块 | 作用 |
+| Frame bytes | 每包 trace bytes | `16GiB` DDR 可容纳包数 | 约等于原始 `pcap` 大小 |
+| ---: | ---: | ---: | ---: |
+| `64` | `128` | `134,217,728` | `10.00GiB` |
+| `512` | `576` | `29,826,161` | `14.67GiB` |
+| `1518` | `1600` | `10,737,418` | `15.34GiB` |
+| `9000` | `9088` | `1,890,390` | `15.87GiB` |
+
+如果后续启用 U200 四个 DDR bank，设计空间约为四倍：
+
+| Frame bytes | `64GiB` DDR 可容纳包数 | 约等于原始 `pcap` 大小 |
+| ---: | ---: | ---: |
+| `64` | `536,870,912` | `40.00GiB` |
+| `512` | `119,304,647` | `58.67GiB` |
+| `1518` | `42,949,672` | `61.36GiB` |
+| `9000` | `7,561,562` | `63.49GiB` |
+
+### STREAM Ring 容量
+
+`STREAM` ring 模式把 FPGA DDR 当滑动窗口，整份 trace 不必全部放入 FPGA DDR。因此
+最大原始 `pcap` 大小主要受主机存储容量和主机侧转换/装载流水线限制。
+
+以之前目标主机的存储预算为例：
+
+| 存储条件 | 约可支持的最大原始 `pcap` |
+| --- | ---: |
+| 测试时剩余 SSD 空间 | `1.475TB` |
+| 两块 2TB SSD 的原始设计空间 | `4.001TB` |
+
+如果磁盘上还需要保存预转换后的 `stream.bin`，小包场景会因为每包 64 字节 stream
+header 带来更明显的膨胀。
+
+## 最大回放吞吐
+
+吞吐需要区分两个口径：
+
+- `wire throughput`：100G 物理链路上的占用，包含 FCS、preamble/SFD 和 IFG。
+- `pcap/frame throughput`：trace 文件中可见的帧字节吞吐，通常不含 FCS、preamble/SFD 和 IFG。
+
+100G 线速对应的原始 `pcap` 吞吐随包长变化：
+
+| Frame bytes | 100G 线速对应 `pcap` 吞吐 | 包速率 |
+| ---: | ---: | ---: |
+| `64` | `72.73Gbps` | `142.05Mpps` |
+| `512` | `95.52Gbps` | `23.32Mpps` |
+| `1518` | `98.44Gbps` | `8.11Mpps` |
+| `9000` | `99.73Gbps` | `1.39Mpps` |
+
+当前 U200 光纤回环实测：
+
+| 模式 | 测试项 | 结果 |
+| --- | --- | ---: |
+| `PRELOAD` | `64B`, `gap=3` | `70.4Gbps` wire，`51.2Gbps` frame/L2 |
+| `PRELOAD` | `256B`, `gap=8` | `84.0Gbps` wire，`76.8Gbps` frame/L2 |
+| `PRELOAD` | `512B`, `gap=14` | `91.9Gbps` wire，`87.8Gbps` frame/L2 |
+| `PRELOAD` | `1518B`, `gap=38` | `97.4Gbps` wire，`95.9Gbps` frame/L2 |
+| `PRELOAD` | mixed `64:3,1518:38` | `95.4Gbps` wire |
+| `LOOP` | `1000` 包 x `10` loops | 计数正确，无 drop/stall/late/underrun |
+| `STREAM` ring | `1518B`, `gap=300`, `1M` packets | 当前正确性优先测试约 `12.1Gbps` |
+| raw `XDMA H2C` | host memory 写 FPGA DDR benchmark | 不同配置下观察到约 `69Gbps` 到 `83Gbps` |
+
+`PRELOAD` 吞吐最高，因为回放过程中 host 不在发包数据路径里。`STREAM` ring 模式主要
+用于更大 trace，但长期吞吐受 host SSD、host 内存搬运、`XDMA H2C`、DDR ring 写入和
+FPGA DDR 读取共同限制。
+
+## 回放精度
+
+FPGA 回放调度器工作在 `300MHz` DDR/replay 时钟上，因此 tick 分辨率是：
+
+```text
+1 / 300MHz = 3.333ns
+```
+
+板上精度测试使用 RX 侧 `SOP-to-SOP` 测量。RX capture core 在 CMAC RX 时钟域里维护
+自由运行计数器，每次收到一个包的 SOP 时计算：
+
+```text
+rx_gap_cycles = current_sop_tick - previous_sop_tick
+```
+
+主机软件再把这个 RX 实测间隔和原始 descriptor 里的 `gap_ticks` 换算到 ns 后逐项比较。
+这个方法测的是端到端包间隔，包含 TX replay、CMAC TX、光纤回环和 CMAC RX，比只看
+TX 调度器内部计数更接近真实现象。
+
+当前 RX 侧精度套件结果：
+
+| 测试项 | 目的 | 结果 |
+| --- | --- | ---: |
+| `uniform_128B_gap3000` | 固定 gap 基准 | 最大绝对误差 `10.38ns` |
+| `mixed_gap_128B` | 混合 gap | 最大绝对误差 `12.61ns` |
+| `small_packet_small_gap` | 64B 小包，`3/4/5/6/8` tick gap | 最大绝对误差 `8.05ns` |
+| `mixed_size_legal` | 64B 到 1518B 大小包混合 | 最大绝对误差 `85.04ns` |
+| `long_uniform_128B_gap3000` | `200000` 包长时漂移测试 | sample 窗口最大绝对误差 `14.45ns` |
+
+RX gap sample ring 保存最近 `4096` 个包间隔。长 trace 的全部间隔都会参与
+`count/sum/min/max/last` 统计，但逐项 CSV 读回只覆盖最近的 sample 窗口。
+
+运行精度套件：
+
+```bash
+python3 software/replay_precision_suite.py \
+  --tx-port 0 --rx-port 1 \
+  --work-dir /tmp/precision_suite \
+  --desc-base 0x04000000 \
+  --data-base 0x14000000 \
+  --timeout 180 \
+  --report /tmp/precision_suite/report.md
+```
+
+## 主机侧软件工具
+
+| 工具 | 用途 |
 | --- | --- |
-| `XDMA` | `PCIe Gen3 x16` endpoint，提供 memory-mapped `H2C`/`C2H` DMA 和 `BAR` 映射的 `AXI-Lite` master。 |
-| `DDR4 MIG` | U200 `DDR4 C0` 控制器，存储 `TX` 描述符、`TX` 载荷和 `RX` capture ring。 |
-| `SmartConnect` | 仲裁主机 DMA、`TX` 读者和 `RX` ring writer 对 `DDR4` 的访问，也负责 `AXI-Lite` 控制访问路由。 |
-| `trace_replay_core` | 每端口 `TX` 回放核心，包含 `AXI-Lite` 寄存器、`DDR4` trace reader、调度器和 `TX` engine。 |
-| `ddr_trace_reader` | 从 `DDR4` 读取 64 字节描述符和载荷 beat。 |
-| `ddr_stream_reader` | 在 `STREAM` 模式下读取主机持续补充的 `DDR4` ring。 |
-| `host_stream_parser` | 解析一个 64 字节 stream header beat 和后续包载荷 beat。 |
-| `replay_scheduler` | 维护回放相对 tick 计数器，并根据描述符 gap 释放包。 |
-| `replay_tx_engine` | 把被调度的 payload beat 转成 512-bit `CMAC TX AXI-Stream` 帧。 |
-| `axis_sync_fifo` | 同步 `AXI-Stream` 预取 FIFO；大深度 FIFO 使用 Xilinx `XPM` block RAM。 |
-| `axis_async_fifo` | 在 `DDR4` UI 时钟和 `CMAC` user clock 之间跨时钟。 |
-| `rx_capture_bd_core` | 每端口 `RX` 统计和截断包 `DDR4` ring capture。 |
-| `CMAC0` / `CMAC1` | 连接 `QSFP0` 和 `QSFP1` 的 100G Ethernet MAC。 |
+| `software/pcap2trace.py` | 把 classic `pcap` 转换成 `desc.bin`、`data.bin` 和 `manifest.json` |
+| `software/gen_synthetic_trace.py` | 生成确定性 synthetic trace |
+| `software/gen_synthetic_pcap.py` | 生成 synthetic `pcap` 输入 |
+| `software/xdma_load_trace.py` | 把 `PRELOAD`/`LOOP` trace 装入 FPGA DDR，并配置 TX 寄存器 |
+| `software/traffic_replay_cli.py` | 通过 `/dev/xdma0_user` 读写控制/状态寄存器 |
+| `software/ddr_readback_check.py` | 验证 `XDMA H2C` 和 `C2H` 访问 FPGA DDR |
+| `software/preload_stress_test.py` | 生成并回放固定包长 preload 压力测试 |
+| `software/preload_mixed_test.py` | 生成并回放大小包混合 preload 测试 |
+| `software/loopback_rx_verify.py` | 通过光纤回环检查 TX 到 RX 的 payload sample |
+| `software/replay_precision_suite.py` | 运行 RX 侧回放精度测试 |
+| `software/xdma_stream_ring_fast.cpp` | C++ `STREAM` ring loader，使用批量 H2C 写 |
+| `software/stream_stress_test.py` | 生成并运行 `STREAM` ring 压力测试 |
 
-调试阶段可以设置 `TRAFFIC_REPLAY_PORT_COUNT=1` 生成单接口硬件工程。
-这是构建时裁剪，不是运行时简单关闭：生成的 block design 会省略
-`replay_core_1`、`rx_cap_1`、`tx_axis_fifo_1` 和 `CMAC1`，并同步缩小相关
-`SmartConnect` 的接口数量。默认值是 `2`，也就是完整双端口原型。
+构建 C++ loader：
 
-当前 `AXI-Lite` 地址映射：
-
-```text
-0x00000 - 0x0ffff  TX0 replay registers
-0x10000 - 0x1ffff  TX1 replay registers
-0x20000 - 0x2ffff  RX0 capture/stat registers
-0x30000 - 0x3ffff  RX1 capture/stat registers
-0x40000 - 0x4ffff  DDR4 controller control window
+```bash
+cd software
+make
 ```
 
-单接口 build 中只会存在 `TX0`、`RX0` 和 `DDR4` 控制窗口；主机命令应使用
-`--port 0`。
+转换 pcap：
 
-每个 TX 端口的 `STREAM` ring 控制寄存器：
-
-```text
-0x00a0 STREAM_WR_LO       Host producer pointer, low 32 bits
-0x00a4 STREAM_WR_HI       Host producer pointer, high 32 bits
-0x00a8 STREAM_RD_LO       FPGA consumer pointer, low 32 bits
-0x00ac STREAM_RD_HI       FPGA consumer pointer, high 32 bits
-0x00b0 STREAM_RING_LO     DDR ring size in bytes, low 32 bits
-0x00b4 STREAM_RING_HI     DDR ring size in bytes, high 32 bits
-0x00b8 STREAM_CTRL        bit 0 = EOF
-0x00bc STREAM_STATUS      reader state, ring mode, EOF, overrun, empty-wait flags
-0x00c0 STREAM_LEVEL_LO    committed bytes not yet consumed, low 32 bits
-0x00c4 STREAM_LEVEL_HI    committed bytes not yet consumed, high 32 bits
+```bash
+python3 software/pcap2trace.py input.pcap \
+  --out-dir /tmp/trace_out \
+  --tick-hz 300000000
 ```
 
-TX/RX 端口连接：
+装载并启动 preload 回放：
 
-```text
-TX0: replay_core_0 -> tx_axis_fifo_0 -> CMAC0 TX -> QSFP0
-TX1: replay_core_1 -> tx_axis_fifo_1 -> CMAC1 TX -> QSFP1
-
-RX0: QSFP0 -> CMAC0 RX -> rx_cap_0 -> DDR ring writer
-RX1: QSFP1 -> CMAC1 RX -> rx_cap_1 -> DDR ring writer
+```bash
+sudo python3 software/xdma_load_trace.py \
+  --port 0 \
+  --manifest /tmp/trace_out/manifest.json \
+  --desc-base 0x04000000 \
+  --data-base 0x14000000 \
+  --mode preload
 ```
+
+查看状态：
+
+```bash
+sudo python3 software/traffic_replay_cli.py --port 0 status
+sudo python3 software/traffic_replay_cli.py --port 0 regs
+sudo python3 software/traffic_replay_cli.py --port 1 rx-status
+```
+
+## 回放模式
+
+### PRELOAD
+
+host 在回放前把完整 `desc.bin` 和 `data.bin` 写入 FPGA DDR。回放过程中 FPGA 从 DDR
+读取所有描述符和载荷，host 不再参与发包数据路径。
+
+适合：
+
+- 最大吞吐测试。
+- 最稳定的时间调度。
+- 可重复 benchmark 和精度测试。
+
+限制：
+
+- 最大 trace 大小受 FPGA DDR 空间限制。
+
+### LOOP
+
+`LOOP` 模式重复使用同一份 DDR 中的 trace，适合长时间压力测试，避免反复从 host 装载。
+
+### STREAM Ring
+
+`STREAM` ring 模式在 FPGA DDR 中维护一个有界 ring。host 写入完整 stream record 后推进
+`STREAM_WR_PTR`，FPGA 消费 record 后推进 `STREAM_RD_PTR`。
+
+适合：
+
+- 大于 FPGA DDR preload 窗口的大 trace。
+- 后续 SSD -> host memory -> FPGA DDR 的动态装载回放。
+
+限制：
+
+- 持续吞吐受动态装载路径限制。
+- 当前正确性优先实现已经可用，但还没有达到 100G 持续回放。
 
 ## Trace 描述符格式
 
-`PRELOAD` 和 `LOOP` 模式使用两个二进制文件：
+`PRELOAD` 和 `LOOP` 使用两个二进制文件：
 
-* `desc.bin`：每包一个固定大小描述符。
-* `data.bin`：包载荷，按 64 字节 AXI data beat 补齐。
+- `desc.bin`：每个包一个 64 字节 descriptor。
+- `data.bin`：包载荷，按 64 字节 AXI beat 对齐。
 
-每个描述符固定 64 字节，小端格式，并自然对齐到一个 512-bit AXI beat。
-硬件从下面的地址读取第 `N` 个描述符：
+每个 descriptor 是小端格式，正好一个 512-bit AXI beat：
 
-```text
-descriptor_address = DESC_BASE + N * 64
-```
+| Byte offset | 字段 | 宽度 | 含义 |
+| ---: | --- | ---: | --- |
+| `0x00` | `gap_ticks` | 64 bits | 相对上一个包的间隔，单位是 replay clock tick |
+| `0x08` | `data_word_offset` | 32 bits | 从 `DATA_BASE` 开始的载荷偏移，单位是 64 字节 word |
+| `0x0c` | `frame_len` | 16 bits | Ethernet frame 长度，不含 preamble 和 FCS |
+| `0x0e` | `flags` | 16 bits | 预留给未来 per-packet 控制 |
+| `0x10` | reserved | 48 bytes | 保留，当前应写 0 |
 
-描述符布局：
+更完整的寄存器表和 preload 实现细节见 [docs/preload.md](docs/preload.md)。
 
-| 字节偏移 | RTL bits | 字段 | 宽度 | 说明 |
-| --- | --- | --- | --- | --- |
-| `0x00` | `[63:0]` | `gap_ticks` | 64 bits | 包间隔，单位为 replay clock tick。`START_TIME=0` 时，第一个包也会等待第一个 descriptor gap。 |
-| `0x08` | `[95:64]` | `data_word_offset` | 32 bits | 载荷相对 `DATA_BASE` 的偏移，单位为 64 字节 word。 |
-| `0x0c` | `[111:96]` | `frame_len` | 16 bits | 有效帧字节数。FCS 不存储，由 CMAC 在 TX 侧插入。 |
-| `0x0e` | `[127:112]` | `flags` | 16 bits | 预留字段，当前工具写 `0`。 |
-| `0x10` | `[511:128]` | `reserved` | 48 bytes | 预留，当前应写 0。 |
+## 构建和烧录
 
-等价 C 结构：
+仓库以源码为中心，Vivado 工程由 Tcl 生成。
 
-```c
-struct replay_desc {
-    uint64_t gap_ticks;
-    uint32_t data_word_offset;
-    uint16_t frame_len;
-    uint16_t flags;
-    uint8_t  reserved[48];
-};
-```
+环境要求：
 
-载荷地址计算：
+- Linux host。
+- Vivado 2020.2。
+- Xilinx Alveo U200。
+- Xilinx `XDMA` Linux driver。
+- Python 3。
+- `g++` 和 `make`。
 
-```text
-payload_address = DATA_BASE + data_word_offset * 64
-payload_beats   = ceil(frame_len / 64)
-```
-
-`data.bin` 中每个包从 64 字节边界开始。如果 `frame_len` 不是 64 的倍数，
-主机会补齐最后一个 beat，TX engine 根据 `frame_len` 生成 `TKEEP`，只发送
-有效字节。当前 `pcap2trace.py` 默认把短帧补到 60 字节，不存 Ethernet FCS。
-
-`STREAM` 模式使用主机持续补充的 `DDR4` ring。ring 中的数据流是连续的 packet record：
-
-```text
-64-byte stream header for packet 0
-64-byte-aligned payload for packet 0
-64-byte stream header for packet 1
-64-byte-aligned payload for packet 1
-...
-```
-
-stream header 的前 16 字节和 `replay_desc` 相同。`gap_ticks`、`frame_len`
-和 `flags` 被 FPGA stream parser 使用；`data_word_offset` 在 `STREAM` 模式
-下忽略，应写 `0`。载荷紧跟 header，并补齐到 64 字节边界。主机只在完整
-record 通过 `XDMA H2C` 写入完成后推进 `STREAM_WR_PTR`；FPGA 消费 64 字节
-beat 时推进 `STREAM_RD_PTR`。`STREAM` 模式下 `TRACE_BYTES` 被忽略，建议写
-`0`；`DESC_BASE` 是 ring 基地址，`STREAM_RING_SIZE` 是有效 ring 大小。
-
-## 仓库结构
-
-```text
-bitstreams/    选中的 bitstream 归档和每版本说明
-constraints/   U200 和 stub XDC 约束
-docs/images/   架构图和验证截图
-rtl/           回放、CDC、RX capture 的 SystemVerilog/Verilog
-scripts/       Vivado 工程创建、仿真、实现、烧录脚本
-sim/           XSim testbench
-software/      pcap 转换、XDMA loader、控制 CLI 等主机端工具
-```
-
-## 环境要求
-
-FPGA 构建主机：
-
-* Linux host，安装 `Vivado 2020.2`。
-* 具备 `CMAC`、`XDMA`、`DDR4` 和相关 IP 的 Xilinx license。
-* Bash 和标准 Linux 开发工具链。
-
-目标机器：
-
-* 插有 `Alveo U200` 的 Linux host。
-* Xilinx `XDMA` reference driver。
-* 用于 JTAG 烧录的远程 `hw_server`。
-* 两个 `QSFP` 100G 光口。当前 smoke test 使用 `QSFP0` 与 `QSFP1` 光纤互联。
-
-## 构建
-
-创建 Vivado 硬件工程：
+构建双端口 bitstream：
 
 ```bash
-source /tools/Xilinx/Vivado/2020.2/settings64.sh
-export TRAFFIC_REPLAY_HW_BUILD_ROOT=/home/user/tr_build_dual
-export TRAFFIC_REPLAY_ENABLE_ILA=0
-export TRAFFIC_REPLAY_PORT_COUNT=2
-bash scripts/run_vivado.sh hwbd
+TRAFFIC_REPLAY_PORT_COUNT=2 \
+TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw \
+vivado -mode batch -source scripts/build_hw_bitstream.tcl
 ```
 
-需要交互检查时打开 Vivado GUI：
+构建单端口调试 bitstream：
 
 ```bash
-vivado /home/user/tr_build_dual/vivado_hw/traffic_replay_hw.xpr
+TRAFFIC_REPLAY_PORT_COUNT=1 \
+TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw_oneport \
+vivado -mode batch -source scripts/build_hw_bitstream.tcl
 ```
 
-运行 implementation 并生成 bitstream：
+通过 Vivado hardware server 烧录：
 
 ```bash
-source /tools/Xilinx/Vivado/2020.2/settings64.sh
-export TRAFFIC_REPLAY_HW_BUILD_ROOT=/home/user/tr_build_dual
-export TRAFFIC_REPLAY_ENABLE_ILA=0
-export TRAFFIC_REPLAY_PORT_COUNT=2
-export TRAFFIC_REPLAY_VIVADO_JOBS=1
-bash scripts/run_vivado.sh hwbit_existing
+vivado -mode batch -source scripts/program_remote.tcl \
+  -tclargs build_hw/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.bit
 ```
 
-生成的 bitstream 位于：
-
-```text
-$TRAFFIC_REPLAY_HW_BUILD_ROOT/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.bit
-```
-
-为了加快 bring-up，可以生成单接口调试版本：
+重新烧录 PCIe endpoint 后，检查设备是否枚举：
 
 ```bash
-source /tools/Xilinx/Vivado/2020.2/settings64.sh
-export TRAFFIC_REPLAY_HW_BUILD_ROOT=/home/user/tr_hw_300_oneport_bd
-export TRAFFIC_REPLAY_ENABLE_ILA=0
-export TRAFFIC_REPLAY_PORT_COUNT=1
-bash scripts/run_vivado.sh hwbd
-bash scripts/run_vivado.sh hwbit_existing
-```
-
-该模式只生成 `TX0`/`RX0`，主机命令应使用 `--port 0`。已归档的单端口调试
-版本 `bitstreams/20260629_185452_oneport_300mhz_timing_clean_tested/` 在
-300 MHz post-route 时序收敛，并包含对应测试说明。
-
-## Bitstream 归档
-
-重要硬件镜像归档在 `bitstreams/` 下。每个版本应包含 `.bit` 文件、匹配的
-`.ltx` 文件以及一份 TXT 说明，记录 source commit、SHA256、build root 和
-验证状态。
-
-归档命令示例：
-
-```bash
-bash scripts/archive_bitstream.sh \
-  --bitfile /home/user/tr_build_dual/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.bit \
-  --ltx /home/user/tr_build_dual/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.ltx \
-  --name pre_stream_dual_qsfp_loop_verified \
-  --build-root /home/user/tr_build_dual \
-  --notes "H2C/C2H DDR readback passed; TX0->RX1 and TX1->RX0 loopback passed."
-```
-
-归档 TXT 是该硬件镜像的审计记录。烧录旧 bitstream 前，应比对 TXT 中的
-SHA256 和本地文件。
-
-## 烧录和 PCIe 重扫
-
-通过远程 hardware server 烧录 U200：
-
-```bash
-source /tools/Xilinx/Vivado/2020.2/settings64.sh
-bash scripts/run_vivado.sh program \
-  /home/user/tr_build_dual/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.bit
-```
-
-通过 JTAG 重新配置 PCIe endpoint 之后，Linux host 必须重扫 PCIe 或重启。
-典型流程：
-
-```bash
-sudo rmmod xdma 2>/dev/null || true
-echo 1 | sudo tee /sys/bus/pci/devices/0000:01:00.0/remove
-echo 1 | sudo tee /sys/bus/pci/rescan
-sudo insmod /home/user/dma_ip_drivers/XDMA/linux-kernel/xdma/xdma.ko
 lspci -nn -d 10ee:
 ls -l /dev/xdma*
 ```
 
-期望 PCIe 设备 ID：
+## 验证命令
 
-```text
-01:00.0 Memory controller [0580]: Xilinx Corporation Device [10ee:903f]
-```
-
-## 主机端工具
-
-生成确定性的 Ethernet/IPv4/UDP pcap 测试流量：
+控制面检查：
 
 ```bash
-python3 /home/user/traffic_replay_software/gen_synthetic_pcap.py \
-  --out /home/user/pcap_tests/udp_1518_1M.pcap \
-  --packet-count 1000000 \
-  --frame-len 1518 \
-  --gap-ticks 0 \
-  --vary-flow
+sudo python3 software/traffic_replay_cli.py --port 0 clear
+sudo python3 software/traffic_replay_cli.py --port 0 status
+sudo python3 software/traffic_replay_cli.py --port 1 status
 ```
 
-把 classic pcap 转成 replay trace：
+DDR H2C/C2H 读回校验：
 
 ```bash
-python3 /home/user/traffic_replay_software/pcap2trace.py \
-  /home/user/input.pcap \
-  --out-dir /home/user/trace_out \
-  --tick-hz 300000000
+sudo python3 software/ddr_readback_check.py \
+  --case 0x00000000:4096 \
+  --case 0x00100000:65536 \
+  --case 0x08000000:1048576 \
+  --repeat 2
 ```
 
-转换结果：
-
-```text
-desc.bin
-data.bin
-manifest.json
-```
-
-加载 trace 到 TX0 并启动 `PRELOAD` 回放：
+preload 吞吐测试：
 
 ```bash
-sudo python3 /home/user/traffic_replay_software/xdma_load_trace.py \
+sudo python3 software/preload_stress_test.py \
   --port 0 \
-  --manifest /home/user/trace_out/manifest.json \
-  --desc-base 0x00000000 \
-  --data-base 0x10000000 \
-  --mode preload
-```
-
-加载 trace 到 TX1，使用独立的 DDR 地址范围：
-
-```bash
-sudo python3 /home/user/traffic_replay_software/xdma_load_trace.py \
-  --port 1 \
-  --manifest /home/user/trace_out/manifest.json \
-  --desc-base 0x01000000 \
-  --data-base 0x11000000 \
-  --mode preload
-```
-
-将 descriptor/data trace 转成 `STREAM` buffer：
-
-```bash
-python3 /home/user/traffic_replay_software/trace_to_stream.py \
-  --manifest /home/user/trace_out/manifest.json \
-  --out /home/user/trace_out/stream.bin
-```
-
-通过 `DDR4` ring 补充 stream record 并启动 `STREAM` 回放：
-
-```bash
-sudo python3 /home/user/traffic_replay_software/xdma_stream_ring.py \
-  --port 0 \
-  --manifest /home/user/trace_out/stream_manifest.json \
-  --ring-base 0x20000000 \
-  --ring-size 0x08000000 \
-  --prefill-bytes 0x02000000 \
-  --timeout 60
-```
-
-构建并运行吞吐更高的 C++ feeder：
-
-```bash
-cd /home/user/traffic_replay_software
-make xdma_stream_ring_fast
-
-./xdma_stream_ring_fast \
-  --port 0 \
-  --manifest /home/user/trace_out/stream_manifest.json \
-  --ring-base 0x20000000 \
-  --ring-size 0x08000000 \
-  --prefill-bytes 0x04000000 \
-  --batch-bytes 0x02000000 \
-  --read-bytes 0x02000000 \
-  --queue-depth 4 \
-  --timeout 120 \
-  --feed-timeout 120
-```
-
-两个 ring feeder 都只提交完整 packet record。loader 轮询 `STREAM_RD_PTR`，
-用 `ring_size - (write_ptr - read_ptr)` 计算空闲空间，通过
-`/dev/xdma0_h2c_0` 写入 record，然后推进 `STREAM_WR_PTR`。这样不会破坏
-回放精度，因为发包时间仍完全由 FPGA scheduler 控制；主机只决定未来 record
-何时进入 DDR ring。
-
-查询状态：
-
-```bash
-sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 status
-sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 status
-sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-status
-sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 1 rx-status
-```
-
-配置 RX capture ring：
-
-```bash
-sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py \
-  --port 0 rx-config --ring-base 0x32000000 --ring-size 0x00100000 --truncate-bytes 128
-sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-clear
-sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-enable
-sudo python3 /home/user/traffic_replay_software/traffic_replay_cli.py --port 0 rx-capture on
-```
-
-`RX` capture 会向 `DDR4` 写完整 64 字节 beat。`rx_bytes` 是从 `TKEEP` 得到
-的有效字节数，`captured_bytes` 是 ring 中实际写入的 64 字节对齐字节数。
-
-## STREAM 模式和压力测试
-
-`STREAM` 模式是 `DDR4` ring-buffer 模式。主机使用 memory-mapped
-`XDMA H2C` 把完整 stream record 放入 ring；FPGA `ddr_stream_reader` 读取
-512-bit AXI beat，喂给 `host_stream_parser`，再由 replay scheduler 按
-record 中的 gap 调度发包。
-
-主机拥有 producer pointer，FPGA 拥有 consumer pointer。主机不能写超过
-`ring_size - (write_ptr - read_ptr)` 的空间；如果写指针推进过远，FPGA 会在
-`STREAM_STATUS` 中报告 overrun。
-
-更多设计细节见 `docs/stream_ring_mode.md`。
-
-运行 synthetic zero-gap 最大吞吐 sweep：
-
-```bash
-sudo python3 /home/user/traffic_replay_software/stream_stress_test.py \
-  --port 0 \
-  --frame-sizes 64,128,256,512,1024,1518 \
   --packet-count 100000 \
-  --gap-ticks 0 \
-  --ring-base 0x20000000 \
-  --ring-size 0x08000000 \
-  --prefill-bytes 0x04000000 \
-  --csv /home/user/stream_stress.csv
+  --case 64:3 \
+  --case 256:8 \
+  --case 512:14 \
+  --case 1518:38 \
+  --desc-base 0x04000000 \
+  --data-base 0x14000000 \
+  --require-no-drop
 ```
 
-常用调试开关：
-
-* `--force-link-up`：没有光链路时强制打开 replay gate，仅用于 bring-up。
-* `--force-tx-ready`：下游 `CMAC`/FIFO 未 ready 时也 drain replay core。
-  该选项会绕过真实 TX backpressure，不应用于最终吞吐数据。
-
-压力脚本报告：
-
-* `load_gbps`：主机向 FPGA DDR ring 加载 stream record 的速率。
-* `hw_gbps`：根据 `tx_bytes` 和硬件 replay tick counter 计算的 FPGA 回放速率。
-* `late_packets` 和 `underrun_packets`：调度迟到和 payload 饥饿指标。
-
-## 硬件验证套件
-
-`hw_validation_suite.py` 会运行常用的烧录后检查，并在目标 host 上保留带时间戳
-的日志目录。它适合比较重要 bitstream 版本，因为每次运行记录同样的证据：
-
-* `XDMA H2C` / `C2H` 确定性 `DDR4` readback。
-* synthetic `pcap` 生成、`pcap2trace.py` 转换和 `trace_to_stream.py` 转换。
-* `DDR4` ring `STREAM` 吞吐 sweep。
-* 超出 ring 大小的 `DDR4` ring `STREAM` 回放。
-* 可选的 `QSFP0` -> `QSFP1` RX loopback 统计和截断 sample ring capture。
-
-烧录后快速 smoke：
+光纤回环 payload 验证：
 
 ```bash
-cd /home/user/traffic_replay_software
-make xdma_stream_ring_fast
-
-sudo python3 /home/user/traffic_replay_software/hw_validation_suite.py \
-  --profile smoke \
-  --port 0 \
+sudo python3 software/loopback_rx_verify.py \
+  --tx-port 0 \
   --rx-port 1 \
-  --ring-loader cpp
+  --desc-base 0x1c000000 \
+  --data-base 0x4c000000 \
+  --rx-ring-base 0x70000000 \
+  --rx-ring-size 0x01000000 \
+  --truncate-bytes 128 \
+  --packet-count 64 \
+  --frame-len 128 \
+  --gap-ticks 3000
 ```
 
-更大的 stress：
+stream ring 压力测试：
 
 ```bash
-sudo python3 /home/user/traffic_replay_software/hw_validation_suite.py \
-  --profile stress \
+python3 software/stream_stress_test.py \
   --port 0 \
-  --rx-port 1
+  --frame-sizes 1518 \
+  --packet-count 1000000 \
+  --gap-ticks 300 \
+  --ring-base 0x50000000 \
+  --ring-size 0x20000000 \
+  --prefill-bytes 0x10000000 \
+  --batch-bytes 0x08000000 \
+  --read-bytes 0x08000000 \
+  --queue-depth 4 \
+  --loader cpp
 ```
 
-本节中的 STREAM 硬件结果使用归档 bitstream
-`bitstreams/20260628_140628_stream_fast_bram_fifo8192_experimental/`，并在远程
-U200 上烧录测试，`QSFP0` 与 `QSFP1` 通过 100G 光纤连接。
-
-该 build 的重要结果：
-
-* bitstream 生成成功，Vivado 报 `0 Errors`。
-* 最终时序未完全收敛：`WNS=-0.247 ns`，`TNS=-51.325 ns`。
-* 烧录后 `XDMA H2C/C2H` 确定性 `DDR4` readback 通过。
-* `STREAM` ring smoke：`1000` 个 1518 字节包，`gap_ticks=30000`，
-  `late=0`，`underrun=0`。
-* synthetic `pcap -> trace -> stream -> DDR ring replay`：`10000` 个包，
-  `underrun=0`。
-* `QSFP0` -> `QSFP1` 低速 RX loopback：RX1 看到 `2000` 个包。
-
-C++ DDR-ring `STREAM`，TX0，`100000` 个 1518 字节包：
-
-| Gap ticks | 目标回放 Gbps | 完成 | TX packets | Late packets | Underrun packets |
-| ---: | ---: | :---: | ---: | ---: | ---: |
-| `720` | `5.060` | yes | `100000` | `0` | `0` |
-| `600` | `6.072` | yes | `100000` | `0` | `0` |
-| `480` | `7.590` | yes | `100000` | `0` | `0` |
-| `360` | `10.120` | yes | `100000` | `24820` | `7940879` |
-| `300` | `12.144` | yes | `100000` | `56812` | `14888217` |
-| `240` | `14.893` | yes | `100000` | `76783` | `10944245` |
-
-这版动态 ring 在 1518 字节包下最快的 no-late/no-underrun 点约为
-`7.59Gbps`。C++ feeder 相比早期 Python feeder 有明显提升，但当前
-memory-mapped `XDMA H2C pwrite` 路径持续补 ring 的速率约在 `10Gbps` 附近，
-无法无限期支撑 `100Gbps` 动态回放。
-
-旧的有限 buffer `STREAM` 路径已经从当前代码中移除。现在
-`stream_stress_test.py` 会生成 stream record，并通过 DDR ring loader 做动态
-补给回放，因此新的 `STREAM` 吞吐结果应理解为动态 ring-buffer 结果，而不是
-一次性 DDR buffer drain 结果。
-
-单端口 preload timing-clean build：
-
-`bitstreams/20260629_185452_oneport_300mhz_timing_clean_tested/` 使用
-`TRAFFIC_REPLAY_PORT_COUNT=1` 构建，并已烧录到远程 U200。由于该调试镜像
-有意省略 `CMAC1`，测试时使用了 `force_link_up` 和 `force_tx_ready` 做内部
-replay 通路验证。
-
-| 测试 | 包数 | 帧字节数 | Gap ticks | 线速口径 Gbps | Late packets | Underrun packets |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| 大包 target-100G preload | `100000` | `1518` | `37` | `99.761` | `0` | `0` |
-| 大包 max-drain preload | `100000` | `1518` | `0` | `138.323` | `100000` | `0` |
-| 小包 max-drain preload | `100000` | `64` | `0` | `81.827` | `100000` | `0` |
-| 小包 target-100G preload | `100000` | `64` | `2` | `88.949` | `81354` | `0` |
-
-其中 `gap=0` 是内部最大 drain rate 压力测试。真正有代表性的精确/吞吐
-结果是大包 `gap=37`：在没有 `late` 和 `underrun` 的情况下达到接近 100G
-线速。
-
-## PRELOAD 模式状态
-
-当前双端口 `PRELOAD` 工作的详细说明见
-[`docs/preload.md`](docs/preload.md)。这是第一版把 replay scheduler、
-DDR reader、TX path、CMAC link 和 RX counter path 放在真实
-`QSFP0` <-> `QSFP1` 100G 光纤环回上一起测试的双端口版本。
-
-归档镜像位于：
+## 仓库结构
 
 ```text
-bitstreams/20260701_203500_dual_preload_gap38_mixed_timing_violation/
+rtl/           可综合 RTL
+constraints/   板卡和时序约束
+scripts/       Vivado 工程生成、构建、烧录 Tcl 脚本
+software/      Linux 主机侧工具和 loader
+sim/           仿真 testbench
+docs/          设计说明和评估报告
+docs/images/   架构图和结果图
+bitstreams/    带说明的重要 bitstream 归档
+reports/       部分验证报告
 ```
-
-这版 bitstream 已经生成成功，但仍是实验版本，因为 post-route timing 还有
-轻微负 slack：`WNS=-0.018ns`，`TNS=-0.228ns`，setup failing endpoints
-为 `21`。
-
-关键结果截图如下：
-
-![Preload validation terminal summary](docs/images/preload_20260701_terminal.png)
-
-| 测试 | 包数 | Gap ticks | TX packets | RX packets | Late | Underrun | 线速口径 Gbps | 说明 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `1518B` sweep 最佳通过点 | `20000` | `38` | `20000` | `20000` | `0` | `0` | `97.386` | RX error 仍有 `1255`。 |
-| `1518B` 过载边界 | `20000` | `37` | `2103` | `2083` | `0` | `0` | timeout | 下游 `tready` 背压导致 replay core 停住。 |
-| `64B` sweep 最佳通过点 | `200000` | `3` | `200000` | `200000` | `0` | `0` | `70.400` | RX error 为 `0`，但没到 100G。 |
-| `64B` 过载边界 | `200000` | `2` | `502` | invalid | `0` | `0` | timeout | `gap=2` 等价于约 `105.6Gbps` 线速口径，已经超过物理口。 |
-| 混合包长 | `120000` | 每包不同 | `120000` | `120000` | `0` | `0` | `96.158` | 调度误差只有 `+11` ticks，但 RX error 仍有 `128`。 |
-
-这轮最重要的结论是：大包 `PRELOAD` 已经接近 100G 物理极限，混合包调度
-精度也很好。当前瓶颈不是主机装载速度，因为 `PRELOAD` 模式下 timed replay
-窗口里 Host 已经退出数据通路。剩余关键问题是双端口时序仍未完全收敛，
-RX error/字节计数还要清零，以及过载后需要一个 BAR 可控的完整 TX datapath
-soft reset。
-
-## 验证情况
-
-运行 `RTL` 仿真：
-
-```bash
-source /tools/Xilinx/Vivado/2020.2/settings64.sh
-bash scripts/run_vivado.sh sim
-```
-
-当前 `XSim` testbench 覆盖：
-
-* 非法 `STREAM` ring 配置能够干净停止，且不会发出 TX 数据。
-* DDR-backed ring `STREAM` path：发出一个已提交包，等待主机写指针推进，再继续发出下一个包。
-* `DDR4` preload path：从 AXI read memory model 发出 3 个包。
-
-主机端工具语法检查：
-
-```bash
-python3 -m py_compile \
-  software/traffic_replay_cli.py \
-  software/xdma_load_trace.py \
-  software/xdma_stream_ring.py \
-  software/ddr_readback_check.py \
-  software/pcap2trace.py \
-  software/trace_to_stream.py \
-  software/gen_synthetic_pcap.py \
-  software/gen_synthetic_trace.py \
-  software/stream_stress_test.py \
-  software/hw_validation_suite.py
-```
-
-烧录后运行基础 `XDMA` `DDR4` readback：
-
-```bash
-sudo python3 ddr_readback_check.py
-```
-
-代表性输出截图：
-
-![XDMA probe and DDR readback](docs/images/xdma_probe_and_ddr.png)
-
-连接 `QSFP0` 和 `QSFP1` 后检查双端口 link 和 `RX` 状态：
-
-![Dual-port link status](docs/images/dual_link_status.png)
-
-双向 packet length sweep：
-
-![Packet length sweep](docs/images/packet_length_sweep.png)
-
-三包 DDR preload trace 双向测试：
-
-![Three-packet trace result](docs/images/three_packet_trace.png)
-
-目前硬件 smoke test 已经证明：
-
-* Host `H2C`/`C2H` DMA 可以读写 `DDR4`。
-* `XDMA` user `BAR` 上的 `AXI-Lite` 寄存器访问正常。
-* `TX0` 和 `TX1` 能从 `DDR4` 读取描述符和 payload。
-* 调度器和 `TX` engine 可以发包并更新计数。
-* DDR-backed ring `STREAM` 模式通过 RTL 仿真和 U200 硬件测试。
-* `QSFP0` 和 `QSFP1` 的 `CMAC` link 能在 100G 光纤互联下 up。
-* `TX0` -> `RX1` 和 `TX1` -> `RX0` 在通过的 loopback 测试中包计数可用。
-  大包和混合包的 RX byte/error 计数仍需要继续修正，详见
-  [`docs/preload.md`](docs/preload.md)。
-* `RX` capture 可以把最近包窗口写入 `DDR4` 并读回。
 
 ## 当前限制
 
-* 最新双端口 `PRELOAD` 镜像功能可用，但仍是实验版本：post-route physopt
-  timing 为 `WNS=-0.018 ns`，`TNS=-0.228 ns`。
-* 大包 `PRELOAD` 在 `1518B`、`gap=38` 时达到 `97.386Gbps` 线速口径，
-  没有 `late` 和 `underrun`，但 RX error counter 还没有清零。
-* 小包 `64B` `PRELOAD` 在 `gap=3` 时稳定，约 `70.400Gbps` 线速口径。
-  当前整数 tick、每 tick 最多释放一个包的 scheduler 还不能表达 100G
-  最小包所需的平均间隔，除非改成 fractional/multi-packet 调度架构。
-* 过载 `PRELOAD` 测试会填满下游 TX async FIFO/CMAC 侧，并以
-  `m_tx_axis_tready=0` 停住。当前 `stop`/`clear` 会复位 replay core，
-  但还没有覆盖整个每端口 TX datapath。
-* 动态 DDR ring `STREAM` 已用 C++ feeder 功能验证。当前 1518 字节包最快
-  no-late/no-underrun 点约 `7.59Gbps`。memory-mapped `XDMA H2C pwrite` 在
-  该系统中持续补 ring 约为 `10Gbps` 量级，无法长期喂满 `100Gbps` 回放。
-* 真正的 `100Gbps` 动态回放需要新的输入架构：直接 `XDMA`/`QDMA`
-  `AXI4-Stream H2C`、更大的 kernel/user DMA batch、更低拷贝主机 loader，
-  以及 FPGA 侧带多个 outstanding DDR read 的更强 prefetch。当前仓库已经有
-  C++ memory-mapped feeder 和更深 BRAM prefetch FIFO，但尚未把 PCIe 路径
-  替换成 QDMA。
-* `DDR4` trace reader 仍比较简单，descriptor cache、payload prefetch、
-  多 outstanding read 等仍是后续工作。
-* `RX` capture 是统计和最近包调试窗口，不是全速包记录器。
-* 当前 `pcap` converter 支持 classic `pcap`，暂不支持 `pcapng`。
-* 通过真实 DDoS 防御设备的端到端系统测试仍是后续集成工作。
+- 当前公开硬件 build 使用一个 U200 DDR bank，还没有启用全部四个 DDR bank，也就是还没有完整使用 `64GB`。
+- `STREAM` ring 模式可用，但当前正确性优先 loader 还不能持续 100G 回放。
+- RX interval sample 只保存最近 `4096` 个间隔。长 trace 有完整聚合统计，但没有完整逐包 timestamp 日志。
+- RX 侧端到端精度包含 scheduler、TX buffering、CMAC framing、光纤回环、RX CMAC 和 RX 采样量化；大小包混合场景的局部误差会比固定包长更大。
+- 双端口同时接近 100G 大包回放时，当前单 DDR bank 共享路径会成为瓶颈。
+
+## 后续计划
+
+- 启用 U200 四个 DDR bank，扩大 trace 空间。
+- 优化 `STREAM` 模式，提升动态装载和持续回放吞吐。
+- 增强 DDR 预取并行度，改善双端口高负载能力。
+- 增加靠近 `CMAC` 的可选 egress-side scheduler，降低大小包混合场景的端到端 SOP 抖动。
+- 将 RX event logging 从最近 gap sample 扩展为更大的 timestamp/event ring。
+- 持续归档重要 bitstream，并记录源码 commit、时序、资源和板上验证结果。
