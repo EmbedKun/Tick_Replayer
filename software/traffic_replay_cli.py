@@ -96,6 +96,11 @@ RX_REG_GAP_LAST_LO = 0x0084
 RX_REG_GAP_LAST_HI = 0x0088
 RX_REG_TICK_LO = 0x008C
 RX_REG_TICK_HI = 0x0090
+RX_REG_GAP_SAMPLE_INDEX = 0x0094
+RX_REG_GAP_SAMPLE_COUNT = 0x0098
+RX_REG_GAP_SAMPLE_LO = 0x009C
+RX_REG_GAP_SAMPLE_HI = 0x00A0
+RX_REG_GAP_SAMPLE_WRITE_INDEX = 0x00A4
 
 
 REG_NAMES = [
@@ -186,6 +191,11 @@ RX_REG_NAMES = [
     ("GAP_LAST_HI", RX_REG_GAP_LAST_HI),
     ("RX_TICK_LO", RX_REG_TICK_LO),
     ("RX_TICK_HI", RX_REG_TICK_HI),
+    ("GAP_SAMPLE_INDEX", RX_REG_GAP_SAMPLE_INDEX),
+    ("GAP_SAMPLE_COUNT", RX_REG_GAP_SAMPLE_COUNT),
+    ("GAP_SAMPLE_LO", RX_REG_GAP_SAMPLE_LO),
+    ("GAP_SAMPLE_HI", RX_REG_GAP_SAMPLE_HI),
+    ("GAP_SAMPLE_WRITE_INDEX", RX_REG_GAP_SAMPLE_WRITE_INDEX),
 ]
 
 
@@ -283,6 +293,8 @@ def print_rx_status(fd: int, base: int) -> None:
     print(f"rx_gap_max        : {read64(fd, base + RX_REG_GAP_MAX_LO, base + RX_REG_GAP_MAX_HI)}")
     print(f"rx_gap_last       : {read64(fd, base + RX_REG_GAP_LAST_LO, base + RX_REG_GAP_LAST_HI)}")
     print(f"rx_gap_avg        : {(gap_sum / gap_count) if gap_count else 0:.6f}")
+    print(f"rx_gap_samples    : {read32(fd, base + RX_REG_GAP_SAMPLE_COUNT)}")
+    print(f"rx_gap_sample_wr  : {read32(fd, base + RX_REG_GAP_SAMPLE_WRITE_INDEX)}")
     print(f"rx_tick           : {read64(fd, base + RX_REG_TICK_LO, base + RX_REG_TICK_HI)}")
 
 
@@ -305,6 +317,9 @@ def parse_args() -> argparse.Namespace:
     sub.add_parser("rx-clear")
     sub.add_parser("rx-enable")
     sub.add_parser("rx-disable")
+
+    rx_gap_sample = sub.add_parser("rx-gap-sample")
+    rx_gap_sample.add_argument("index", type=int_auto)
 
     rx_capture = sub.add_parser("rx-capture")
     rx_capture.add_argument("state", choices=["on", "off"])
@@ -382,6 +397,10 @@ def main() -> None:
       elif args.cmd == "rx-disable":
           value = read32(fd, rx_base + RX_REG_CONTROL)
           write32(fd, rx_base + RX_REG_CONTROL, value & ~0x1)
+      elif args.cmd == "rx-gap-sample":
+          write32(fd, rx_base + RX_REG_GAP_SAMPLE_INDEX, args.index)
+          value = read64(fd, rx_base + RX_REG_GAP_SAMPLE_LO, rx_base + RX_REG_GAP_SAMPLE_HI)
+          print(f"rx_gap_sample[{args.index}] : {value}")
       elif args.cmd == "rx-capture":
           value = read32(fd, rx_base + RX_REG_CONTROL)
           value = (value | 0x4) if args.state == "on" else (value & ~0x4)

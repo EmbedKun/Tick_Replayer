@@ -98,10 +98,14 @@ struct Args {
   uint64_t tick_hz = DEFAULT_TICK_HZ;
   uint64_t fixed_record_len = 0;
   uint64_t fixed_frame_len = 0;
+  uint64_t host_cache_bytes = 0;
+  uint64_t host_cache_effective_bytes = 0;
   double poll_interval = 0.0002;
   double timeout = 60.0;
   double feed_timeout = 0.0;
+  double host_cache_fraction = 0.85;
   size_t queue_depth = 4;
+  std::string host_cache_arg;
   bool force_link_up = false;
   bool force_tx_ready = false;
   bool no_wait = false;
@@ -165,6 +169,19 @@ static uint64_t int_auto(const std::string &text) {
   return value;
 }
 
+static uint64_t read_mem_available_bytes() {
+  std::ifstream file("/proc/meminfo");
+  std::string key;
+  uint64_t value_kb = 0;
+  std::string unit;
+  while (file >> key >> value_kb >> unit) {
+    if (key == "MemAvailable:") {
+      return value_kb * 1024ULL;
+    }
+  }
+  return 0;
+}
+
 static uint64_t align_up(uint64_t value, uint64_t alignment) {
   return ((value + alignment - 1) / alignment) * alignment;
 }
@@ -190,6 +207,9 @@ static void usage(const char *argv0) {
       << "  --batch-bytes BYTES        complete-record batch target, default 64MiB\n"
       << "  --read-bytes BYTES         file read chunk, default --batch-bytes\n"
       << "  --queue-depth N            producer queue depth, default 4\n"
+      << "  --host-cache-bytes BYTES|auto\n"
+      << "                              grow producer queue to use host DRAM as SSD cache\n"
+      << "  --host-cache-fraction F    auto cache fraction of MemAvailable, default 0.85\n"
       << "  --poll-interval SEC        default 0.0002\n"
       << "  --timeout SEC              wait timeout, default 60\n"
       << "  --feed-timeout SEC         default --timeout\n"
@@ -238,6 +258,10 @@ static Args parse_args(int argc, char **argv) {
       args.read_bytes = int_auto(need_value("--read-bytes"));
     } else if (key == "--queue-depth") {
       args.queue_depth = static_cast<size_t>(int_auto(need_value("--queue-depth")));
+    } else if (key == "--host-cache-bytes") {
+      args.host_cache_arg = need_value("--host-cache-bytes");
+    } else if (key == "--host-cache-fraction") {
+      args.host_cache_fraction = std::stod(need_value("--host-cache-fraction"));
     } else if (key == "--poll-interval") {
       args.poll_interval = std::stod(need_value("--poll-interval"));
     } else if (key == "--timeout") {
@@ -275,7 +299,38 @@ static Args parse_args(int argc, char **argv) {
   if (args.feed_timeout == 0.0) {
     args.feed_timeout = args.timeout;
   }
+  if (args.host_cache_fraction <= 0.0 || args.host_cache_fraction > 0.95) {
+    throw std::runtime_error("--host-cache-fraction must be in (0, 0.95]");
+  }
   return args;
+}
+
+static void resolve_host_cache(Args &args) {
+  if (args.host_cache_arg.empty()) {
+    return;
+  }
+
+  uint64_t requested = 0;
+  if (args.host_cache_arg == "auto" || args.host_cache_arg == "all") {
+    uint64_t available = read_mem_available_bytes();
+    if (available == 0) {
+      throw std::runtime_error("cannot read MemAvailable for --host-cache-bytes auto");
+    }
+    requested = static_cast<uint64_t>(static_cast<long double>(available) * args.host_cache_fraction);
+  } else {
+    requested = int_auto(args.host_cache_arg);
+  }
+
+  if (requested < args.read_bytes) {
+    requested = args.read_bytes;
+  }
+
+  uint64_t depth64 = (requested + args.read_bytes - 1) / args.read_bytes;
+  static constexpr uint64_t MAX_QUEUE_DEPTH = 65536;
+  depth64 = std::min<uint64_t>(depth64, MAX_QUEUE_DEPTH);
+  args.queue_depth = std::max<size_t>(args.queue_depth, static_cast<size_t>(depth64));
+  args.host_cache_bytes = requested;
+  args.host_cache_effective_bytes = static_cast<uint64_t>(args.queue_depth) * args.read_bytes;
 }
 
 static std::string read_text_file(const fs::path &path) {
@@ -632,6 +687,7 @@ int main(int argc, char **argv) {
     if (args.batch_bytes + args.guard_bytes > args.ring_size) {
       throw std::runtime_error("--batch-bytes plus --guard-bytes must fit in the ring");
     }
+    resolve_host_cache(args);
 
     uint64_t prefill = args.prefill_bytes;
     if (prefill == 0) {
@@ -762,6 +818,12 @@ int main(int argc, char **argv) {
       }
       std::cout << "ring_base         : 0x" << std::hex << args.ring_base << std::dec << "\n";
       std::cout << "ring_size         : " << args.ring_size << "\n";
+      std::cout << "read_bytes        : " << args.read_bytes << "\n";
+      std::cout << "queue_depth       : " << args.queue_depth << "\n";
+      if (args.host_cache_bytes != 0) {
+        std::cout << "host_cache_target : " << args.host_cache_bytes << "\n";
+        std::cout << "host_cache_window : " << args.host_cache_effective_bytes << "\n";
+      }
       std::cout << "committed_bytes   : " << write_count << "\n";
       std::cout << "committed_packets : " << packet_count << "\n";
       std::cout << "completed         : " << completed << "\n";

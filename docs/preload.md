@@ -396,31 +396,54 @@ full data-integrity pass.
 
 ## RX-Side Replay Precision Checking
 
-The current RX capture block counts packets, bytes, errors, and can store
-truncated recent packets in DDR.  That is enough to prove basic loopback
-activity, but it is not enough to measure replay timing precision.  A precision
-checker should add a compact RX sample descriptor for each packet:
+The RX capture core now exposes a compact SOP-to-SOP gap sample window in the
+RX clock domain.  It is intended for replay precision checks with a physical
+`QSFP0` to `QSFP1` loopback, or later with a DUT in the path.  Absolute packet
+arrival time includes fixed CMAC and optical latency, so the robust metric is
+delta-based:
 
-| Field | Purpose |
-| --- | --- |
-| `rx_tick` | Hardware timestamp captured at packet start or end. |
-| `frame_len` | Length observed by CMAC RX. |
-| `rx_flags` | Link/error/truncation flags. |
-| `payload_hash` | Hash or CRC of sampled bytes to match the transmitted packet. |
-| `seq_id` | Optional sequence value embedded by the synthetic trace generator. |
+```text
+error_ns[i] =
+  rx_gap_cycles[i] / rx_tick_hz * 1e9
+  - descriptor_gap_ticks[i] / tx_tick_hz * 1e9
+```
 
-For QSFP0-to-QSFP1 loopback, absolute latency includes CMAC and optical path
-delay, so the robust comparison is delta-based: compare
-`rx_tick[i] - rx_tick[i-1]` against descriptor `gap_ticks[i]`.  The first
-packet establishes the fixed latency baseline; subsequent packet deltas give
-jitter, late/early histograms, drops, and reordering.  For DUT testing, the same
-logic should compare per-flow sequence IDs and inter-arrival deltas after the
-DUT's filtering behavior is accounted for.
+The first packet establishes the fixed latency baseline.  Samples start with the
+second received packet and compare against the descriptor gap of that packet.
 
-The cleanest implementation is to share the replay 300 MHz tick counter with RX
-capture through a CDC synchronizer, or to timestamp in the CMAC RX clock domain
-and calibrate that clock against the replay tick.  The first option makes host
-analysis simpler because TX descriptors and RX samples use the same tick unit.
+RX precision registers are part of each RX port's BAR window:
+
+| Offset | Register | Access | Purpose |
+| ---: | --- | :---: | --- |
+| `0x0094` | `GAP_SAMPLE_INDEX` | RW | Selects the sample-ring entry read by `GAP_SAMPLE_LO/HI`. |
+| `0x0098` | `GAP_SAMPLE_COUNT` | RO | Number of valid samples, saturated at `4096`. |
+| `0x009c` | `GAP_SAMPLE_LO` | RO | Low 32 bits of selected RX SOP-to-SOP gap. |
+| `0x00a0` | `GAP_SAMPLE_HI` | RO | High 32 bits of selected RX SOP-to-SOP gap. |
+| `0x00a4` | `GAP_SAMPLE_WRITE_INDEX` | RO | Next write index; lets software reconstruct the chronological window after wrap. |
+
+`software/rx_trace_interval_check.py` loads a descriptor/data trace in
+`PRELOAD` mode, enables RX statistics, reads the most recent RX gap samples, and
+compares them against the original descriptor gaps.  The hardware sample depth
+is intentionally small (`4096` gaps) so this remains a low-risk debug feature.
+For very long runs, the script checks the most recent sample window.
+
+Example:
+
+```bash
+sudo python3 /home/user/traffic_replay_software/rx_trace_interval_check.py \
+  --manifest /home/user/trace_out/manifest.json \
+  --tx-port 0 \
+  --rx-port 1 \
+  --desc-base 0x04000000 \
+  --data-base 0x14000000 \
+  --max-samples 4096 \
+  --max-error-ns 80 \
+  --csv /home/user/rx_trace_interval.csv
+```
+
+The related `tb_rx_capture_core_clear.sv` testbench verifies that the sample
+window records fresh SOP gaps, exposes the write pointer, and resets cleanly
+after `rx-clear`.
 
 ## Next Work
 

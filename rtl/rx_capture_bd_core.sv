@@ -179,9 +179,18 @@ module rx_capture_core #(
   localparam logic [AXIL_ADDR_W-1:0] REG_GAP_LAST_HI   = 16'h0088;
   localparam logic [AXIL_ADDR_W-1:0] REG_RX_TICK_LO    = 16'h008c;
   localparam logic [AXIL_ADDR_W-1:0] REG_RX_TICK_HI    = 16'h0090;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_SAMPLE_INDEX = 16'h0094;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_SAMPLE_COUNT = 16'h0098;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_SAMPLE_LO    = 16'h009c;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_SAMPLE_HI    = 16'h00a0;
+  localparam logic [AXIL_ADDR_W-1:0] REG_GAP_SAMPLE_WRITE_INDEX = 16'h00a4;
   localparam int RX_CLEAR_CYCLES = 128;
   localparam int RX_CLEAR_CNT_W = $clog2(RX_CLEAR_CYCLES + 1);
   localparam logic [RX_CLEAR_CNT_W-1:0] RX_CLEAR_LEVEL = RX_CLEAR_CYCLES;
+  localparam int GAP_SAMPLE_DEPTH_LOG2 = 12;
+  localparam int GAP_SAMPLE_DEPTH = 1 << GAP_SAMPLE_DEPTH_LOG2;
+  localparam logic [31:0] GAP_SAMPLE_DEPTH_U32 = GAP_SAMPLE_DEPTH;
+  localparam int RX_FIFO_USER_W = 67;
 
   logic [AXIL_ADDR_W-1:0] awaddr_q;
   logic aw_hold;
@@ -211,13 +220,17 @@ module rx_capture_core #(
   wire fifo_tlast;
   wire fifo_tuser;
   wire fifo_tstart;
-  wire [1:0] fifo_tuser_vec;
+  wire fifo_tgap_valid;
+  wire [63:0] fifo_tgap;
+  wire [RX_FIFO_USER_W-1:0] fifo_tuser_vec;
   logic fifo_pipe_valid_q;
   logic [AXIS_DATA_W_P-1:0] fifo_pipe_tdata_q;
   logic [AXIS_KEEP_W_P-1:0] fifo_pipe_tkeep_q;
   logic fifo_pipe_tlast_q;
   logic fifo_pipe_tuser_q;
   logic fifo_pipe_tstart_q;
+  logic fifo_pipe_tgap_valid_q;
+  logic [63:0] fifo_pipe_tgap_q;
   wire rx_pipe_flush;
   wire fifo_pipe_consume;
   wire fifo_pipe_can_load;
@@ -245,6 +258,10 @@ module rx_capture_core #(
   logic [63:0] stat_gap_min_rx_q;
   logic [63:0] stat_gap_max_rx_q;
   logic [63:0] stat_gap_last_rx_q;
+  logic [GAP_SAMPLE_DEPTH_LOG2-1:0] gap_sample_wr_ptr_q;
+  logic [GAP_SAMPLE_DEPTH_LOG2-1:0] gap_sample_rd_index_q;
+  logic [31:0] gap_sample_count_q;
+  logic [63:0] gap_sample_mem [0:GAP_SAMPLE_DEPTH-1];
   (* ASYNC_REG = "TRUE" *) logic [63:0] rx_tick_meta_q;
   (* ASYNC_REG = "TRUE" *) logic [63:0] rx_tick_sync_q;
   (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_count_meta_q;
@@ -311,6 +328,18 @@ module rx_capture_core #(
     end
   endfunction
 
+  function automatic logic [GAP_SAMPLE_DEPTH_LOG2-1:0] apply_index_wstrb(
+    input logic [GAP_SAMPLE_DEPTH_LOG2-1:0] old_value,
+    input logic [31:0] new_value,
+    input logic [3:0] strobe
+  );
+    automatic logic [31:0] merged;
+    begin
+      merged = apply_wstrb({{(32-GAP_SAMPLE_DEPTH_LOG2){1'b0}}, old_value}, new_value, strobe);
+      apply_index_wstrb = merged[GAP_SAMPLE_DEPTH_LOG2-1:0];
+    end
+  endfunction
+
   function automatic [6:0] popcount_keep(input logic [AXIS_KEEP_W_P-1:0] keep);
     automatic logic [6:0] count;
     begin
@@ -343,11 +372,13 @@ module rx_capture_core #(
   wire rx_start_event = cfg_enable_rx_sync && !rx_clear_rx_sync &&
                         s_rx_axis_tvalid && s_rx_axis_tstart;
   wire [63:0] rx_gap_candidate = rx_tick_rx_q - rx_prev_start_tick_rx_q;
+  wire rx_gap_valid_for_fifo = s_rx_axis_tstart && rx_have_prev_start_rx_q;
+  wire [63:0] rx_gap_for_fifo = rx_have_prev_start_rx_q ? rx_gap_candidate : 64'd0;
 
   axis_async_fifo #(
     .DATA_W(AXIS_DATA_W_P),
     .KEEP_W(AXIS_KEEP_W_P),
-    .USER_W(2),
+    .USER_W(RX_FIFO_USER_W),
     .DEPTH_LOG2(5)
   ) rx_fifo_i (
     .s_clk(rx_clk),
@@ -360,7 +391,7 @@ module rx_capture_core #(
     .s_axis_tvalid(rx_fifo_push),
     .s_axis_tready(fifo_s_ready),
     .s_axis_tlast(s_rx_axis_tlast),
-    .s_axis_tuser({s_rx_axis_tstart, s_rx_axis_tuser}),
+    .s_axis_tuser({rx_gap_valid_for_fifo, rx_gap_for_fifo, s_rx_axis_tstart, s_rx_axis_tuser}),
     .m_axis_tdata(fifo_tdata),
     .m_axis_tkeep(fifo_tkeep),
     .m_axis_tvalid(fifo_tvalid),
@@ -371,6 +402,8 @@ module rx_capture_core #(
 
   assign fifo_tuser  = fifo_tuser_vec[0];
   assign fifo_tstart = fifo_tuser_vec[1];
+  assign fifo_tgap   = fifo_tuser_vec[65:2];
+  assign fifo_tgap_valid = fifo_tuser_vec[66];
 
   always_ff @(posedge rx_clk or negedge rx_resetn) begin
     if (!rx_resetn) begin
@@ -472,6 +505,8 @@ module rx_capture_core #(
         fifo_pipe_tlast_q  <= fifo_tlast;
         fifo_pipe_tuser_q  <= fifo_tuser;
         fifo_pipe_tstart_q <= fifo_tstart;
+        fifo_pipe_tgap_q   <= fifo_tgap;
+        fifo_pipe_tgap_valid_q <= fifo_tgap_valid;
         fifo_pipe_valid_q  <= 1'b1;
       end else if (fifo_pipe_consume) begin
         fifo_pipe_valid_q <= 1'b0;
@@ -509,6 +544,9 @@ module rx_capture_core #(
       stat_axi_errors_q  <= 64'd0;
       stat_rx_bytes_inc_q <= 7'd0;
       stat_rx_bytes_inc_valid_q <= 1'b0;
+      gap_sample_wr_ptr_q <= '0;
+      gap_sample_rd_index_q <= '0;
+      gap_sample_count_q <= 32'd0;
       writer_state_q     <= 2'd0;
       aw_done_q          <= 1'b0;
       w_done_q           <= 1'b0;
@@ -539,6 +577,8 @@ module rx_capture_core #(
         stat_axi_errors_q   <= 64'd0;
         stat_rx_bytes_inc_q <= 7'd0;
         stat_rx_bytes_inc_valid_q <= 1'b0;
+        gap_sample_wr_ptr_q <= '0;
+        gap_sample_count_q  <= 32'd0;
         writer_state_q      <= 2'd0;
         aw_done_q           <= 1'b0;
         w_done_q            <= 1'b0;
@@ -589,6 +629,7 @@ module rx_capture_core #(
           REG_RING_SIZE:    cfg_ring_size        <= apply_wstrb(cfg_ring_size, wdata_q, wstrb_q);
           REG_TRUNC_BYTES:  cfg_trunc_bytes      <= apply_wstrb(cfg_trunc_bytes, wdata_q, wstrb_q);
           REG_WRITE_PTR:    write_ptr_q          <= apply_wstrb(write_ptr_q, wdata_q, wstrb_q);
+          REG_GAP_SAMPLE_INDEX: gap_sample_rd_index_q <= apply_index_wstrb(gap_sample_rd_index_q, wdata_q, wstrb_q);
           default: begin
           end
         endcase
@@ -634,6 +675,11 @@ module rx_capture_core #(
           REG_GAP_LAST_HI:  s_axil_rdata <= stat_gap_last_sync_q[63:32];
           REG_RX_TICK_LO:   s_axil_rdata <= rx_tick_sync_q[31:0];
           REG_RX_TICK_HI:   s_axil_rdata <= rx_tick_sync_q[63:32];
+          REG_GAP_SAMPLE_INDEX: s_axil_rdata <= {{(32-GAP_SAMPLE_DEPTH_LOG2){1'b0}}, gap_sample_rd_index_q};
+          REG_GAP_SAMPLE_COUNT: s_axil_rdata <= gap_sample_count_q;
+          REG_GAP_SAMPLE_LO:    s_axil_rdata <= gap_sample_mem[gap_sample_rd_index_q][31:0];
+          REG_GAP_SAMPLE_HI:    s_axil_rdata <= gap_sample_mem[gap_sample_rd_index_q][63:32];
+          REG_GAP_SAMPLE_WRITE_INDEX: s_axil_rdata <= {{(32-GAP_SAMPLE_DEPTH_LOG2){1'b0}}, gap_sample_wr_ptr_q};
           default:          s_axil_rdata <= 32'h0;
         endcase
       end else if (s_axil_rvalid && s_axil_rready) begin
@@ -653,6 +699,14 @@ module rx_capture_core #(
             rem_before = fifo_pipe_tstart_q ? cfg_trunc_bytes : capture_remaining_q;
             beat_bytes = popcount_keep(fifo_pipe_tkeep_q);
             do_capture = packet_beat && cfg_capture_enable && (cfg_ring_size != 32'd0) && (rem_before != 32'd0);
+
+            if (fifo_pipe_tstart_q && fifo_pipe_tgap_valid_q) begin
+              gap_sample_mem[gap_sample_wr_ptr_q] <= fifo_pipe_tgap_q;
+              gap_sample_wr_ptr_q <= gap_sample_wr_ptr_q + {{(GAP_SAMPLE_DEPTH_LOG2-1){1'b0}}, 1'b1};
+              if (gap_sample_count_q < GAP_SAMPLE_DEPTH_U32) begin
+                gap_sample_count_q <= gap_sample_count_q + 32'd1;
+              end
+            end
 
             // The debug ring stores full 512-bit beats; TKEEP-derived counters
             // still tell software how many bytes in each beat were meaningful.

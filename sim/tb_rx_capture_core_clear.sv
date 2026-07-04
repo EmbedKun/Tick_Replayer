@@ -29,6 +29,11 @@ module tb_rx_capture_core_clear;
   localparam logic [15:0] REG_GAP_MIN_LO    = 16'h0074;
   localparam logic [15:0] REG_GAP_MAX_LO    = 16'h007c;
   localparam logic [15:0] REG_GAP_LAST_LO   = 16'h0084;
+  localparam logic [15:0] REG_GAP_SAMPLE_INDEX = 16'h0094;
+  localparam logic [15:0] REG_GAP_SAMPLE_COUNT = 16'h0098;
+  localparam logic [15:0] REG_GAP_SAMPLE_LO    = 16'h009c;
+  localparam logic [15:0] REG_GAP_SAMPLE_HI    = 16'h00a0;
+  localparam logic [15:0] REG_GAP_SAMPLE_WRITE_INDEX = 16'h00a4;
 
   logic clk = 1'b0;
   logic rx_clk = 1'b0;
@@ -239,6 +244,8 @@ module tb_rx_capture_core_clear;
     logic [31:0] gap_min;
     logic [31:0] gap_max;
     logic [31:0] gap_last;
+    logic [31:0] gap_sample_count;
+    logic [31:0] gap_sample_write_index;
     begin
       repeat (260) @(posedge clk);
       axil_read(REG_STATUS, status);
@@ -255,6 +262,8 @@ module tb_rx_capture_core_clear;
       axil_read(REG_GAP_MIN_LO, gap_min);
       axil_read(REG_GAP_MAX_LO, gap_max);
       axil_read(REG_GAP_LAST_LO, gap_last);
+      axil_read(REG_GAP_SAMPLE_COUNT, gap_sample_count);
+      axil_read(REG_GAP_SAMPLE_WRITE_INDEX, gap_sample_write_index);
       if (((status >> 7) & 32'h3) != 0) begin
         $fatal(1, "RX writer state not idle after clear status=0x%08x debug=0x%08x", status, debug);
       end
@@ -263,10 +272,11 @@ module tb_rx_capture_core_clear;
       end
       if (write_ptr != 0 || rx_pkts != 0 || rx_bytes != 0 || rx_errs != 0 ||
           cap_bytes != 0 || axi_writes != 0 || axi_errors != 0 ||
-          gap_count != 0 || gap_sum != 0 || gap_min != 0 || gap_max != 0 || gap_last != 0) begin
-        $fatal(1, "RX clear did not reset regs wp=%0d pkts=%0d bytes=%0d errs=%0d cap=%0d wr=%0d axierr=%0d gap_count=%0d gap_sum=%0d gap_min=%0d gap_max=%0d gap_last=%0d",
+          gap_count != 0 || gap_sum != 0 || gap_min != 0 || gap_max != 0 || gap_last != 0 ||
+          gap_sample_count != 0 || gap_sample_write_index != 0) begin
+        $fatal(1, "RX clear did not reset regs wp=%0d pkts=%0d bytes=%0d errs=%0d cap=%0d wr=%0d axierr=%0d gap_count=%0d gap_sum=%0d gap_min=%0d gap_max=%0d gap_last=%0d sample_count=%0d sample_wr=%0d",
                write_ptr, rx_pkts, rx_bytes, rx_errs, cap_bytes, axi_writes, axi_errors,
-               gap_count, gap_sum, gap_min, gap_max, gap_last);
+               gap_count, gap_sum, gap_min, gap_max, gap_last, gap_sample_count, gap_sample_write_index);
       end
     end
   endtask
@@ -416,6 +426,12 @@ module tb_rx_capture_core_clear;
       logic [31:0] gap_min;
       logic [31:0] gap_max;
       logic [31:0] gap_last;
+      logic [31:0] gap_sample_count;
+      logic [31:0] gap_sample_write_index;
+      logic [31:0] gap_sample0_lo;
+      logic [31:0] gap_sample0_hi;
+      logic [31:0] gap_sample6_lo;
+      logic [31:0] gap_sample6_hi;
       axil_read(REG_WRITE_PTR, write_ptr);
       axil_read(REG_RX_PKTS_LO, rx_pkts);
       axil_read(REG_RX_BYTES_LO, rx_bytes);
@@ -427,6 +443,8 @@ module tb_rx_capture_core_clear;
       axil_read(REG_GAP_MIN_LO, gap_min);
       axil_read(REG_GAP_MAX_LO, gap_max);
       axil_read(REG_GAP_LAST_LO, gap_last);
+      axil_read(REG_GAP_SAMPLE_COUNT, gap_sample_count);
+      axil_read(REG_GAP_SAMPLE_WRITE_INDEX, gap_sample_write_index);
       if (write_ptr != 32'd512 || rx_pkts != 32'd8 || rx_bytes != 32'd1024 ||
           rx_errs != 32'd0 || cap_bytes != 32'd512 || axi_writes != 32'd8) begin
         $fatal(1, "unexpected RX stats wp=%0d pkts=%0d bytes=%0d errs=%0d cap=%0d axiwr=%0d",
@@ -436,6 +454,22 @@ module tb_rx_capture_core_clear;
           gap_last != gap_min || gap_sum != (gap_min * gap_count)) begin
         $fatal(1, "unexpected RX gap stats count=%0d sum=%0d min=%0d max=%0d last=%0d",
                gap_count, gap_sum, gap_min, gap_max, gap_last);
+      end
+      if (gap_sample_count != 32'd7 || gap_sample_write_index != 32'd7) begin
+        $fatal(1, "unexpected RX gap sample pointers count=%0d write_index=%0d",
+               gap_sample_count, gap_sample_write_index);
+      end
+      axil_write(REG_GAP_SAMPLE_INDEX, 32'd0);
+      axil_read(REG_GAP_SAMPLE_LO, gap_sample0_lo);
+      axil_read(REG_GAP_SAMPLE_HI, gap_sample0_hi);
+      axil_write(REG_GAP_SAMPLE_INDEX, 32'd6);
+      axil_read(REG_GAP_SAMPLE_LO, gap_sample6_lo);
+      axil_read(REG_GAP_SAMPLE_HI, gap_sample6_hi);
+      if (gap_sample0_hi != 32'd0 || gap_sample6_hi != 32'd0 ||
+          gap_sample0_lo != gap_min || gap_sample6_lo != gap_last) begin
+        $fatal(1, "unexpected RX gap samples sample0=%0d:%0d sample6=%0d:%0d min=%0d last=%0d",
+               gap_sample0_hi, gap_sample0_lo, gap_sample6_hi, gap_sample6_lo,
+               gap_min, gap_last);
       end
     end
 

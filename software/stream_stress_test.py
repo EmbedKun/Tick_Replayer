@@ -50,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-bytes", type=int_auto, default=64 * 1024 * 1024)
     parser.add_argument("--read-bytes", type=int_auto, default=64 * 1024 * 1024)
     parser.add_argument("--queue-depth", type=int_auto, default=4)
+    parser.add_argument("--host-cache-bytes", help="pass BYTES or auto to the C++ loader host-memory cache")
+    parser.add_argument("--host-cache-fraction", type=float, default=0.85)
     parser.add_argument("--poll-interval", type=float, default=0.0002)
     parser.add_argument("--work-dir", type=Path, default=Path("/tmp/traffic_replay_stream_ring_stress"))
     parser.add_argument("--frame-sizes", type=parse_frame_sizes, default=parse_frame_sizes("64,128,256,512,1024,1518"))
@@ -172,7 +174,7 @@ def build_loader_cmd(args: argparse.Namespace, manifest_path: Path, loader: str)
         common.append("--force-tx-ready")
 
     if loader == "cpp":
-        return [
+        cmd = [
             str(args.cpp_loader),
             *common,
             "--read-bytes",
@@ -180,6 +182,10 @@ def build_loader_cmd(args: argparse.Namespace, manifest_path: Path, loader: str)
             "--queue-depth",
             str(args.queue_depth),
         ]
+        if args.host_cache_bytes:
+            cmd += ["--host-cache-bytes", args.host_cache_bytes]
+            cmd += ["--host-cache-fraction", str(args.host_cache_fraction)]
+        return cmd
     return [args.python, str(SCRIPT_DIR / "xdma_stream_ring.py"), *common]
 
 
@@ -216,6 +222,10 @@ def run_case(args: argparse.Namespace, frame_len: int) -> dict[str, str | int]:
         "stream_status": metrics.get("stream_status", ""),
         "max_ring_level": metrics.get("max_ring_level", ""),
         "min_ring_free": metrics.get("min_ring_free", ""),
+        "read_bytes": metrics.get("read_bytes", ""),
+        "queue_depth": metrics.get("queue_depth", ""),
+        "host_cache_target": metrics.get("host_cache_target", ""),
+        "host_cache_window": metrics.get("host_cache_window", ""),
         "load_gbps": metrics.get("load_gbps", ""),
         "hw_gbps": metrics.get("hw_gbps", ""),
         "load_seconds": metrics.get("load_seconds", ""),

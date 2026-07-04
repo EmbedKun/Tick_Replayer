@@ -577,6 +577,26 @@ byte count derived from `TKEEP`, while `captured_bytes` is the number of 64-byte
 ring bytes written.  The unused lanes at the end of the final beat are not valid
 packet bytes.
 
+For replay precision, compare the RX-side received packet intervals against the
+original descriptor gaps:
+
+```bash
+sudo python3 /home/user/traffic_replay_software/rx_trace_interval_check.py \
+  --manifest /home/user/trace_out/manifest.json \
+  --tx-port 0 \
+  --rx-port 1 \
+  --desc-base 0x04000000 \
+  --data-base 0x14000000 \
+  --max-samples 4096 \
+  --max-error-ns 80 \
+  --csv /home/user/rx_trace_interval.csv
+```
+
+The RX capture core stores the most recent `4096` SOP-to-SOP gaps in the RX
+clock domain.  The script reports `min_error_ns`, `max_error_ns`,
+`avg_error_ns`, and `max_abs_error_ns` after converting TX descriptor ticks and
+RX clock cycles to nanoseconds.
+
 ## Stream Mode and Stress Testing
 
 `STREAM` mode is a `DDR4` ring-buffer mode.  The host uses memory-mapped
@@ -602,6 +622,7 @@ sudo python3 /home/user/traffic_replay_software/stream_stress_test.py \
   --ring-base 0x20000000 \
   --ring-size 0x08000000 \
   --prefill-bytes 0x04000000 \
+  --host-cache-bytes auto \
   --csv /home/user/stream_stress.csv
 ```
 
@@ -616,6 +637,8 @@ Useful debug switches:
 The stress script reports:
 
 * `load_gbps`: host-to-DDR DMA load rate for the generated ring stream records.
+* `read_bytes`, `queue_depth`, and `host_cache_window`: host DRAM staging window
+  used by the C++ loader before issuing `XDMA H2C` writes.
 * `hw_gbps`: FPGA replay throughput computed from `tx_bytes` and the hardware
   replay tick counter.
 * `late_packets` and `underrun_packets`: scheduler and payload starvation
@@ -787,6 +810,7 @@ python3 -m py_compile \
   software/gen_synthetic_pcap.py \
   software/gen_synthetic_trace.py \
   software/stream_stress_test.py \
+  software/rx_trace_interval_check.py \
   software/preload_stress_test.py \
   software/hw_validation_suite.py
 ```

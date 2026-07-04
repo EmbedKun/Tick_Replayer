@@ -78,7 +78,9 @@ Implemented pieces:
   complete records and polls the FPGA read pointer before writing more.
 * `xdma_stream_ring_fast.cpp` is the higher-throughput C++ loader.  It uses a
   producer/consumer pipeline, large record-aligned batches, and fewer copies
-  before issuing memory-mapped `XDMA H2C` writes.
+  before issuing memory-mapped `XDMA H2C` writes.  It can also grow the
+  producer queue with `--host-cache-bytes auto`, using host DRAM as an SSD read
+  cache before the FPGA DDR ring.
 * `traffic_replay_cli.py status/regs` prints stream ring state.
 * `tb_ddr_stream_reader_ring.sv` verifies wait-empty, wrap, invalid ring size,
   pointer error, and overrun handling.
@@ -106,6 +108,41 @@ Current U200 hardware observations with
   about `7.59Gbps`.
 * The old finite-buffer `STREAM` path has been removed; new `STREAM` throughput
   tests should use `stream_stress_test.py` with the ring loader.
+
+## Host DRAM Cache
+
+The ring feeder has two windows:
+
+```text
+host SSD -> host DRAM producer queue -> XDMA H2C -> FPGA DDR ring
+```
+
+`--queue-depth` controls how many record-aligned chunks may sit in host memory.
+`--host-cache-bytes auto` expands that queue to a fraction of Linux
+`MemAvailable`:
+
+```bash
+cd /home/user/traffic_replay_software
+make xdma_stream_ring_fast
+
+sudo ./xdma_stream_ring_fast \
+  --manifest /home/user/trace_out/stream_manifest.json \
+  --port 0 \
+  --ring-base 0x20000000 \
+  --ring-size 0x08000000 \
+  --read-bytes 0x04000000 \
+  --batch-bytes 0x04000000 \
+  --host-cache-bytes auto \
+  --host-cache-fraction 0.85
+```
+
+This improves robustness when SSD service time jitters, and it allows the host
+to stage a much larger part of the trace in DRAM while the FPGA consumes the DDR
+ring.  It does not change replay precision: packet timing is still controlled by
+the FPGA scheduler after records enter the ring.  It also does not remove the
+memory-mapped `XDMA H2C pwrite` ceiling; sustained `100Gbps` dynamic replay still
+requires the full end-to-end stream byte rate to fit through SSD, host memory,
+PCIe, FPGA DDR write, and FPGA DDR read.
 
 ## Timing Precision
 
