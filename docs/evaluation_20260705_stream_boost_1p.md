@@ -174,6 +174,8 @@ debug_ticks       : 329369689
 
 这是真正的动态装载压力场景。结果说明 ring 中的初始数据可以把平均回放吞吐抬到 `55Gbps`，但长期持续段仍会被当前 host-to-FPGA 装载速度拖住。
 
+补充观察：使用 `4GB` ring 并把预填充推到接近 ring 满水位时，板上曾触发 `stream ring error`。把 ring 扩到 `8GB/12GB` 后同一组数据可以稳定跑完，因此该问题更像是接近 wrap 边界时的 ring/AXI 读写保护细节，后续需要单独做 wrap 压力测试和修复。
+
 ## 7. 双 SSD dry-run
 
 只读取双 SSD striped block、做顺序重排，不访问 XDMA：
