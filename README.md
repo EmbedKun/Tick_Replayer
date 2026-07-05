@@ -404,6 +404,8 @@ Current board measurements on the U200 optical loopback:
 | `STREAM` ring | `1518B`, `gap=36`, `1M` packets, full DDR prefill | `101.200Gbps` internal forced-ready TX test |
 | `STREAM` ring | `1518B`, `gap=38`, `5M` packets, `8GB` ring/dynamic refill before aligned-buffer loader | `55.306Gbps` average; late/underrun after ring drains |
 | `STREAM` ring | `1518B`, `gap=160`, `40M` packets, `64GB` stream, cold dynamic refill | `22.770Gbps` frame/L2, no late/underrun/drop/stall |
+| `STREAM` ring | `1518B`, `gap=160`, `64GB` stream, striped direct-copy loader | `28.3Gbps` load, no late/underrun |
+| SSD read bench | dual-SSD `O_DIRECT` unordered read, `64GB` striped blocks | `50.680Gbps` |
 | Host loader | dual-SSD striped dry-run, `64GB` stream, cold cache | `24.102Gbps` read/reorder |
 | Host loader | dual-SSD + memory-mapped `XDMA H2C pwrite()`, `64GB` stream | `22.190Gbps` FPGA load |
 
@@ -776,7 +778,12 @@ reports/       Selected validation reports
   STREAM tests reach `95.874Gbps`.  With page-aligned DMA buffers and deeper
   striped read-ahead, the measured 64GB cold dynamic STREAM case reaches
   `22.190Gbps` FPGA load against a `24.102Gbps` dual-SSD dry-run limit.  This is
-  close to the measured storage limit, but still far below 100G.
+  close to the old loader's measured storage path.  A lower-level `O_DIRECT`
+  SSD bench reaches `50.680Gbps`; the new striped direct-copy loader improves
+  stable dynamic load to about `28.3Gbps`.  Pushing replay consumption to about
+  `48Gbps` currently exposes a FPGA stream-ring error, so the next limit is the
+  single-DDR ring hardware under simultaneous high-rate H2C writes and replay
+  reads.
 - The RX sample writer is a lightweight debug/correctness path, not a full-rate
   packet capture DMA.  Low-rate loopback sample checks pass; high-rate sample
   capture can overflow and should be treated as an expected limitation.

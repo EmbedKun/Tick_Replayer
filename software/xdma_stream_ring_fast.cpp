@@ -119,6 +119,8 @@ struct Args {
   bool writer_threads_set = false;
   bool reader_threads_set = false;
   bool reader_window_blocks_set = false;
+  bool direct_read = false;
+  bool direct_read_set = false;
   bool force_link_up = false;
   bool force_tx_ready = false;
   bool no_wait = false;
@@ -289,6 +291,8 @@ static void usage(const char *argv0) {
       << "  --writer-threads N         parallel H2C pwrite workers, default 1; striped default 4\n"
       << "  --reader-threads N         parallel striped block readers, default 16\n"
       << "  --reader-window-blocks N   striped read-ahead window, default auto\n"
+      << "  --direct-read              use O_DIRECT for striped block reads; striped default\n"
+      << "  --buffered-read            force normal buffered reads for striped input\n"
       << "  --block-list PATH          TSV block list for striped input\n"
       << "  --host-cache-bytes BYTES|auto\n"
       << "                              grow producer queue to use host DRAM as SSD cache\n"
@@ -356,6 +360,12 @@ static Args parse_args(int argc, char **argv) {
     } else if (key == "--reader-window-blocks") {
       args.reader_window_blocks = static_cast<size_t>(int_auto(need_value("--reader-window-blocks")));
       args.reader_window_blocks_set = true;
+    } else if (key == "--direct-read") {
+      args.direct_read = true;
+      args.direct_read_set = true;
+    } else if (key == "--buffered-read") {
+      args.direct_read = false;
+      args.direct_read_set = true;
     } else if (key == "--host-cache-bytes") {
       args.host_cache_arg = need_value("--host-cache-bytes");
     } else if (key == "--host-cache-fraction") {
@@ -408,6 +418,9 @@ static Args parse_args(int argc, char **argv) {
     }
     if (!args.reader_window_blocks_set && args.reader_window_blocks == 0) {
       args.reader_window_blocks = std::max<size_t>(args.queue_depth, args.reader_threads * 8);
+    }
+    if (!args.direct_read_set) {
+      args.direct_read = true;
     }
   }
   if (args.read_bytes == 0) {
@@ -981,13 +994,21 @@ class StripedReadState {
   std::condition_variable cv_space_;
 };
 
-static void striped_reader_worker(StripedReadState &state) {
+static void striped_reader_worker(const Args &args, StripedReadState &state) {
   try {
     BlockInfo block;
     while (state.get_work(block)) {
-      int fd = ::open(block.path.c_str(), O_RDONLY);
+      bool use_direct = args.direct_read && ((block.bytes % DMA_BUFFER_ALIGNMENT) == 0);
+      int flags = O_RDONLY | (use_direct ? O_DIRECT : 0);
+      int fd = ::open(block.path.c_str(), flags);
       if (fd < 0) {
-        throw std::runtime_error("cannot open stream block: " + block.path.string());
+        if (use_direct && (errno == EINVAL || errno == EOPNOTSUPP)) {
+          use_direct = false;
+          fd = ::open(block.path.c_str(), O_RDONLY);
+        }
+        if (fd < 0) {
+          throw std::runtime_error("cannot open stream block: " + block.path.string());
+        }
       }
       (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 
@@ -1027,7 +1048,7 @@ static void striped_producer_thread(const Args &args,
 
   try {
     for (size_t idx = 0; idx < readers; ++idx) {
-      reader_threads.emplace_back(striped_reader_worker, std::ref(state));
+      reader_threads.emplace_back(striped_reader_worker, std::cref(args), std::ref(state));
     }
 
     uint64_t total_packets = 0;
@@ -1056,6 +1077,139 @@ static void striped_producer_thread(const Args &args,
     }
   }
   queue.finish();
+}
+
+struct DirectBlockJob {
+  size_t block_index = 0;
+  uint64_t begin = 0;
+};
+
+class DirectJobQueue {
+ public:
+  void push(const DirectBlockJob &job) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      jobs_.push_back(job);
+    }
+    cv_.notify_one();
+  }
+
+  bool pop(DirectBlockJob &job) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait(lock, [&] { return done_ || !jobs_.empty(); });
+    if (jobs_.empty()) {
+      return false;
+    }
+    job = jobs_.front();
+    jobs_.pop_front();
+    return true;
+  }
+
+  void finish() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      done_ = true;
+    }
+    cv_.notify_all();
+  }
+
+ private:
+  bool done_ = false;
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::deque<DirectBlockJob> jobs_;
+};
+
+class DirectCompletionQueue {
+ public:
+  void complete(size_t block_index) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      completed_.push_back(block_index);
+    }
+    cv_.notify_one();
+  }
+
+  bool pop(size_t &block_index, double timeout_seconds) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    if (timeout_seconds <= 0.0) {
+      cv_.wait(lock, [&] { return failed_ || !completed_.empty(); });
+    } else {
+      cv_.wait_for(lock, std::chrono::duration<double>(timeout_seconds),
+                   [&] { return failed_ || !completed_.empty(); });
+    }
+    if (failed_) {
+      std::rethrow_exception(error_);
+    }
+    if (completed_.empty()) {
+      return false;
+    }
+    block_index = completed_.front();
+    completed_.pop_front();
+    return true;
+  }
+
+  void fail(std::exception_ptr error) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      failed_ = true;
+      if (!error_) {
+        error_ = error;
+      }
+    }
+    cv_.notify_all();
+  }
+
+ private:
+  bool failed_ = false;
+  std::exception_ptr error_;
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::deque<size_t> completed_;
+};
+
+static void copy_block_to_ring(const Args &args, const BlockInfo &block,
+                               uint64_t begin, int h2c_fd, DmaBuffer &buffer) {
+  bool use_direct = args.direct_read &&
+                    ((block.bytes % DMA_BUFFER_ALIGNMENT) == 0) &&
+                    ((buffer.size() % DMA_BUFFER_ALIGNMENT) == 0);
+  int flags = O_RDONLY | (use_direct ? O_DIRECT : 0);
+  int fd = ::open(block.path.c_str(), flags);
+  if (fd < 0 && use_direct && (errno == EINVAL || errno == EOPNOTSUPP)) {
+    use_direct = false;
+    fd = ::open(block.path.c_str(), O_RDONLY);
+  }
+  if (fd < 0) {
+    throw std::runtime_error("cannot open stream block: " + block.path.string());
+  }
+  (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+  uint64_t off = 0;
+  while (off < block.bytes) {
+    size_t chunk = static_cast<size_t>(
+        std::min<uint64_t>(buffer.size(), block.bytes - off));
+    if (use_direct && ((chunk % DMA_BUFFER_ALIGNMENT) != 0)) {
+      ::close(fd);
+      throw std::runtime_error("O_DIRECT chunk is not 4096-byte aligned");
+    }
+    size_t done = 0;
+    while (done < chunk) {
+      ssize_t rc = ::pread(fd, buffer.data() + done, chunk - done,
+                           static_cast<off_t>(off + done));
+      if (rc < 0) {
+        ::close(fd);
+        throw std::runtime_error(std::string("pread failed: ") + std::strerror(errno));
+      }
+      if (rc == 0) {
+        ::close(fd);
+        throw std::runtime_error("short read from stream block");
+      }
+      done += static_cast<size_t>(rc);
+    }
+    pwrite_ring(h2c_fd, buffer.data(), chunk, args.ring_base, args.ring_size, begin + off);
+    off += chunk;
+  }
+  ::close(fd);
 }
 
 int main(int argc, char **argv) {
@@ -1142,11 +1296,12 @@ int main(int argc, char **argv) {
         std::cout << "stripe_manifest   : " << args.stripe_manifest << "\n";
         std::cout << "block_list        : " << args.block_list << "\n";
         std::cout << "block_count       : " << stripe_blocks.size() << "\n";
-        std::cout << "reader_threads    : " << args.reader_threads << "\n";
-        std::cout << "reader_window     : "
-                  << (args.reader_window_blocks ? args.reader_window_blocks
-                                                : std::max<size_t>(args.queue_depth, args.reader_threads * 2))
-                  << "\n";
+      std::cout << "reader_threads    : " << args.reader_threads << "\n";
+      std::cout << "reader_window     : "
+                << (args.reader_window_blocks ? args.reader_window_blocks
+                                              : std::max<size_t>(args.queue_depth, args.reader_threads * 2))
+                << "\n";
+      std::cout << "direct_read       : " << args.direct_read << "\n";
       } else {
         std::cout << "stream_file       : " << args.stream << "\n";
       }
@@ -1178,6 +1333,220 @@ int main(int argc, char **argv) {
         ::close(fd);
       }
       throw std::runtime_error("cannot open user BAR device: " + args.user);
+    }
+
+    if (striped_source) {
+      bool started = false;
+      uint64_t write_count = 0;
+      uint64_t reserved_count = 0;
+      uint64_t packet_count = 0;
+      uint64_t max_level = 0;
+      uint64_t min_free = args.ring_size;
+      uint64_t in_flight = 0;
+      size_t next_assign = 0;
+      size_t next_commit = 0;
+      std::vector<uint64_t> block_begin(stripe_blocks.size(), 0);
+      std::vector<uint8_t> block_done(stripe_blocks.size(), 0);
+      DirectJobQueue job_queue;
+      DirectCompletionQueue completion_queue;
+      std::vector<std::thread> workers;
+      workers.reserve(args.reader_threads);
+      auto load_start = std::chrono::steady_clock::now();
+      bool completed = false;
+      double wall_seconds = 0.0;
+      uint64_t io_chunk = args.direct_read ? std::min<uint64_t>(args.read_bytes, 4ULL << 20)
+                                           : args.read_bytes;
+      io_chunk = std::max<uint64_t>(DMA_BUFFER_ALIGNMENT, io_chunk);
+      if (args.direct_read) {
+        io_chunk = (io_chunk / DMA_BUFFER_ALIGNMENT) * DMA_BUFFER_ALIGNMENT;
+      }
+
+      try {
+        configure(user_fd, base, args);
+
+        for (size_t idx = 0; idx < args.reader_threads; ++idx) {
+          workers.emplace_back([&]() {
+            try {
+              int h2c_fd = ::open(args.h2c.c_str(), O_WRONLY);
+              if (h2c_fd < 0) {
+                throw std::runtime_error("cannot open H2C device: " + args.h2c);
+              }
+              DmaBuffer buffer;
+              buffer.resize(static_cast<size_t>(io_chunk));
+              DirectBlockJob job;
+              while (job_queue.pop(job)) {
+                copy_block_to_ring(args, stripe_blocks[job.block_index],
+                                   job.begin, h2c_fd, buffer);
+                completion_queue.complete(job.block_index);
+              }
+              ::close(h2c_fd);
+            } catch (...) {
+              completion_queue.fail(std::current_exception());
+            }
+          });
+        }
+
+        while (next_commit < stripe_blocks.size()) {
+          bool scheduled = false;
+          while (next_assign < stripe_blocks.size() &&
+                 in_flight < args.reader_window_blocks) {
+            const BlockInfo &block = stripe_blocks[next_assign];
+            if (block.bytes + args.guard_bytes > args.ring_size) {
+              throw std::runtime_error("stream block is too large for selected ring");
+            }
+            double feed_elapsed = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - load_start).count();
+            if (args.feed_timeout > 0.0 && feed_elapsed > args.feed_timeout) {
+              throw std::runtime_error("ring feed timeout after " +
+                                       std::to_string(args.feed_timeout) + "s");
+            }
+
+            uint64_t read_count = read64(user_fd, base + REG_STREAM_RD_LO, base + REG_STREAM_RD_HI);
+            (void)check_stream_status(user_fd, base);
+            if (read_count > write_count) {
+              throw std::runtime_error("FPGA read pointer advanced past host write pointer");
+            }
+            uint64_t level = reserved_count - read_count;
+            uint64_t free = args.ring_size - level - args.guard_bytes;
+            max_level = std::max(max_level, level);
+            min_free = std::min(min_free, free);
+            if (free < block.bytes) {
+              break;
+            }
+
+            uint64_t begin = reserved_count;
+            block_begin[next_assign] = begin;
+            reserved_count += block.bytes;
+            job_queue.push(DirectBlockJob{next_assign, begin});
+            ++next_assign;
+            ++in_flight;
+            scheduled = true;
+          }
+
+          size_t done_block = 0;
+          if (completion_queue.pop(done_block, scheduled ? 0.0 : args.poll_interval)) {
+            if (done_block >= block_done.size() || block_done[done_block]) {
+              throw std::runtime_error("invalid duplicate direct block completion");
+            }
+            block_done[done_block] = 1;
+            if (in_flight != 0) {
+              --in_flight;
+            }
+
+            while (next_commit < stripe_blocks.size() && block_done[next_commit]) {
+              const BlockInfo &block = stripe_blocks[next_commit];
+              write_count = block_begin[next_commit] + block.bytes;
+              packet_count += block.packets;
+              write64(user_fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, write_count);
+              if (!started && write_count >= prefill) {
+                start_replay(user_fd, base);
+                started = true;
+              }
+              ++next_commit;
+            }
+          } else if (!started && write_count != 0) {
+            start_replay(user_fd, base);
+            started = true;
+          }
+        }
+
+        job_queue.finish();
+        for (std::thread &worker : workers) {
+          if (worker.joinable()) {
+            worker.join();
+          }
+        }
+
+        if (manifest_packets != 0 && manifest_packets != packet_count) {
+          throw std::runtime_error("manifest packet_count mismatch: expected " +
+                                   std::to_string(manifest_packets) + " parsed " +
+                                   std::to_string(packet_count));
+        }
+
+        write64(user_fd, base + REG_PKT_LO, base + REG_PKT_HI, packet_count);
+        write32(user_fd, base + REG_STREAM_CTRL, 0x1);
+        if (!started) {
+          start_replay(user_fd, base);
+          started = true;
+        }
+
+        double load_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - load_start).count();
+
+        if (!args.no_wait) {
+          auto wait_result = wait_done(user_fd, base, args.timeout);
+          completed = wait_result.first;
+          wall_seconds = wait_result.second;
+        }
+
+        uint64_t tx_pkts = read64(user_fd, base + REG_TX_PKTS_LO, base + REG_TX_PKTS_HI);
+        uint64_t tx_bytes = read64(user_fd, base + REG_TX_BYTES_LO, base + REG_TX_BYTES_HI);
+        uint64_t late_pkts = read64(user_fd, base + REG_LATE_LO, base + REG_LATE_HI);
+        uint64_t underrun_pkts = read64(user_fd, base + REG_UNDERRUN_LO, base + REG_UNDERRUN_HI);
+        uint64_t ticks = read64(user_fd, base + REG_DEBUG_TICK_LO, base + REG_DEBUG_TICK_HI);
+        uint32_t stream_status = read32(user_fd, base + REG_STREAM_STATUS);
+        uint64_t stream_level = read64(user_fd, base + REG_STREAM_LEVEL_LO, base + REG_STREAM_LEVEL_HI);
+
+        double hw_seconds = ticks ? static_cast<double>(ticks) / static_cast<double>(args.tick_hz) : wall_seconds;
+        double hw_gbps = hw_seconds > 0.0 ? static_cast<double>(tx_bytes) * 8.0 / hw_seconds / 1e9 : 0.0;
+        double load_gbps = load_seconds > 0.0 ? static_cast<double>(write_count) * 8.0 / load_seconds / 1e9 : 0.0;
+
+        std::cout << std::boolalpha;
+        std::cout << "source_mode       : striped_direct\n";
+        std::cout << "stripe_manifest   : " << args.stripe_manifest << "\n";
+        std::cout << "block_list        : " << args.block_list << "\n";
+        std::cout << "block_count       : " << stripe_blocks.size() << "\n";
+        std::cout << "reader_threads    : " << args.reader_threads << "\n";
+        std::cout << "reader_window     : " << args.reader_window_blocks << "\n";
+        std::cout << "direct_read       : " << args.direct_read << "\n";
+        std::cout << "ring_base         : 0x" << std::hex << args.ring_base << std::dec << "\n";
+        std::cout << "ring_size         : " << args.ring_size << "\n";
+        std::cout << "read_bytes        : " << io_chunk << "\n";
+        std::cout << "queue_depth       : " << args.queue_depth << "\n";
+        std::cout << "writer_threads    : " << args.writer_threads << "\n";
+        std::cout << "dma_buffer_align  : " << DMA_BUFFER_ALIGNMENT << "\n";
+        std::cout << "committed_bytes   : " << write_count << "\n";
+        std::cout << "committed_packets : " << packet_count << "\n";
+        std::cout << "completed         : " << completed << "\n";
+        std::cout << "tx_packets        : " << tx_pkts << "\n";
+        std::cout << "tx_bytes          : " << tx_bytes << "\n";
+        std::cout << "late_packets      : " << late_pkts << "\n";
+        std::cout << "underrun_packets  : " << underrun_pkts << "\n";
+        std::cout << "stream_status     : 0x" << std::hex << std::setw(8) << std::setfill('0')
+                  << stream_status << std::dec << std::setfill(' ') << "\n";
+        std::cout << "final_level       : " << stream_level << "\n";
+        std::cout << "max_ring_level    : " << max_level << "\n";
+        std::cout << "min_ring_free     : " << min_free << "\n";
+        std::cout << std::fixed << std::setprecision(3);
+        std::cout << "load_gbps         : " << load_gbps << "\n";
+        std::cout << "hw_gbps           : " << hw_gbps << "\n";
+        std::cout << std::setprecision(6);
+        std::cout << "load_seconds      : " << load_seconds << "\n";
+        std::cout << "wall_seconds      : " << wall_seconds << "\n";
+
+        if (!completed && !args.no_wait) {
+          stop_and_clear(user_fd, base);
+        }
+      } catch (...) {
+        job_queue.finish();
+        for (std::thread &worker : workers) {
+          if (worker.joinable()) {
+            worker.join();
+          }
+        }
+        stop_and_clear(user_fd, base);
+        for (int fd : h2c_fds) {
+          ::close(fd);
+        }
+        ::close(user_fd);
+        throw;
+      }
+
+      for (int fd : h2c_fds) {
+        ::close(fd);
+      }
+      ::close(user_fd);
+      return 0;
     }
 
     ChunkQueue queue(args.queue_depth);
@@ -1328,11 +1697,12 @@ int main(int argc, char **argv) {
         std::cout << "stripe_manifest   : " << args.stripe_manifest << "\n";
         std::cout << "block_list        : " << args.block_list << "\n";
         std::cout << "block_count       : " << stripe_blocks.size() << "\n";
-        std::cout << "reader_threads    : " << args.reader_threads << "\n";
-        std::cout << "reader_window     : "
-                  << (args.reader_window_blocks ? args.reader_window_blocks
-                                                : std::max<size_t>(args.queue_depth, args.reader_threads * 2))
-                  << "\n";
+      std::cout << "reader_threads    : " << args.reader_threads << "\n";
+      std::cout << "reader_window     : "
+                << (args.reader_window_blocks ? args.reader_window_blocks
+                                              : std::max<size_t>(args.queue_depth, args.reader_threads * 2))
+                << "\n";
+      std::cout << "direct_read       : " << args.direct_read << "\n";
       } else {
         std::cout << "stream_file       : " << args.stream << "\n";
       }

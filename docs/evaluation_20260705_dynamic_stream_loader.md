@@ -162,3 +162,9 @@ dual SSD -> host memory queue -> XDMA H2C -> FPGA DDR ring -> scheduler/TX
 - 64GB 级别动态换入已经稳定通过，`late/underrun/drop/stall` 全为 0。
 - 对这台主机，cold 双 SSD 并发读上限在本测试中约 `24.1Gbps` stream bytes；动态 replay case 达到 `22.19Gbps` measured load 和 `22.77Gbps` scheduled L2 replay。
 - 如果要让超大 trace 动态 STREAM 达到 100Gbps，需要更高的 SSD 阵列读带宽和更高效的 host-to-FPGA 提交路径，例如 QDMA/XDMA AXI4-Stream H2C、多 H2C queue、pinned hugepage 或内核态提交。
+
+后续复测见 `docs/evaluation_20260705_ssd_limit_stream.md`：双 SSD `O_DIRECT`
+乱序读上限约 `50.680Gbps`，direct-copy loader 稳定动态换入提升到约
+`28.3Gbps`。当构造 `gap=80` 让 stream 消费接近 `48Gbps` 时，当前单 DDR
+stream ring 硬件触发 `0x2d1` error，说明下一步瓶颈已经转到 FPGA 侧高并发
+DDR read/write 和 ring 鲁棒性。
