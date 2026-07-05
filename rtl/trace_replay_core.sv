@@ -204,6 +204,7 @@ module trace_replay_core #(
   logic [15:0] pkt_flags;
   logic        core_clear;
   logic        core_enable;
+  logic        replay_gate_enable;
   logic [PRELOAD_WARMUP_CNT_W-1:0] preload_warmup_count;
   logic        preload_warmup_done;
   logic        effective_link_up;
@@ -229,8 +230,10 @@ module trace_replay_core #(
   assign stream_ddr_mode_comb = sel_stream_mode_comb;
   assign core_clear      = clear_pulse || stop_pulse;
   assign effective_link_up = link_up || cfg_force_link_up;
-  assign core_enable     = replay_running && !pause && effective_link_up &&
-                           (!sel_ddr_mode || preload_warmup_done);
+  assign replay_gate_enable = replay_running && !pause && effective_link_up;
+  assign core_enable     = replay_gate_enable &&
+                           (!sel_ddr_mode || preload_warmup_done) &&
+                           (!sel_stream_mode || stream_prefetch_active);
   assign tx_backpressured = core_enable && m_tx_axis_tvalid && !m_tx_axis_tready &&
                             !cfg_force_tx_ready;
   assign auto_tx_drop_start = cfg_auto_tx_drop && tx_backpressured &&
@@ -639,7 +642,8 @@ module trace_replay_core #(
 
       if (core_clear || start_pulse || !stream_ddr_mode) begin
         stream_prefetch_active <= 1'b0;
-      end else if (core_enable &&
+      end else if (replay_gate_enable &&
+                   stream_ddr_mode &&
                    (stream_fifo_level >= stream_fifo_watermark_beats ||
                     stream_ddr_done)) begin
         stream_prefetch_active <= 1'b1;

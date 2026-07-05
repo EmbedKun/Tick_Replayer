@@ -194,7 +194,24 @@ Examples:
 
 So sustained dynamic streaming at `100Gbps` is difficult with the current
 memory-mapped `XDMA -> DDR -> reader -> CMAC` architecture, especially for small
-packets.  The most realistic path toward 100G is:
+packets.
+
+Current U200 measurements from the 2026-07-05 single-port stream-boost build:
+
+| Case | Result |
+| --- | ---: |
+| `1518B`, `gap=38`, `1M` packets, full DDR prefill | `95.874Gbps`, no late/underrun/drop |
+| `1518B`, `gap=38`, `5M` packets, `12GB` ring/full prefill | `95.874Gbps`, no late/underrun/drop |
+| `1518B`, `gap=36`, `1M` packets, forced-ready internal TX | `101.200Gbps`, no late/underrun/drop |
+| `1518B`, `gap=38`, `5M` packets, `8GB` ring/dynamic refill | `55.306Gbps` average, late/underrun after ring drains |
+| dual-SSD striped dry-run, `8GB` stream | `26.828Gbps` read/reorder |
+| dual-SSD + memory-mapped `XDMA H2C pwrite()`, `8GB` stream | `14.6-15.6Gbps` FPGA load |
+
+The FPGA replay path can therefore hit the large-packet scheduler target when
+the ring is fully prefetched.  The remaining sustained dynamic bottleneck is the
+host-to-FPGA refill path.
+
+The most realistic path toward sustained 100G is:
 
 * Use large packets or payload-dense traces first.
 * Increase DDR stream-reader throughput with larger bursts, deeper FIFOs, and

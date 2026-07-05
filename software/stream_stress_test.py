@@ -55,6 +55,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host-cache-fraction", type=float, default=0.85)
     parser.add_argument("--poll-interval", type=float, default=0.0002)
     parser.add_argument("--work-dir", type=Path, default=Path("/tmp/traffic_replay_stream_ring_stress"))
+    parser.add_argument(
+        "--lane-dir",
+        type=Path,
+        action="append",
+        help="SSD lane directory for record-aligned striping; repeat for dual/multi SSD",
+    )
+    parser.add_argument("--stripe-block-bytes", type=int_auto, default=256 * 1024 * 1024)
     parser.add_argument("--frame-sizes", type=parse_frame_sizes, default=parse_frame_sizes("64,128,256,512,1024,1518"))
     parser.add_argument("--packet-count", type=int_auto, default=100_000)
     parser.add_argument("--gap-ticks", type=int_auto, default=0)
@@ -132,11 +139,11 @@ def selected_loader(args: argparse.Namespace) -> str:
     return args.loader
 
 
-def build_loader_cmd(args: argparse.Namespace, manifest_path: Path, loader: str) -> list[str]:
+def build_loader_cmd(args: argparse.Namespace, manifest_path: Path, loader: str, striped: bool = False) -> list[str]:
     common = [
         "--port",
         str(args.port),
-        "--manifest",
+        "--stripe-manifest" if striped else "--manifest",
         str(manifest_path),
         "--h2c",
         args.h2c,
@@ -197,8 +204,36 @@ def run_case(args: argparse.Namespace, frame_len: int) -> dict[str, str | int]:
     stream_path = case_dir / "stream.bin"
     manifest_path = case_dir / "stream_manifest.json"
     manifest = make_stream(stream_path, manifest_path, args.packet_count, frame_len, args.gap_ticks)
+    loader_manifest = manifest_path
+    striped = False
+    if args.lane_dir:
+        if len(args.lane_dir) < 2:
+            raise SystemExit("use at least two --lane-dir values for striped STREAM testing")
+        stripe_manifest = case_dir / "stripe_manifest.json"
+        lane_args = []
+        for lane_dir in args.lane_dir:
+            lane_args += ["--lane-dir", str(lane_dir / case_dir.name)]
+        stripe_cmd = [
+            args.python,
+            str(SCRIPT_DIR / "stream_stripe.py"),
+            "--manifest",
+            str(manifest_path),
+            "--out-manifest",
+            str(stripe_manifest),
+            "--block-bytes",
+            f"0x{args.stripe_block_bytes:x}",
+            "--force",
+            *lane_args,
+        ]
+        print(f"$ {shell_line(stripe_cmd)}")
+        stripe_proc = subprocess.run(stripe_cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+        print(stripe_proc.stdout, end="")
+        if stripe_proc.returncode != 0:
+            raise SystemExit(f"stream striping failed for frame_len={frame_len} with exit={stripe_proc.returncode}")
+        loader_manifest = stripe_manifest
+        striped = True
     loader = selected_loader(args)
-    cmd = build_loader_cmd(args, manifest_path, loader)
+    cmd = build_loader_cmd(args, loader_manifest, loader, striped)
 
     print(f"\ncase frame_len={frame_len} packets={args.packet_count} stream_bytes={manifest['stream_bytes']}")
     print(f"$ {shell_line(cmd)}")
@@ -215,6 +250,10 @@ def run_case(args: argparse.Namespace, frame_len: int) -> dict[str, str | int]:
         "stream_bytes": int(manifest["stream_bytes"]),
         "total_frame_bytes": int(manifest["total_frame_bytes"]),
         "loader": loader,
+        "source_mode": metrics.get("source_mode", "striped" if striped else "stream"),
+        "block_count": metrics.get("block_count", ""),
+        "reader_threads": metrics.get("reader_threads", ""),
+        "reader_window": metrics.get("reader_window", ""),
         "completed": metrics.get("completed", ""),
         "committed_packets": metrics.get("committed_packets", ""),
         "committed_bytes": metrics.get("committed_bytes", ""),

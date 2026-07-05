@@ -190,6 +190,39 @@ status output will show `late_packets` or `underrun_packets`.  In that case,
 increase packet gaps, reduce the requested pcap rate, or use `PRELOAD` mode for
 maximum throughput.
 
+For dual-SSD STREAM loading on one QSFP/one replay port, stripe the stream file
+into record-aligned blocks first.  The host may read blocks from both SSDs in
+parallel, but the loader still commits them to the FPGA ring strictly in
+`block_id` order, so replay timing remains controlled by the FPGA scheduler.
+
+```bash
+export SSD0=/mnt/ssd0/tick_stream_lane0
+export SSD1=/mnt/ssd1/tick_stream_lane1
+
+python3 software/stream_stripe.py \
+  --manifest "$STREAM_DIR/stream_manifest.json" \
+  --lane-dir "$SSD0" \
+  --lane-dir "$SSD1" \
+  --block-bytes 0x10000000 \
+  --out-manifest "$STREAM_DIR/stripe_manifest.json" \
+  --force
+
+sudo ./software/xdma_stream_ring_fast \
+  --port 0 \
+  --stripe-manifest "$STREAM_DIR/stripe_manifest.json" \
+  --reader-threads 2 \
+  --reader-window-blocks 8 \
+  --ring-base 0x20000000 \
+  --ring-size 0x08000000 \
+  --prefill-bytes 0x04000000 \
+  --batch-bytes 0x04000000 \
+  --read-bytes 0x04000000 \
+  --queue-depth 8 \
+  --writer-threads 2 \
+  --host-cache-bytes auto \
+  --timeout 300
+```
+
 ### Port And Address Notes
 
 The examples above use `port 0` and a one-bank-safe memory layout.  On a
@@ -366,16 +399,21 @@ Current board measurements on the U200 optical loopback:
 | `LOOP` | `1000` packets x `10` loops | correct count, no drop/stall/late/underrun |
 | `PRELOAD` dual-port | `1518B`, `gap=38` on both ports, four-bank build | `194.8Gbps` aggregate wire, no drop/late/underrun/stall |
 | `PRELOAD` dual-port | `64B`, `gap=3` on both ports, four-bank build | `140.8Gbps` aggregate wire, no drop/late/underrun/stall |
-| `STREAM` ring | `1518B`, `gap=300`, C++ loader, `writer_threads=2` | `12.1Gbps` scheduled replay, no late/underrun |
-| `STREAM` ring | `1518B`, `gap<=160`, C++ loader, current `XDMA pwrite()` path | over-requested; completes but reports late/underrun |
+| `STREAM` ring | `1518B`, `gap=38`, `1M` packets, full DDR prefill | `95.874Gbps` frame/L2, no late/underrun/drop |
+| `STREAM` ring | `1518B`, `gap=38`, `5M` packets, `12GB` ring/full prefill | `95.874Gbps` frame/L2, no late/underrun/drop |
+| `STREAM` ring | `1518B`, `gap=36`, `1M` packets, full DDR prefill | `101.200Gbps` internal forced-ready TX test |
+| `STREAM` ring | `1518B`, `gap=38`, `5M` packets, `8GB` ring/dynamic refill | `55.306Gbps` average; late/underrun after ring drains |
+| Host loader | dual-SSD striped dry-run, `8GB` stream | `26.828Gbps` read/reorder |
+| Host loader | dual-SSD + memory-mapped `XDMA H2C pwrite()`, `8GB` stream | `14.6-15.6Gbps` FPGA load |
 
 `PRELOAD` is the highest-throughput mode because the host is out of the transmit
 data path during replay.  The four-bank build removes the internal shared-DDR
 bottleneck for dual-port large-packet replay by putting `port0` TX and `port1`
 TX on different DDR controllers.  `STREAM` ring mode is designed for much
-larger traces, but its sustained replay rate is still limited by the host
-storage path, host memory copy/conversion, memory-mapped `XDMA H2C` submission,
-DDR ring writes, and FPGA DDR reads.
+larger traces.  The boosted single-port build proves that fully prefetched
+large-packet STREAM replay can hit the scheduler limit, but sustained dynamic
+replay is still limited by host memory copy/conversion, memory-mapped
+`XDMA H2C` submission, DDR ring writes, and FPGA DDR reads.
 
 ## Replay Precision
 
@@ -441,6 +479,7 @@ The host software is intentionally small and command-line oriented.
 | `software/preload_mixed_test.py` | Generate and replay mixed-size preload cases |
 | `software/loopback_rx_verify.py` | Check TX-to-RX payload samples over optical loopback |
 | `software/replay_precision_suite.py` | Run RX-side replay precision tests |
+| `software/stream_stripe.py` | Split a `STREAM` file into record-aligned blocks across SSD lanes |
 | `software/xdma_stream_ring_fast.cpp` | C++ `STREAM` ring loader with batched H2C writes |
 | `software/stream_stress_test.py` | Generate and run `STREAM` ring stress datasets |
 
@@ -732,9 +771,10 @@ reports/       Selected validation reports
   bitstream, but it has a larger timing/routing footprint and less WNS margin
   than the one-bank archive.
 - `STREAM` ring mode is functional.  The C++ loader supports batched,
-  order-preserving multi-writer `H2C` submission, but memory-mapped `XDMA`
-  `pwrite()` does not sustain a full 100G dynamic replay stream on the measured
-  host.
+  order-preserving multi-writer `H2C` submission.  Fully prefetched large-packet
+  STREAM tests reach `95.874Gbps`, but memory-mapped `XDMA pwrite()` only loads
+  about `14.6-15.6Gbps` on the measured dual-SSD host path, so unbounded dynamic
+  STREAM replay does not sustain 100G yet.
 - The RX sample writer is a lightweight debug/correctness path, not a full-rate
   packet capture DMA.  Low-rate loopback sample checks pass; high-rate sample
   capture can overflow and should be treated as an expected limitation.

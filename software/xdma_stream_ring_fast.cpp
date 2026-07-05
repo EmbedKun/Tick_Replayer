@@ -22,6 +22,7 @@
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <sstream>
@@ -83,6 +84,8 @@ static constexpr uint32_t STREAM_STATUS_PTR_ERROR = 1u << 12;
 struct Args {
   fs::path stream;
   fs::path manifest;
+  fs::path stripe_manifest;
+  fs::path block_list;
   std::string h2c = "/dev/xdma0_h2c_0";
   std::string user = "/dev/xdma0_user";
   int port = 0;
@@ -107,15 +110,27 @@ struct Args {
   double host_cache_fraction = 0.85;
   size_t queue_depth = 4;
   size_t writer_threads = 1;
+  size_t reader_threads = 0;
+  size_t reader_window_blocks = 0;
   std::string host_cache_arg;
   bool force_link_up = false;
   bool force_tx_ready = false;
   bool no_wait = false;
+  bool dry_run = false;
 };
 
 struct Chunk {
   std::vector<uint8_t> data;
   uint64_t packets = 0;
+};
+
+struct BlockInfo {
+  uint64_t id = 0;
+  uint64_t lane = 0;
+  fs::path path;
+  uint64_t bytes = 0;
+  uint64_t packets = 0;
+  uint64_t first_packet = 0;
 };
 
 struct WriteJob {
@@ -203,7 +218,8 @@ static uint16_t load_le16(const uint8_t *p) {
 static void usage(const char *argv0) {
   std::cerr
       << "Usage: " << argv0 << " --manifest stream_manifest.json [options]\n"
-      << "       " << argv0 << " --stream stream.bin [options]\n\n"
+      << "       " << argv0 << " --stream stream.bin [options]\n"
+      << "       " << argv0 << " --stripe-manifest block_manifest.json [options]\n\n"
       << "Options:\n"
       << "  --h2c PATH                 default /dev/xdma0_h2c_0\n"
       << "  --user PATH                default /dev/xdma0_user\n"
@@ -217,6 +233,9 @@ static void usage(const char *argv0) {
       << "  --read-bytes BYTES         file read chunk, default --batch-bytes\n"
       << "  --queue-depth N            producer queue depth, default 4\n"
       << "  --writer-threads N         parallel H2C pwrite workers, default 1\n"
+      << "  --reader-threads N         parallel striped block readers, default 2\n"
+      << "  --reader-window-blocks N   striped read-ahead window, default auto\n"
+      << "  --block-list PATH          TSV block list for striped input\n"
       << "  --host-cache-bytes BYTES|auto\n"
       << "                              grow producer queue to use host DRAM as SSD cache\n"
       << "  --host-cache-fraction F    auto cache fraction of MemAvailable, default 0.85\n"
@@ -228,7 +247,8 @@ static void usage(const char *argv0) {
       << "  --start-time TICKS         default 0\n"
       << "  --force-link-up\n"
       << "  --force-tx-ready\n"
-      << "  --no-wait\n";
+      << "  --no-wait\n"
+      << "  --dry-run                  read/reorder source only; do not touch XDMA/BAR\n";
 }
 
 static Args parse_args(int argc, char **argv) {
@@ -246,6 +266,10 @@ static Args parse_args(int argc, char **argv) {
       args.stream = need_value("--stream");
     } else if (key == "--manifest") {
       args.manifest = need_value("--manifest");
+    } else if (key == "--stripe-manifest") {
+      args.stripe_manifest = need_value("--stripe-manifest");
+    } else if (key == "--block-list") {
+      args.block_list = need_value("--block-list");
     } else if (key == "--h2c") {
       args.h2c = need_value("--h2c");
     } else if (key == "--user") {
@@ -270,6 +294,10 @@ static Args parse_args(int argc, char **argv) {
       args.queue_depth = static_cast<size_t>(int_auto(need_value("--queue-depth")));
     } else if (key == "--writer-threads") {
       args.writer_threads = static_cast<size_t>(int_auto(need_value("--writer-threads")));
+    } else if (key == "--reader-threads") {
+      args.reader_threads = static_cast<size_t>(int_auto(need_value("--reader-threads")));
+    } else if (key == "--reader-window-blocks") {
+      args.reader_window_blocks = static_cast<size_t>(int_auto(need_value("--reader-window-blocks")));
     } else if (key == "--host-cache-bytes") {
       args.host_cache_arg = need_value("--host-cache-bytes");
     } else if (key == "--host-cache-fraction") {
@@ -294,6 +322,8 @@ static Args parse_args(int argc, char **argv) {
       args.force_tx_ready = true;
     } else if (key == "--no-wait") {
       args.no_wait = true;
+    } else if (key == "--dry-run") {
+      args.dry_run = true;
     } else if (key == "-h" || key == "--help") {
       usage(argv[0]);
       std::exit(0);
@@ -307,6 +337,9 @@ static Args parse_args(int argc, char **argv) {
   }
   if (args.writer_threads == 0) {
     throw std::runtime_error("--writer-threads must be positive");
+  }
+  if ((!args.stripe_manifest.empty() || !args.block_list.empty()) && args.reader_threads == 0) {
+    args.reader_threads = 2;
   }
   if (args.read_bytes == 0) {
     args.read_bytes = args.batch_bytes;
@@ -433,6 +466,125 @@ static uint64_t load_manifest(Args &args) {
       args.fixed_frame_len = frame_len;
       args.fixed_record_len = record_len;
     }
+  }
+  return packet_count;
+}
+
+static std::string trim_copy(const std::string &text) {
+  size_t begin = 0;
+  while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin]))) {
+    ++begin;
+  }
+  size_t end = text.size();
+  while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+    --end;
+  }
+  return text.substr(begin, end - begin);
+}
+
+static std::vector<std::string> split_tabs(const std::string &line) {
+  std::vector<std::string> fields;
+  size_t start = 0;
+  while (start <= line.size()) {
+    size_t tab = line.find('\t', start);
+    if (tab == std::string::npos) {
+      fields.push_back(line.substr(start));
+      break;
+    }
+    fields.push_back(line.substr(start, tab - start));
+    start = tab + 1;
+  }
+  return fields;
+}
+
+static fs::path resolve_relative(const fs::path &base_file, const fs::path &path) {
+  if (path.is_absolute()) {
+    return path;
+  }
+  return base_file.parent_path() / path;
+}
+
+static std::vector<BlockInfo> load_block_list_tsv(const fs::path &path) {
+  std::ifstream file(path);
+  if (!file) {
+    throw std::runtime_error("cannot open block list: " + path.string());
+  }
+
+  std::vector<BlockInfo> blocks;
+  std::string line;
+  bool saw_header = false;
+  while (std::getline(file, line)) {
+    line = trim_copy(line);
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    std::vector<std::string> fields = split_tabs(line);
+    if (!saw_header) {
+      saw_header = true;
+      if (!fields.empty() && fields[0] == "block_id") {
+        continue;
+      }
+    }
+    if (fields.size() < 6) {
+      throw std::runtime_error("bad block list line: " + line);
+    }
+
+    BlockInfo block;
+    block.id = int_auto(fields[0]);
+    block.lane = int_auto(fields[1]);
+    block.path = resolve_relative(path, fs::path(fields[2]));
+    block.bytes = int_auto(fields[3]);
+    block.packets = int_auto(fields[4]);
+    block.first_packet = int_auto(fields[5]);
+    if (block.bytes == 0 || (block.bytes % DATA_BEAT_BYTES) != 0) {
+      throw std::runtime_error("block bytes must be a positive 64-byte multiple: " + line);
+    }
+    if (block.packets == 0) {
+      throw std::runtime_error("block packets must be positive: " + line);
+    }
+    blocks.push_back(std::move(block));
+  }
+
+  std::sort(blocks.begin(), blocks.end(),
+            [](const BlockInfo &a, const BlockInfo &b) { return a.id < b.id; });
+  for (size_t idx = 0; idx < blocks.size(); ++idx) {
+    if (blocks[idx].id != idx) {
+      throw std::runtime_error("block IDs must be contiguous starting at zero");
+    }
+  }
+  return blocks;
+}
+
+static uint64_t load_stripe_manifest(Args &args, std::vector<BlockInfo> &blocks) {
+  uint64_t packet_count = 0;
+  if (!args.stripe_manifest.empty()) {
+    std::string text = read_text_file(args.stripe_manifest);
+    packet_count = find_json_uint(text, "packet_count");
+    if (args.block_list.empty()) {
+      std::string block_list_file = find_json_string(text, "block_list_file");
+      if (block_list_file.empty()) {
+        throw std::runtime_error("stripe manifest has no block_list_file");
+      }
+      args.block_list = resolve_relative(args.stripe_manifest, fs::path(block_list_file));
+    }
+  }
+  if (args.block_list.empty()) {
+    throw std::runtime_error("--block-list is required without --stripe-manifest");
+  }
+
+  blocks = load_block_list_tsv(args.block_list);
+  if (blocks.empty()) {
+    throw std::runtime_error("block list is empty");
+  }
+
+  uint64_t sum_packets = 0;
+  for (const BlockInfo &block : blocks) {
+    sum_packets += block.packets;
+  }
+  if (packet_count == 0) {
+    packet_count = sum_packets;
+  } else if (packet_count != sum_packets) {
+    throw std::runtime_error("stripe manifest packet_count does not match block list");
   }
   return packet_count;
 }
@@ -682,13 +834,171 @@ static void producer_thread(const Args &args, ChunkQueue &queue,
   queue.finish();
 }
 
+class StripedReadState {
+ public:
+  StripedReadState(const std::vector<BlockInfo> &blocks, size_t window_blocks)
+      : blocks_(blocks), window_blocks_(std::max<size_t>(1, window_blocks)),
+        max_completed_(std::max<size_t>(1, window_blocks)) {}
+
+  bool get_work(BlockInfo &block) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_work_.wait(lock, [&] {
+      return error_ || next_assign_ >= blocks_.size() ||
+             next_assign_ < next_emit_ + window_blocks_;
+    });
+    if (error_ || next_assign_ >= blocks_.size()) {
+      return false;
+    }
+    block = blocks_[next_assign_++];
+    return true;
+  }
+
+  void submit(uint64_t id, Chunk &&chunk) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_space_.wait(lock, [&] {
+      return error_ || completed_.size() < max_completed_ || id == next_emit_;
+    });
+    if (error_) {
+      return;
+    }
+    completed_.emplace(id, std::move(chunk));
+    cv_emit_.notify_all();
+  }
+
+  bool pop_next(Chunk &chunk) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_emit_.wait(lock, [&] {
+      return error_ || next_emit_ >= blocks_.size() ||
+             completed_.find(next_emit_) != completed_.end();
+    });
+    if (error_) {
+      std::rethrow_exception(error_);
+    }
+    if (next_emit_ >= blocks_.size()) {
+      return false;
+    }
+    auto it = completed_.find(next_emit_);
+    chunk = std::move(it->second);
+    completed_.erase(it);
+    ++next_emit_;
+    cv_space_.notify_all();
+    cv_work_.notify_all();
+    return true;
+  }
+
+  void fail(std::exception_ptr error) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!error_) {
+        error_ = error;
+      }
+    }
+    cv_work_.notify_all();
+    cv_emit_.notify_all();
+    cv_space_.notify_all();
+  }
+
+ private:
+  const std::vector<BlockInfo> &blocks_;
+  size_t window_blocks_;
+  size_t max_completed_;
+  size_t next_assign_ = 0;
+  size_t next_emit_ = 0;
+  std::map<uint64_t, Chunk> completed_;
+  std::exception_ptr error_;
+  std::mutex mutex_;
+  std::condition_variable cv_work_;
+  std::condition_variable cv_emit_;
+  std::condition_variable cv_space_;
+};
+
+static void striped_reader_worker(StripedReadState &state) {
+  try {
+    BlockInfo block;
+    while (state.get_work(block)) {
+      int fd = ::open(block.path.c_str(), O_RDONLY);
+      if (fd < 0) {
+        throw std::runtime_error("cannot open stream block: " + block.path.string());
+      }
+      (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+      Chunk chunk;
+      chunk.data.resize(static_cast<size_t>(block.bytes));
+      chunk.packets = block.packets;
+      try {
+        read_all_at(fd, chunk.data.data(), chunk.data.size(), 0);
+      } catch (...) {
+        ::close(fd);
+        throw;
+      }
+      ::close(fd);
+      state.submit(block.id, std::move(chunk));
+    }
+  } catch (...) {
+    state.fail(std::current_exception());
+  }
+}
+
+static void striped_producer_thread(const Args &args,
+                                    const std::vector<BlockInfo> &blocks,
+                                    ChunkQueue &queue,
+                                    std::atomic<uint64_t> &parsed_packets,
+                                    std::atomic<uint64_t> &parsed_bytes,
+                                    std::exception_ptr &producer_error) {
+  size_t readers = args.reader_threads ? args.reader_threads : 2;
+  size_t window = args.reader_window_blocks;
+  if (window == 0) {
+    window = std::max<size_t>(args.queue_depth, readers * 2);
+  }
+  window = std::max<size_t>(window, readers);
+
+  StripedReadState state(blocks, window);
+  std::vector<std::thread> reader_threads;
+  reader_threads.reserve(readers);
+
+  try {
+    for (size_t idx = 0; idx < readers; ++idx) {
+      reader_threads.emplace_back(striped_reader_worker, std::ref(state));
+    }
+
+    uint64_t total_packets = 0;
+    uint64_t total_bytes = 0;
+    Chunk chunk;
+    while (state.pop_next(chunk)) {
+      total_packets += chunk.packets;
+      total_bytes += chunk.data.size();
+      parsed_packets.store(total_packets, std::memory_order_relaxed);
+      parsed_bytes.store(total_bytes, std::memory_order_relaxed);
+      queue.push(std::move(chunk));
+    }
+
+    for (std::thread &thread : reader_threads) {
+      if (thread.joinable()) {
+        thread.join();
+      }
+    }
+  } catch (...) {
+    producer_error = std::current_exception();
+    state.fail(producer_error);
+    for (std::thread &thread : reader_threads) {
+      if (thread.joinable()) {
+        thread.join();
+      }
+    }
+  }
+  queue.finish();
+}
+
 int main(int argc, char **argv) {
   try {
     Args args = parse_args(argc, argv);
-    uint64_t manifest_packets = load_manifest(args);
-    if (args.stream.empty()) {
+    std::vector<BlockInfo> stripe_blocks;
+    bool striped_source = !args.stripe_manifest.empty() || !args.block_list.empty();
+    uint64_t manifest_packets = striped_source ? load_stripe_manifest(args, stripe_blocks)
+                                               : load_manifest(args);
+    if (!striped_source && args.stream.empty()) {
       usage(argv[0]);
-      throw std::runtime_error("--stream or --manifest is required");
+      throw std::runtime_error("--stream, --manifest, or --stripe-manifest is required");
     }
     if (args.ring_size == 0 || (args.ring_size % DATA_BEAT_BYTES) != 0) {
       throw std::runtime_error("--ring-size must be a positive 64-byte multiple");
@@ -710,6 +1020,76 @@ int main(int argc, char **argv) {
     }
     prefill = std::max<uint64_t>(DATA_BEAT_BYTES, std::min(prefill, args.ring_size - args.guard_bytes));
     uint64_t base = reg_base_for_port(args);
+
+    auto start_producer = [&](ChunkQueue &queue,
+                              std::atomic<uint64_t> &parsed_packets,
+                              std::atomic<uint64_t> &parsed_bytes,
+                              std::exception_ptr &producer_error) {
+      if (striped_source) {
+        return std::thread(striped_producer_thread, std::cref(args), std::cref(stripe_blocks),
+                           std::ref(queue), std::ref(parsed_packets),
+                           std::ref(parsed_bytes), std::ref(producer_error));
+      }
+      return std::thread(producer_thread, std::cref(args), std::ref(queue),
+                         std::ref(parsed_packets), std::ref(parsed_bytes),
+                         std::ref(producer_error));
+    };
+
+    if (args.dry_run) {
+      ChunkQueue queue(args.queue_depth);
+      std::atomic<uint64_t> parsed_packets{0};
+      std::atomic<uint64_t> parsed_bytes{0};
+      std::exception_ptr producer_error;
+      auto t0 = std::chrono::steady_clock::now();
+      std::thread producer = start_producer(queue, parsed_packets, parsed_bytes, producer_error);
+
+      uint64_t chunks = 0;
+      uint64_t bytes = 0;
+      uint64_t packets = 0;
+      Chunk chunk;
+      while (queue.pop(chunk)) {
+        ++chunks;
+        bytes += chunk.data.size();
+        packets += chunk.packets;
+      }
+      if (producer.joinable()) {
+        producer.join();
+      }
+      if (producer_error) {
+        std::rethrow_exception(producer_error);
+      }
+      if (manifest_packets != 0 && manifest_packets != packets) {
+        throw std::runtime_error("manifest packet_count mismatch: expected " +
+                                 std::to_string(manifest_packets) + " parsed " +
+                                 std::to_string(packets));
+      }
+      double seconds = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - t0).count();
+      double read_gbps = seconds > 0.0 ? static_cast<double>(bytes) * 8.0 / seconds / 1e9 : 0.0;
+      std::cout << std::boolalpha;
+      std::cout << "dry_run           : true\n";
+      std::cout << "source_mode       : " << (striped_source ? "striped" : "stream") << "\n";
+      if (striped_source) {
+        std::cout << "stripe_manifest   : " << args.stripe_manifest << "\n";
+        std::cout << "block_list        : " << args.block_list << "\n";
+        std::cout << "block_count       : " << stripe_blocks.size() << "\n";
+        std::cout << "reader_threads    : " << args.reader_threads << "\n";
+        std::cout << "reader_window     : "
+                  << (args.reader_window_blocks ? args.reader_window_blocks
+                                                : std::max<size_t>(args.queue_depth, args.reader_threads * 2))
+                  << "\n";
+      } else {
+        std::cout << "stream_file       : " << args.stream << "\n";
+      }
+      std::cout << "chunks            : " << chunks << "\n";
+      std::cout << "committed_bytes   : " << bytes << "\n";
+      std::cout << "committed_packets : " << packets << "\n";
+      std::cout << std::fixed << std::setprecision(3);
+      std::cout << "read_gbps         : " << read_gbps << "\n";
+      std::cout << std::setprecision(6);
+      std::cout << "read_seconds      : " << seconds << "\n";
+      return 0;
+    }
 
     std::vector<int> h2c_fds;
     h2c_fds.reserve(args.writer_threads);
@@ -735,9 +1115,7 @@ int main(int argc, char **argv) {
     std::atomic<uint64_t> parsed_packets{0};
     std::atomic<uint64_t> parsed_bytes{0};
     std::exception_ptr producer_error;
-    std::thread producer(producer_thread, std::cref(args), std::ref(queue),
-                         std::ref(parsed_packets), std::ref(parsed_bytes),
-                         std::ref(producer_error));
+    std::thread producer = start_producer(queue, parsed_packets, parsed_bytes, producer_error);
 
     bool started = false;
     uint64_t write_count = 0;
@@ -818,12 +1196,14 @@ int main(int argc, char **argv) {
             break;
           }
 
+          if (!write_jobs.empty()) {
+            commit_ready_jobs(true);
+            continue;
+          }
+
           if (!started && write_count != 0) {
             start_replay(user_fd, base);
             started = true;
-          }
-          if (!write_jobs.empty()) {
-            commit_ready_jobs(true);
           } else {
             std::this_thread::sleep_for(std::chrono::duration<double>(args.poll_interval));
           }
@@ -874,7 +1254,19 @@ int main(int argc, char **argv) {
       double load_gbps = load_seconds > 0.0 ? static_cast<double>(write_count) * 8.0 / load_seconds / 1e9 : 0.0;
 
       std::cout << std::boolalpha;
-      std::cout << "stream_file       : " << args.stream << "\n";
+      std::cout << "source_mode       : " << (striped_source ? "striped" : "stream") << "\n";
+      if (striped_source) {
+        std::cout << "stripe_manifest   : " << args.stripe_manifest << "\n";
+        std::cout << "block_list        : " << args.block_list << "\n";
+        std::cout << "block_count       : " << stripe_blocks.size() << "\n";
+        std::cout << "reader_threads    : " << args.reader_threads << "\n";
+        std::cout << "reader_window     : "
+                  << (args.reader_window_blocks ? args.reader_window_blocks
+                                                : std::max<size_t>(args.queue_depth, args.reader_threads * 2))
+                  << "\n";
+      } else {
+        std::cout << "stream_file       : " << args.stream << "\n";
+      }
       if (args.fixed_record_len != 0) {
         std::cout << "fixed_frame_len   : " << args.fixed_frame_len << "\n";
         std::cout << "fixed_record_len  : " << args.fixed_record_len << "\n";

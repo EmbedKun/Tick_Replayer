@@ -180,6 +180,39 @@ sudo python3 software/traffic_replay_cli.py --port 0 status
 `underrun_packets`。此时应增大包间隔、降低目标 `pcap` 带宽，或者改用 `PRELOAD`
 模式获得最高吞吐。
 
+如果要在单个 QSFP/单个 replay port 上使用双 SSD 并发 STREAM 装载，先把 stream 文件
+切成按完整 packet record 对齐的大 block。host 可以从两块 SSD 并发读取这些 block，
+但 loader 仍然严格按照 `block_id` 顺序提交到 FPGA ring，因此包间隔仍由 FPGA
+scheduler 控制。
+
+```bash
+export SSD0=/mnt/ssd0/tick_stream_lane0
+export SSD1=/mnt/ssd1/tick_stream_lane1
+
+python3 software/stream_stripe.py \
+  --manifest "$STREAM_DIR/stream_manifest.json" \
+  --lane-dir "$SSD0" \
+  --lane-dir "$SSD1" \
+  --block-bytes 0x10000000 \
+  --out-manifest "$STREAM_DIR/stripe_manifest.json" \
+  --force
+
+sudo ./software/xdma_stream_ring_fast \
+  --port 0 \
+  --stripe-manifest "$STREAM_DIR/stripe_manifest.json" \
+  --reader-threads 2 \
+  --reader-window-blocks 8 \
+  --ring-base 0x20000000 \
+  --ring-size 0x08000000 \
+  --prefill-bytes 0x04000000 \
+  --batch-bytes 0x04000000 \
+  --read-bytes 0x04000000 \
+  --queue-depth 8 \
+  --writer-threads 2 \
+  --host-cache-bytes auto \
+  --timeout 300
+```
+
 ### 端口和地址说明
 
 上面的例子使用 `port 0` 和单 DDR bank 下安全的地址布局。四 DDR bank build 中，
@@ -316,12 +349,18 @@ header 带来更明显的膨胀。
 | `PRELOAD` | `1518B`, `gap=38` | `97.4Gbps` wire，`95.9Gbps` frame/L2 |
 | `PRELOAD` | mixed `64:3,1518:38` | `95.4Gbps` wire |
 | `LOOP` | `1000` 包 x `10` loops | 计数正确，无 drop/stall/late/underrun |
-| `STREAM` ring | `1518B`, `gap=300`, `1M` packets | 当前正确性优先测试约 `12.1Gbps` |
+| `STREAM` ring | `1518B`, `gap=38`, `1M` packets，全量预填 DDR | L2 `95.874Gbps`，无 late/underrun/drop |
+| `STREAM` ring | `1518B`, `gap=38`, `5M` packets，`12GB` ring 全量预填 | L2 `95.874Gbps`，无 late/underrun/drop |
+| `STREAM` ring | `1518B`, `gap=36`, `1M` packets，全量预填 DDR | 内部 forced-ready TX 测试 `101.200Gbps` |
+| `STREAM` ring | `1518B`, `gap=38`, `5M` packets，`8GB` ring 动态换入 | 平均 `55.306Gbps`；ring 耗尽后出现 late/underrun |
+| Host loader | 双 SSD striped dry-run，`8GB` stream | 读取/重排 `26.828Gbps` |
+| Host loader | 双 SSD + memory-mapped `XDMA H2C pwrite()`，`8GB` stream | FPGA 装载 `14.6-15.6Gbps` |
 | raw `XDMA H2C` | host memory 写 FPGA DDR benchmark | 不同配置下观察到约 `69Gbps` 到 `83Gbps` |
 
 `PRELOAD` 吞吐最高，因为回放过程中 host 不在发包数据路径里。`STREAM` ring 模式主要
-用于更大 trace，但长期吞吐受 host SSD、host 内存搬运、`XDMA H2C`、DDR ring 写入和
-FPGA DDR 读取共同限制。
+用于更大 trace。当前单口增强版本证明了全量预填的大包 STREAM 可以达到调度上限，
+但无限长动态回放仍受 host 内存拷贝/转换、memory-mapped `XDMA H2C` 提交、DDR ring
+写入以及 FPGA DDR 读出限制。
 
 ## 回放精度
 
@@ -381,6 +420,7 @@ python3 software/replay_precision_suite.py \
 | `software/preload_mixed_test.py` | 生成并回放大小包混合 preload 测试 |
 | `software/loopback_rx_verify.py` | 通过光纤回环检查 TX 到 RX 的 payload sample |
 | `software/replay_precision_suite.py` | 运行 RX 侧回放精度测试 |
+| `software/stream_stripe.py` | 把 `STREAM` 文件按完整 record 切成跨 SSD lane 的 block |
 | `software/xdma_stream_ring_fast.cpp` | C++ `STREAM` ring loader，使用批量 H2C 写 |
 | `software/stream_stress_test.py` | 生成并运行 `STREAM` ring 压力测试 |
 
@@ -600,8 +640,8 @@ reports/       部分验证报告
 
 ## 当前限制
 
-- 当前公开硬件 build 使用一个 U200 DDR bank，还没有启用全部四个 DDR bank，也就是还没有完整使用 `64GB`。
-- `STREAM` ring 模式可用，但当前正确性优先 loader 还不能持续 100G 回放。
+- 当前公开硬件 build 默认使用一个 U200 DDR bank；四 DDR bank timing-clean 版本已经归档，但默认版本仍保持单 bank，便于调试和复现。
+- `STREAM` ring 模式可用。全量预填的大包 STREAM 测试可以达到 `95.874Gbps`，但当前 memory-mapped `XDMA pwrite()` 在双 SSD 主机路径上的 FPGA 装载速度约为 `14.6-15.6Gbps`，因此无限长动态 STREAM 还不能持续 100G 回放。
 - RX interval sample 只保存最近 `4096` 个间隔。长 trace 有完整聚合统计，但没有完整逐包 timestamp 日志。
 - RX 侧端到端精度包含 scheduler、TX buffering、CMAC framing、光纤回环、RX CMAC 和 RX 采样量化；大小包混合场景的局部误差会比固定包长更大。
 - 双端口同时接近 100G 大包回放时，当前单 DDR bank 共享路径会成为瓶颈。

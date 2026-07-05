@@ -5,7 +5,8 @@ import traffic_replay_pkg::*;
 module ddr_stream_reader #(
   parameter int AXI_ADDR_W_P = AXI_ADDR_W,
   parameter int AXI_ID_W_P   = AXI_ID_W,
-  parameter int MAX_BURST_BEATS = 256
+  parameter int MAX_BURST_BEATS = 256,
+  parameter int MAX_OUTSTANDING_BURSTS = 16
 ) (
   input  logic                     clk,
   input  logic                     rstn,
@@ -47,46 +48,78 @@ module ddr_stream_reader #(
   output logic [3:0]               debug_state
 );
   typedef enum logic [3:0] {
-    ST_IDLE,
-    ST_PREP0,
-    ST_PREP1,
-    ST_AR,
-    ST_R,
-    ST_DONE
+    ST_IDLE = 4'd0,
+    ST_RUN  = 4'd1,
+    ST_DONE = 4'd2
   } state_t;
 
+  localparam int CMD_DEPTH = (MAX_OUTSTANDING_BURSTS < 2) ? 2 : MAX_OUTSTANDING_BURSTS;
+  localparam int CMD_PTR_W = (CMD_DEPTH <= 2) ? 1 : $clog2(CMD_DEPTH);
+  localparam int CMD_CNT_W = $clog2(CMD_DEPTH + 1);
+
   localparam logic [63:0] BEAT_BYTES_U64 = AXIS_KEEP_BYTES;
-  localparam logic [63:0] MAX_BURST_BEATS_U64 = MAX_BURST_BEATS;
-  localparam logic [AXI_ADDR_W_P-1:0] BEAT_BYTES_ADDR = AXIS_KEEP_BYTES;
+  localparam logic [63:0] MAX_BURST_BEATS_U64 = 64'(MAX_BURST_BEATS);
+  localparam logic [CMD_CNT_W-1:0] CMD_DEPTH_LEVEL = CMD_CNT_W'(CMD_DEPTH);
 
   state_t state;
 
-  logic [8:0]  burst_beats_left;
-  logic [8:0]  burst_beats_issue;
-  logic [63:0] ring_offset;
+  logic [63:0] issue_count;
+  logic [63:0] issue_offset;
+  logic [AXI_ADDR_W_P-1:0] ar_addr_q;
+  logic [8:0] ar_beats_q;
+  logic       ar_stage_valid;
+  logic       ar_fire;
+
+  logic [8:0] cmd_beats_mem [CMD_DEPTH];
+  logic [CMD_PTR_W-1:0] cmd_wr_ptr;
+  logic [CMD_PTR_W-1:0] cmd_rd_ptr;
+  logic [CMD_CNT_W-1:0] cmd_count;
+  logic [CMD_CNT_W:0]   cmd_total_occupied;
+  logic                 cmd_accept_ready;
+  logic                 cmd_push;
+  logic                 cmd_pop;
+
+  logic       rsp_valid;
+  logic       rsp_active;
+  logic [8:0] rsp_beats_left;
+  logic [8:0] rsp_beats_left_eff;
+  logic       rsp_last_beat;
+  logic       rsp_fire;
+  logic       rsp_error;
 
   logic        ring_mode;
   logic        ring_size_valid;
   logic [63:0] ring_write_aligned;
   logic        ring_write_behind;
+  logic        issue_write_behind;
   logic [63:0] ring_available_bytes_raw;
-  logic [63:0] ring_available_beats_raw;
+  logic [63:0] issue_available_bytes_raw;
+  logic [63:0] issue_available_beats_raw;
   logic [63:0] ring_bytes_to_wrap;
   logic [63:0] ring_beats_to_wrap;
   logic        ring_overrun;
   logic        ring_empty_wait;
-  logic        next_beat_wrap;
-  logic [63:0] next_ring_offset;
-  logic [AXI_ADDR_W_P-1:0] next_stream_addr;
+  logic        fatal_ring_error;
+  logic [8:0]  issue_burst_beats;
+  logic [63:0] issue_burst_bytes;
+  logic [63:0] issue_offset_after_burst;
+  logic [63:0] ar_burst_bytes;
+  logic [63:0] ar_offset_after_burst;
+  logic        issue_req;
+  logic        input_consumed;
+  logic        pending_empty;
   logic [63:0] ring_level_next;
   logic [31:0] stream_status_next;
 
-  logic [63:0] prep_available_beats;
-  logic [63:0] prep_beats_to_wrap;
-  logic        prep_eof;
-  logic        prep_size_valid;
-  logic        prep_write_behind;
-  logic        prep_overrun;
+  function automatic logic [CMD_PTR_W-1:0] inc_cmd_ptr(input logic [CMD_PTR_W-1:0] ptr);
+    begin
+      if (ptr == CMD_PTR_W'(CMD_DEPTH - 1)) begin
+        inc_cmd_ptr = '0;
+      end else begin
+        inc_cmd_ptr = ptr + {{(CMD_PTR_W-1){1'b0}}, 1'b1};
+      end
+    end
+  endfunction
 
   function automatic logic [8:0] min_burst_beats(
     input logic [63:0] available_beats,
@@ -115,19 +148,61 @@ module ddr_stream_reader #(
   assign ring_size_valid    = ring_mode && (cfg_ring_size[5:0] == 6'd0);
   assign ring_write_aligned = {cfg_ring_write_count[63:6], 6'd0};
   assign ring_write_behind  = ring_write_aligned < read_count;
-  assign ring_available_bytes_raw = ring_write_behind ? 64'd0 : (ring_write_aligned - read_count);
-  assign ring_available_beats_raw = ring_available_bytes_raw[63:6];
+  assign issue_write_behind = ring_write_aligned < issue_count;
+  assign ring_available_bytes_raw =
+    ring_write_behind ? 64'd0 : (ring_write_aligned - read_count);
+  assign issue_available_bytes_raw =
+    issue_write_behind ? 64'd0 : (ring_write_aligned - issue_count);
+  assign issue_available_beats_raw = issue_available_bytes_raw[63:6];
   assign ring_overrun = ring_size_valid && (ring_available_bytes_raw > cfg_ring_size);
-  assign ring_empty_wait = busy && !done && ring_size_valid && !ring_write_behind &&
-                           !ring_overrun && (ring_available_beats_raw == 64'd0) &&
-                           !cfg_ring_eof;
-  assign ring_bytes_to_wrap = (ring_size_valid && (cfg_ring_size > ring_offset)) ?
-                              (cfg_ring_size - ring_offset) : 64'd0;
+  assign ring_bytes_to_wrap = (ring_size_valid && (cfg_ring_size > issue_offset)) ?
+                              (cfg_ring_size - issue_offset) : 64'd0;
   assign ring_beats_to_wrap = ring_bytes_to_wrap[63:6];
-  assign next_beat_wrap = (ring_offset + BEAT_BYTES_U64 >= cfg_ring_size);
-  assign next_ring_offset = next_beat_wrap ? 64'd0 : (ring_offset + BEAT_BYTES_U64);
-  assign next_stream_addr = next_beat_wrap ? cfg_stream_base[AXI_ADDR_W_P-1:0] :
-                            (m_axi_araddr + BEAT_BYTES_ADDR);
+  assign fatal_ring_error = !ring_size_valid || ring_write_behind ||
+                            issue_write_behind || ring_overrun;
+
+  assign issue_burst_beats = min_burst_beats(issue_available_beats_raw,
+                                             ring_beats_to_wrap);
+  assign issue_burst_bytes = {55'd0, issue_burst_beats} << 6;
+  assign issue_offset_after_burst =
+    (issue_offset + issue_burst_bytes >= cfg_ring_size) ?
+      (issue_offset + issue_burst_bytes - cfg_ring_size) :
+      (issue_offset + issue_burst_bytes);
+  assign ar_burst_bytes = {55'd0, ar_beats_q} << 6;
+  assign ar_offset_after_burst =
+    (issue_offset + ar_burst_bytes >= cfg_ring_size) ?
+      (issue_offset + ar_burst_bytes - cfg_ring_size) :
+      (issue_offset + ar_burst_bytes);
+
+  assign cmd_total_occupied = {1'b0, cmd_count} +
+                              {{CMD_CNT_W{1'b0}}, ar_stage_valid};
+  assign cmd_accept_ready = (cmd_total_occupied < {1'b0, CMD_DEPTH_LEVEL});
+  assign issue_req =
+    (state == ST_RUN) &&
+    !error &&
+    !fatal_ring_error &&
+    !ar_stage_valid &&
+    cmd_accept_ready &&
+    (issue_burst_beats != 9'd0);
+
+  assign input_consumed =
+    cfg_ring_eof &&
+    (issue_count >= ring_write_aligned);
+  assign pending_empty =
+    !ar_stage_valid &&
+    (cmd_count == '0) &&
+    !rsp_active;
+  assign ring_empty_wait =
+    (state == ST_RUN) &&
+    !done &&
+    ring_size_valid &&
+    !ring_write_behind &&
+    !issue_write_behind &&
+    !ring_overrun &&
+    (issue_available_beats_raw == 64'd0) &&
+    !cfg_ring_eof &&
+    pending_empty;
+
   assign ring_level_next = ring_available_bytes_raw;
   assign stream_status_next = {
     19'd0,
@@ -144,166 +219,149 @@ module ddr_stream_reader #(
   };
 
   assign m_axi_arid    = '0;
+  assign m_axi_araddr  = ar_addr_q;
   assign m_axi_arsize  = 3'd6;
   assign m_axi_arburst = 2'b01;
-  assign m_axi_arvalid = (state == ST_AR) && (burst_beats_issue != 9'd0);
-  assign m_axi_arlen   = (burst_beats_issue == 9'd0) ? 8'd0 : arlen_from_beats(burst_beats_issue);
+  assign m_axi_arvalid = ar_stage_valid;
+  assign m_axi_arlen   = arlen_from_beats(ar_beats_q);
+  assign ar_fire       = m_axi_arvalid && m_axi_arready;
 
-  assign m_axi_rready  = (state == ST_R) && m_axis_tready;
+  assign rsp_valid          = (cmd_count != '0);
+  assign rsp_beats_left_eff = rsp_active ? rsp_beats_left : cmd_beats_mem[cmd_rd_ptr];
+  assign rsp_last_beat      = rsp_valid && (rsp_beats_left_eff <= 9'd1);
+  assign m_axi_rready       = rsp_valid && m_axis_tready;
+  assign rsp_fire           = m_axi_rvalid && m_axi_rready;
+  assign rsp_error          = rsp_fire &&
+                              ((m_axi_rresp != 2'b00) ||
+                               (m_axi_rlast != rsp_last_beat));
 
   assign m_axis_tdata  = m_axi_rdata;
-  assign m_axis_tvalid = (state == ST_R) && m_axi_rvalid;
+  assign m_axis_tvalid = rsp_valid && m_axi_rvalid;
   assign m_axis_tkeep  = {AXIS_KEEP_W{1'b1}};
   assign m_axis_tlast  = 1'b0;
   assign debug_state   = state;
+  assign cmd_push      = ar_fire;
+  assign cmd_pop       = rsp_fire && rsp_last_beat;
 
   always_ff @(posedge clk) begin
     if (!rstn) begin
       state             <= ST_IDLE;
-      m_axi_araddr      <= '0;
-      burst_beats_left  <= '0;
-      burst_beats_issue <= '0;
+      ar_addr_q         <= '0;
+      ar_beats_q        <= '0;
+      ar_stage_valid    <= 1'b0;
+      issue_count       <= '0;
+      issue_offset      <= '0;
+      cmd_wr_ptr        <= '0;
+      cmd_rd_ptr        <= '0;
+      cmd_count         <= '0;
+      rsp_active        <= 1'b0;
+      rsp_beats_left    <= '0;
       read_count        <= '0;
-      ring_offset       <= '0;
-      prep_available_beats <= '0;
-      prep_beats_to_wrap   <= '0;
-      prep_eof             <= 1'b0;
-      prep_size_valid      <= 1'b0;
-      prep_write_behind    <= 1'b0;
-      prep_overrun         <= 1'b0;
       ring_level        <= '0;
       stream_status     <= '0;
       busy              <= 1'b0;
       done              <= 1'b0;
       error             <= 1'b0;
     end else begin
-      // Register host-visible status.  This keeps the AXI-Lite read path away
-      // from ring pointer arithmetic and also makes status sampling stable.
       ring_level    <= ring_level_next;
       stream_status <= stream_status_next;
 
       if (clear || stop) begin
         state             <= ST_IDLE;
-        m_axi_araddr      <= '0;
-        burst_beats_left  <= '0;
-        burst_beats_issue <= '0;
+        ar_addr_q         <= '0;
+        ar_beats_q        <= '0;
+        ar_stage_valid    <= 1'b0;
+        issue_count       <= '0;
+        issue_offset      <= '0;
+        cmd_wr_ptr        <= '0;
+        cmd_rd_ptr        <= '0;
+        cmd_count         <= '0;
+        rsp_active        <= 1'b0;
+        rsp_beats_left    <= '0;
         read_count        <= '0;
-        ring_offset       <= '0;
-        prep_available_beats <= '0;
-        prep_beats_to_wrap   <= '0;
-        prep_eof             <= 1'b0;
-        prep_size_valid      <= 1'b0;
-        prep_write_behind    <= 1'b0;
-        prep_overrun         <= 1'b0;
         ring_level        <= '0;
         stream_status     <= '0;
         busy              <= 1'b0;
         done              <= 1'b0;
         error             <= 1'b0;
+      end else if (start) begin
+        ar_addr_q         <= '0;
+        ar_beats_q        <= '0;
+        ar_stage_valid    <= 1'b0;
+        issue_count       <= '0;
+        issue_offset      <= '0;
+        cmd_wr_ptr        <= '0;
+        cmd_rd_ptr        <= '0;
+        cmd_count         <= '0;
+        rsp_active        <= 1'b0;
+        rsp_beats_left    <= '0;
+        read_count        <= '0;
+        error             <= !ring_size_valid;
+        if (ring_size_valid) begin
+          state <= ST_RUN;
+          busy  <= 1'b1;
+          done  <= 1'b0;
+        end else begin
+          state <= ST_DONE;
+          busy  <= 1'b0;
+          done  <= 1'b1;
+        end
       end else begin
-        unique case (state)
-          ST_IDLE: begin
-            done <= 1'b0;
-            if (start) begin
-              m_axi_araddr      <= cfg_stream_base[AXI_ADDR_W_P-1:0];
-              burst_beats_left  <= '0;
-              burst_beats_issue <= '0;
-              read_count        <= 64'd0;
-              ring_offset       <= 64'd0;
-              error             <= !ring_size_valid;
-              if (ring_size_valid) begin
-                busy  <= 1'b1;
-                done  <= 1'b0;
-                state <= ST_PREP0;
-              end else begin
-                busy  <= 1'b0;
-                done  <= 1'b1;
-                state <= ST_DONE;
-              end
+        if (state == ST_RUN) begin
+          if (fatal_ring_error || rsp_error) begin
+            error <= 1'b1;
+          end
+
+          if (ar_fire) begin
+            ar_stage_valid <= 1'b0;
+            issue_count    <= issue_count + ar_burst_bytes;
+            issue_offset   <= ar_offset_after_burst;
+          end else if (issue_req) begin
+            ar_stage_valid <= 1'b1;
+            ar_addr_q      <= AXI_ADDR_W_P'(cfg_stream_base + issue_offset);
+            ar_beats_q     <= issue_burst_beats;
+          end
+
+          if (cmd_push) begin
+            cmd_beats_mem[cmd_wr_ptr] <= ar_beats_q;
+            cmd_wr_ptr <= inc_cmd_ptr(cmd_wr_ptr);
+          end
+          if (cmd_pop) begin
+            cmd_rd_ptr <= inc_cmd_ptr(cmd_rd_ptr);
+          end
+
+          unique case ({cmd_push, cmd_pop})
+            2'b10: cmd_count <= cmd_count + {{(CMD_CNT_W-1){1'b0}}, 1'b1};
+            2'b01: cmd_count <= cmd_count - {{(CMD_CNT_W-1){1'b0}}, 1'b1};
+            default: begin
             end
-          end
+          endcase
 
-          ST_PREP0: begin
-            prep_available_beats <= ring_available_beats_raw;
-            prep_beats_to_wrap   <= ring_beats_to_wrap;
-            prep_eof             <= cfg_ring_eof;
-            prep_size_valid      <= ring_size_valid;
-            prep_write_behind    <= ring_write_behind;
-            prep_overrun         <= ring_overrun;
-            state                <= ST_PREP1;
-          end
-
-          ST_PREP1: begin
-            error <= error | !prep_size_valid | prep_write_behind | prep_overrun;
-            if (!prep_size_valid || prep_write_behind || prep_overrun) begin
-              burst_beats_issue <= 9'd0;
-              busy              <= 1'b0;
-              done              <= 1'b1;
-              state             <= ST_DONE;
-            end else if ((prep_available_beats == 64'd0) && prep_eof) begin
-              burst_beats_issue <= 9'd0;
-              busy              <= 1'b0;
-              done              <= 1'b1;
-              state             <= ST_DONE;
-            end else if (prep_available_beats == 64'd0) begin
-              burst_beats_issue <= 9'd0;
-              state             <= ST_PREP0;
+          if (rsp_fire) begin
+            read_count <= read_count + BEAT_BYTES_U64;
+            if (rsp_last_beat) begin
+              rsp_active     <= 1'b0;
+              rsp_beats_left <= '0;
+            end else if (rsp_active) begin
+              rsp_beats_left <= rsp_beats_left - 9'd1;
             end else begin
-              burst_beats_issue <= min_burst_beats(prep_available_beats, prep_beats_to_wrap);
-              state             <= ST_AR;
+              rsp_active     <= 1'b1;
+              rsp_beats_left <= cmd_beats_mem[cmd_rd_ptr] - 9'd1;
             end
           end
 
-          ST_AR: begin
-            if (burst_beats_issue == 9'd0) begin
-              state <= ST_PREP0;
-            end else if (m_axi_arvalid && m_axi_arready) begin
-              burst_beats_left <= burst_beats_issue;
-              state            <= ST_R;
-            end
+          if ((fatal_ring_error || error || input_consumed) && pending_empty) begin
+            state <= ST_DONE;
+            busy  <= 1'b0;
+            done  <= 1'b1;
           end
-
-          ST_R: begin
-            if (m_axis_tvalid && m_axis_tready) begin
-              error      <= error | (m_axi_rresp != 2'b00) |
-                            (m_axi_rlast != (burst_beats_left <= 9'd1));
-              read_count <= read_count + BEAT_BYTES_U64;
-              ring_offset <= next_ring_offset;
-              m_axi_araddr <= next_stream_addr;
-
-              if (burst_beats_left <= 9'd1) begin
-                state <= ST_PREP0;
-              end else begin
-                burst_beats_left <= burst_beats_left - 9'd1;
-              end
-            end
-          end
-
-          ST_DONE: begin
-            busy <= 1'b0;
-            done <= 1'b1;
-            if (start) begin
-              m_axi_araddr      <= cfg_stream_base[AXI_ADDR_W_P-1:0];
-              burst_beats_left  <= '0;
-              burst_beats_issue <= '0;
-              read_count        <= 64'd0;
-              ring_offset       <= 64'd0;
-              error             <= !ring_size_valid;
-              if (ring_size_valid) begin
-                busy  <= 1'b1;
-                done  <= 1'b0;
-                state <= ST_PREP0;
-              end else begin
-                busy  <= 1'b0;
-                done  <= 1'b1;
-              end
-            end
-          end
-
-          default: begin
-            state <= ST_IDLE;
-          end
-        endcase
+        end else if (state == ST_DONE) begin
+          busy <= 1'b0;
+          done <= 1'b1;
+        end else begin
+          busy <= 1'b0;
+          done <= 1'b0;
+        end
       end
     end
   end
