@@ -37,6 +37,7 @@ traffic trace.
 ## Table Of Contents
 
 - [Current Status](#current-status)
+- [Quick Start](#quick-start)
 - [Architecture](#architecture)
 - [Replay Capacity](#replay-capacity)
 - [Replay Throughput](#replay-throughput)
@@ -66,6 +67,144 @@ traffic trace.
 
 Detailed four-bank board results are recorded in
 [`docs/evaluation_20260705_4ddr_localclock.md`](docs/evaluation_20260705_4ddr_localclock.md).
+
+## Quick Start
+
+The examples below show how to replay one classic `pcap` file through `port 0`.
+Run them from the repository root after the FPGA bitstream has been programmed,
+the Xilinx `XDMA` driver has created `/dev/xdma0_*`, and the selected `QSFP`
+link is connected.
+
+Set input and output paths:
+
+```bash
+export PCAP=/data/input.pcap
+export TRACE_DIR=/tmp/tick_trace
+export STREAM_DIR=/tmp/tick_stream
+```
+
+Build the host-side C++ loaders and convert the `pcap` into the hardware trace
+format:
+
+```bash
+make -C software
+
+rm -rf "$TRACE_DIR" "$STREAM_DIR"
+mkdir -p "$TRACE_DIR" "$STREAM_DIR"
+
+python3 software/pcap2trace.py "$PCAP" \
+  --out-dir "$TRACE_DIR" \
+  --tick-hz 300000000
+```
+
+Check that the board and control plane are visible:
+
+```bash
+lspci -nn -d 10ee:
+ls -l /dev/xdma*
+sudo python3 software/traffic_replay_cli.py --port 0 clear
+sudo python3 software/traffic_replay_cli.py --port 0 status
+```
+
+For normal optical replay, keep `debug-force-link` and `debug-tx-ready`
+disabled.  For no-fiber bring-up only, `debug-force-link on` can open the TX
+gate, and `debug-tx-ready on` can drain the replay core without putting packets
+on the wire.
+
+### PRELOAD Replay
+
+`PRELOAD` mode copies the whole converted trace into FPGA `DDR4` first, then the
+FPGA replays it from DDR without host involvement in the transmit data path.
+
+```bash
+sudo python3 software/xdma_load_trace.py \
+  --port 0 \
+  --manifest "$TRACE_DIR/manifest.json" \
+  --desc-base 0x04000000 \
+  --data-base 0x14000000 \
+  --mode preload \
+  --no-auto-drop
+
+sudo python3 software/traffic_replay_cli.py --port 0 status
+```
+
+Stop and clear the replay core before loading another trace:
+
+```bash
+sudo python3 software/traffic_replay_cli.py --port 0 stop
+sudo python3 software/traffic_replay_cli.py --port 0 clear
+```
+
+### LOOP Replay
+
+`LOOP` mode uses the same DDR-resident trace repeatedly.  This example replays
+the converted `pcap` ten times and inserts `300000` replay ticks between loops,
+which is `1ms` at `300MHz`.
+
+```bash
+sudo python3 software/xdma_load_trace.py \
+  --port 0 \
+  --manifest "$TRACE_DIR/manifest.json" \
+  --desc-base 0x04000000 \
+  --data-base 0x14000000 \
+  --mode loop \
+  --loop-count 10 \
+  --loop-gap 300000 \
+  --no-auto-drop
+
+sudo python3 software/traffic_replay_cli.py --port 0 status
+```
+
+### STREAM Ring Replay
+
+`STREAM` ring mode is for traces that are too large to preload into FPGA DDR.
+The host converts `desc.bin` and `data.bin` into a record stream, keeps a bounded
+ring in FPGA DDR filled through `XDMA H2C`, and advances the FPGA-visible write
+pointer only after complete records have been committed.  Packet timing is still
+owned by the FPGA scheduler.
+
+```bash
+python3 software/trace_to_stream.py \
+  --manifest "$TRACE_DIR/manifest.json" \
+  --out "$STREAM_DIR/stream.bin" \
+  --out-manifest "$STREAM_DIR/stream_manifest.json"
+
+sudo ./software/xdma_stream_ring_fast \
+  --port 0 \
+  --manifest "$STREAM_DIR/stream_manifest.json" \
+  --ring-base 0x20000000 \
+  --ring-size 0x08000000 \
+  --prefill-bytes 0x04000000 \
+  --batch-bytes 0x04000000 \
+  --read-bytes 0x04000000 \
+  --queue-depth 4 \
+  --writer-threads 2 \
+  --host-cache-bytes auto \
+  --timeout 300
+
+sudo python3 software/traffic_replay_cli.py --port 0 status
+```
+
+If the requested replay rate is higher than the safe dynamic loading rate, the
+status output will show `late_packets` or `underrun_packets`.  In that case,
+increase packet gaps, reduce the requested pcap rate, or use `PRELOAD` mode for
+maximum throughput.
+
+### Port And Address Notes
+
+The examples above use `port 0` and a one-bank-safe memory layout.  On a
+four-DDR-bank build, a typical `port 1` layout places TX data in bank 1:
+
+```bash
+# PRELOAD or LOOP on port 1
+--port 1 --desc-base 0x0400000000 --data-base 0x0410000000
+
+# STREAM ring on port 1
+--port 1 --ring-base 0x0420000000 --ring-size 0x08000000
+```
+
+Do not overlap `desc`, `data`, `STREAM` ring, or RX sample regions inside the
+same DDR bank.
 
 ## Architecture
 

@@ -37,6 +37,7 @@
 ## 目录
 
 - [当前状态](#当前状态)
+- [快速开始](#快速开始)
 - [系统架构](#系统架构)
 - [最大回放容量](#最大回放容量)
 - [最大回放吞吐](#最大回放吞吐)
@@ -63,6 +64,136 @@
 | RX 功能 | 包/字节/error 计数，最近包采样，SOP-to-SOP 间隔统计 |
 | 时序归档 | `bitstreams/20260704_rxgap_precision_stream_loader_timing_clean` 记录 `WNS=+0.024 ns` |
 | 全 64GB DDR | 计划中。当前公开 build 还没有启用 U200 四个 DDR bank |
+
+## 快速开始
+
+下面的命令展示如何把一份经典 `pcap` 文件从 `port 0` 回放出去。运行前默认已经完成
+FPGA bitstream 烧录，Xilinx `XDMA` 驱动已经生成 `/dev/xdma0_*` 设备，并且对应
+`QSFP` 链路已经连接。
+
+先设置输入和输出路径：
+
+```bash
+export PCAP=/data/input.pcap
+export TRACE_DIR=/tmp/tick_trace
+export STREAM_DIR=/tmp/tick_stream
+```
+
+编译主机侧 C++ loader，并把 `pcap` 转成硬件 trace 格式：
+
+```bash
+make -C software
+
+rm -rf "$TRACE_DIR" "$STREAM_DIR"
+mkdir -p "$TRACE_DIR" "$STREAM_DIR"
+
+python3 software/pcap2trace.py "$PCAP" \
+  --out-dir "$TRACE_DIR" \
+  --tick-hz 300000000
+```
+
+检查板卡和控制面是否可见：
+
+```bash
+lspci -nn -d 10ee:
+ls -l /dev/xdma*
+sudo python3 software/traffic_replay_cli.py --port 0 clear
+sudo python3 software/traffic_replay_cli.py --port 0 status
+```
+
+真实光口回放时不要打开 `debug-force-link` 和 `debug-tx-ready`。只有在无光纤调试时，
+才建议用 `debug-force-link on` 强制打开 TX gate；`debug-tx-ready on` 会让发送通路
+直接 drain，不会真正把包打到线上。
+
+### PRELOAD 回放
+
+`PRELOAD` 模式先把完整 trace 复制到 FPGA `DDR4`，然后 FPGA 从 DDR 自主按时间戳
+调度发包，回放过程中 host 不再参与 TX 数据路径。
+
+```bash
+sudo python3 software/xdma_load_trace.py \
+  --port 0 \
+  --manifest "$TRACE_DIR/manifest.json" \
+  --desc-base 0x04000000 \
+  --data-base 0x14000000 \
+  --mode preload \
+  --no-auto-drop
+
+sudo python3 software/traffic_replay_cli.py --port 0 status
+```
+
+重新装载另一份 trace 前，先停止并清空回放核心：
+
+```bash
+sudo python3 software/traffic_replay_cli.py --port 0 stop
+sudo python3 software/traffic_replay_cli.py --port 0 clear
+```
+
+### LOOP 回放
+
+`LOOP` 模式重复使用同一份已经放在 DDR 中的 trace。下面的例子会把该 `pcap` 回放
+`10` 次，并在每轮之间插入 `300000` 个 replay tick；在 `300MHz` 下这等于 `1ms`。
+
+```bash
+sudo python3 software/xdma_load_trace.py \
+  --port 0 \
+  --manifest "$TRACE_DIR/manifest.json" \
+  --desc-base 0x04000000 \
+  --data-base 0x14000000 \
+  --mode loop \
+  --loop-count 10 \
+  --loop-gap 300000 \
+  --no-auto-drop
+
+sudo python3 software/traffic_replay_cli.py --port 0 status
+```
+
+### STREAM Ring 回放
+
+`STREAM` ring 模式适合大于 FPGA DDR 预加载窗口的 trace。host 先把 `desc.bin` 和
+`data.bin` 转成连续 stream record，再通过 `XDMA H2C` 持续填充 FPGA DDR 中的 ring。
+只有完整 record 写入后，host 才推进 FPGA 可见的写指针；包间隔调度仍由 FPGA 完成。
+
+```bash
+python3 software/trace_to_stream.py \
+  --manifest "$TRACE_DIR/manifest.json" \
+  --out "$STREAM_DIR/stream.bin" \
+  --out-manifest "$STREAM_DIR/stream_manifest.json"
+
+sudo ./software/xdma_stream_ring_fast \
+  --port 0 \
+  --manifest "$STREAM_DIR/stream_manifest.json" \
+  --ring-base 0x20000000 \
+  --ring-size 0x08000000 \
+  --prefill-bytes 0x04000000 \
+  --batch-bytes 0x04000000 \
+  --read-bytes 0x04000000 \
+  --queue-depth 4 \
+  --writer-threads 2 \
+  --host-cache-bytes auto \
+  --timeout 300
+
+sudo python3 software/traffic_replay_cli.py --port 0 status
+```
+
+如果请求的回放速率高于当前动态装载安全速率，`status` 会出现 `late_packets` 或
+`underrun_packets`。此时应增大包间隔、降低目标 `pcap` 带宽，或者改用 `PRELOAD`
+模式获得最高吞吐。
+
+### 端口和地址说明
+
+上面的例子使用 `port 0` 和单 DDR bank 下安全的地址布局。四 DDR bank build 中，
+`port 1` 通常把 TX 数据放在 bank 1：
+
+```bash
+# port 1 的 PRELOAD 或 LOOP
+--port 1 --desc-base 0x0400000000 --data-base 0x0410000000
+
+# port 1 的 STREAM ring
+--port 1 --ring-base 0x0420000000 --ring-size 0x08000000
+```
+
+同一个 DDR bank 内不要让 `desc`、`data`、`STREAM` ring 或 RX sample 区域互相重叠。
 
 ## 系统架构
 
