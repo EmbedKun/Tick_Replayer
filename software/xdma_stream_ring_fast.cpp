@@ -24,6 +24,7 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <sstream>
 #include <string>
@@ -36,6 +37,7 @@ namespace fs = std::filesystem;
 
 static constexpr uint64_t DATA_BEAT_BYTES = 64;
 static constexpr uint64_t DEFAULT_TICK_HZ = 300000000ULL;
+static constexpr size_t DMA_BUFFER_ALIGNMENT = 4096;
 
 static constexpr off_t REG_CONTROL = 0x0000;
 static constexpr off_t REG_MODE = 0x0004;
@@ -113,14 +115,66 @@ struct Args {
   size_t reader_threads = 0;
   size_t reader_window_blocks = 0;
   std::string host_cache_arg;
+  bool queue_depth_set = false;
+  bool writer_threads_set = false;
+  bool reader_threads_set = false;
+  bool reader_window_blocks_set = false;
   bool force_link_up = false;
   bool force_tx_ready = false;
   bool no_wait = false;
   bool dry_run = false;
 };
 
+template <typename T, size_t Alignment>
+struct AlignedAllocator {
+  using value_type = T;
+
+  AlignedAllocator() noexcept = default;
+
+  template <typename U>
+  AlignedAllocator(const AlignedAllocator<U, Alignment> &) noexcept {}
+
+  [[nodiscard]] T *allocate(std::size_t n) {
+    if (n > std::size_t(-1) / sizeof(T)) {
+      throw std::bad_array_new_length();
+    }
+    void *ptr = nullptr;
+    size_t bytes = n * sizeof(T);
+    if (bytes == 0) {
+      return nullptr;
+    }
+    if (::posix_memalign(&ptr, Alignment, bytes) != 0 || ptr == nullptr) {
+      throw std::bad_alloc();
+    }
+    return static_cast<T *>(ptr);
+  }
+
+  void deallocate(T *ptr, std::size_t) noexcept {
+    std::free(ptr);
+  }
+
+  template <typename U>
+  struct rebind {
+    using other = AlignedAllocator<U, Alignment>;
+  };
+};
+
+template <typename T, typename U, size_t Alignment>
+bool operator==(const AlignedAllocator<T, Alignment> &,
+                const AlignedAllocator<U, Alignment> &) {
+  return true;
+}
+
+template <typename T, typename U, size_t Alignment>
+bool operator!=(const AlignedAllocator<T, Alignment> &,
+                const AlignedAllocator<U, Alignment> &) {
+  return false;
+}
+
+using DmaBuffer = std::vector<uint8_t, AlignedAllocator<uint8_t, DMA_BUFFER_ALIGNMENT>>;
+
 struct Chunk {
-  std::vector<uint8_t> data;
+  DmaBuffer data;
   uint64_t packets = 0;
 };
 
@@ -231,9 +285,9 @@ static void usage(const char *argv0) {
       << "  --guard-bytes BYTES        default 1MiB\n"
       << "  --batch-bytes BYTES        complete-record batch target, default 64MiB\n"
       << "  --read-bytes BYTES         file read chunk, default --batch-bytes\n"
-      << "  --queue-depth N            producer queue depth, default 4\n"
-      << "  --writer-threads N         parallel H2C pwrite workers, default 1\n"
-      << "  --reader-threads N         parallel striped block readers, default 2\n"
+      << "  --queue-depth N            producer queue depth, default 4; striped default 128\n"
+      << "  --writer-threads N         parallel H2C pwrite workers, default 1; striped default 4\n"
+      << "  --reader-threads N         parallel striped block readers, default 16\n"
       << "  --reader-window-blocks N   striped read-ahead window, default auto\n"
       << "  --block-list PATH          TSV block list for striped input\n"
       << "  --host-cache-bytes BYTES|auto\n"
@@ -292,12 +346,16 @@ static Args parse_args(int argc, char **argv) {
       args.read_bytes = int_auto(need_value("--read-bytes"));
     } else if (key == "--queue-depth") {
       args.queue_depth = static_cast<size_t>(int_auto(need_value("--queue-depth")));
+      args.queue_depth_set = true;
     } else if (key == "--writer-threads") {
       args.writer_threads = static_cast<size_t>(int_auto(need_value("--writer-threads")));
+      args.writer_threads_set = true;
     } else if (key == "--reader-threads") {
       args.reader_threads = static_cast<size_t>(int_auto(need_value("--reader-threads")));
+      args.reader_threads_set = true;
     } else if (key == "--reader-window-blocks") {
       args.reader_window_blocks = static_cast<size_t>(int_auto(need_value("--reader-window-blocks")));
+      args.reader_window_blocks_set = true;
     } else if (key == "--host-cache-bytes") {
       args.host_cache_arg = need_value("--host-cache-bytes");
     } else if (key == "--host-cache-fraction") {
@@ -338,8 +396,19 @@ static Args parse_args(int argc, char **argv) {
   if (args.writer_threads == 0) {
     throw std::runtime_error("--writer-threads must be positive");
   }
-  if ((!args.stripe_manifest.empty() || !args.block_list.empty()) && args.reader_threads == 0) {
-    args.reader_threads = 2;
+  if (!args.stripe_manifest.empty() || !args.block_list.empty()) {
+    if (!args.reader_threads_set && args.reader_threads == 0) {
+      args.reader_threads = 16;
+    }
+    if (!args.queue_depth_set) {
+      args.queue_depth = std::max<size_t>(args.queue_depth, 128);
+    }
+    if (!args.writer_threads_set) {
+      args.writer_threads = std::max<size_t>(args.writer_threads, 4);
+    }
+    if (!args.reader_window_blocks_set && args.reader_window_blocks == 0) {
+      args.reader_window_blocks = std::max<size_t>(args.queue_depth, args.reader_threads * 8);
+    }
   }
   if (args.read_bytes == 0) {
     args.read_bytes = args.batch_bytes;
@@ -759,12 +828,12 @@ static void producer_thread(const Args &args, ChunkQueue &queue,
     }
     (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
 
-    std::vector<uint8_t> carry;
+    DmaBuffer carry;
     uint64_t total_packets = 0;
     uint64_t total_bytes = 0;
 
     while (true) {
-      std::vector<uint8_t> data;
+      DmaBuffer data;
       data.swap(carry);
       size_t carry_bytes = data.size();
       data.resize(carry_bytes + static_cast<size_t>(args.read_bytes));
@@ -1181,7 +1250,7 @@ int main(int argc, char **argv) {
             uint64_t job_bytes = chunk.data.size();
             uint64_t job_packets = chunk.packets;
             int job_fd = h2c_fds[next_writer++ % h2c_fds.size()];
-            std::vector<uint8_t> job_data = std::move(chunk.data);
+            DmaBuffer job_data = std::move(chunk.data);
             reserved_count += job_bytes;
             write_jobs.push_back(WriteJob{
                 std::async(std::launch::async,
@@ -1276,6 +1345,7 @@ int main(int argc, char **argv) {
       std::cout << "read_bytes        : " << args.read_bytes << "\n";
       std::cout << "queue_depth       : " << args.queue_depth << "\n";
       std::cout << "writer_threads    : " << args.writer_threads << "\n";
+      std::cout << "dma_buffer_align  : " << DMA_BUFFER_ALIGNMENT << "\n";
       if (args.host_cache_bytes != 0) {
         std::cout << "host_cache_target : " << args.host_cache_bytes << "\n";
         std::cout << "host_cache_window : " << args.host_cache_effective_bytes << "\n";

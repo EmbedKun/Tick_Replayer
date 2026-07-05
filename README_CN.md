@@ -352,9 +352,10 @@ header 带来更明显的膨胀。
 | `STREAM` ring | `1518B`, `gap=38`, `1M` packets，全量预填 DDR | L2 `95.874Gbps`，无 late/underrun/drop |
 | `STREAM` ring | `1518B`, `gap=38`, `5M` packets，`12GB` ring 全量预填 | L2 `95.874Gbps`，无 late/underrun/drop |
 | `STREAM` ring | `1518B`, `gap=36`, `1M` packets，全量预填 DDR | 内部 forced-ready TX 测试 `101.200Gbps` |
-| `STREAM` ring | `1518B`, `gap=38`, `5M` packets，`8GB` ring 动态换入 | 平均 `55.306Gbps`；ring 耗尽后出现 late/underrun |
-| Host loader | 双 SSD striped dry-run，`8GB` stream | 读取/重排 `26.828Gbps` |
-| Host loader | 双 SSD + memory-mapped `XDMA H2C pwrite()`，`8GB` stream | FPGA 装载 `14.6-15.6Gbps` |
+| `STREAM` ring | `1518B`, `gap=38`, `5M` packets，aligned-buffer loader 前的 `8GB` ring 动态换入 | 平均 `55.306Gbps`；ring 耗尽后出现 late/underrun |
+| `STREAM` ring | `1518B`, `gap=160`, `40M` packets，`64GB` stream 冷态动态换入 | L2 `22.770Gbps`，无 late/underrun/drop/stall |
+| Host loader | 双 SSD striped dry-run，`64GB` stream，cold cache | 读取/重排 `24.102Gbps` |
+| Host loader | 双 SSD + memory-mapped `XDMA H2C pwrite()`，`64GB` stream | FPGA 装载 `22.190Gbps` |
 | raw `XDMA H2C` | host memory 写 FPGA DDR benchmark | 不同配置下观察到约 `69Gbps` 到 `83Gbps` |
 
 `PRELOAD` 吞吐最高，因为回放过程中 host 不在发包数据路径里。`STREAM` ring 模式主要
@@ -641,7 +642,7 @@ reports/       部分验证报告
 ## 当前限制
 
 - 当前公开硬件 build 默认使用一个 U200 DDR bank；四 DDR bank timing-clean 版本已经归档，但默认版本仍保持单 bank，便于调试和复现。
-- `STREAM` ring 模式可用。全量预填的大包 STREAM 测试可以达到 `95.874Gbps`，但当前 memory-mapped `XDMA pwrite()` 在双 SSD 主机路径上的 FPGA 装载速度约为 `14.6-15.6Gbps`，因此无限长动态 STREAM 还不能持续 100G 回放。
+- `STREAM` ring 模式可用。全量预填的大包 STREAM 测试可以达到 `95.874Gbps`。使用 page-aligned DMA buffer 和更深 striped read-ahead 后，`64GB` 冷态动态 STREAM 测试达到 `22.190Gbps` FPGA 装载，对应双 SSD dry-run 上限 `24.102Gbps`，已经接近当前存储路径上限，但距离 100G 仍需要更强 SSD 阵列和更高效的 H2C 提交路径。
 - RX interval sample 只保存最近 `4096` 个间隔。长 trace 有完整聚合统计，但没有完整逐包 timestamp 日志。
 - RX 侧端到端精度包含 scheduler、TX buffering、CMAC framing、光纤回环、RX CMAC 和 RX 采样量化；大小包混合场景的局部误差会比固定包长更大。
 - 双端口同时接近 100G 大包回放时，当前单 DDR bank 共享路径会成为瓶颈。

@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 DATA_BEAT_BYTES = 64
-DEFAULT_BLOCK_BYTES = 256 * 1024 * 1024
+DEFAULT_BLOCK_BYTES = 64 * 1024 * 1024
 
 
 def int_auto(value: str) -> int:

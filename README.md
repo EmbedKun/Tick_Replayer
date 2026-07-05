@@ -402,9 +402,10 @@ Current board measurements on the U200 optical loopback:
 | `STREAM` ring | `1518B`, `gap=38`, `1M` packets, full DDR prefill | `95.874Gbps` frame/L2, no late/underrun/drop |
 | `STREAM` ring | `1518B`, `gap=38`, `5M` packets, `12GB` ring/full prefill | `95.874Gbps` frame/L2, no late/underrun/drop |
 | `STREAM` ring | `1518B`, `gap=36`, `1M` packets, full DDR prefill | `101.200Gbps` internal forced-ready TX test |
-| `STREAM` ring | `1518B`, `gap=38`, `5M` packets, `8GB` ring/dynamic refill | `55.306Gbps` average; late/underrun after ring drains |
-| Host loader | dual-SSD striped dry-run, `8GB` stream | `26.828Gbps` read/reorder |
-| Host loader | dual-SSD + memory-mapped `XDMA H2C pwrite()`, `8GB` stream | `14.6-15.6Gbps` FPGA load |
+| `STREAM` ring | `1518B`, `gap=38`, `5M` packets, `8GB` ring/dynamic refill before aligned-buffer loader | `55.306Gbps` average; late/underrun after ring drains |
+| `STREAM` ring | `1518B`, `gap=160`, `40M` packets, `64GB` stream, cold dynamic refill | `22.770Gbps` frame/L2, no late/underrun/drop/stall |
+| Host loader | dual-SSD striped dry-run, `64GB` stream, cold cache | `24.102Gbps` read/reorder |
+| Host loader | dual-SSD + memory-mapped `XDMA H2C pwrite()`, `64GB` stream | `22.190Gbps` FPGA load |
 
 `PRELOAD` is the highest-throughput mode because the host is out of the transmit
 data path during replay.  The four-bank build removes the internal shared-DDR
@@ -772,9 +773,10 @@ reports/       Selected validation reports
   than the one-bank archive.
 - `STREAM` ring mode is functional.  The C++ loader supports batched,
   order-preserving multi-writer `H2C` submission.  Fully prefetched large-packet
-  STREAM tests reach `95.874Gbps`, but memory-mapped `XDMA pwrite()` only loads
-  about `14.6-15.6Gbps` on the measured dual-SSD host path, so unbounded dynamic
-  STREAM replay does not sustain 100G yet.
+  STREAM tests reach `95.874Gbps`.  With page-aligned DMA buffers and deeper
+  striped read-ahead, the measured 64GB cold dynamic STREAM case reaches
+  `22.190Gbps` FPGA load against a `24.102Gbps` dual-SSD dry-run limit.  This is
+  close to the measured storage limit, but still far below 100G.
 - The RX sample writer is a lightweight debug/correctness path, not a full-rate
   packet capture DMA.  Low-rate loopback sample checks pass; high-rate sample
   capture can overflow and should be treated as an expected limitation.

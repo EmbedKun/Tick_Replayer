@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         help="SSD lane directory for record-aligned striping; repeat for dual/multi SSD",
     )
-    parser.add_argument("--stripe-block-bytes", type=int_auto, default=256 * 1024 * 1024)
+    parser.add_argument("--stripe-block-bytes", type=int_auto, default=64 * 1024 * 1024)
     parser.add_argument("--frame-sizes", type=parse_frame_sizes, default=parse_frame_sizes("64,128,256,512,1024,1518"))
     parser.add_argument("--packet-count", type=int_auto, default=100_000)
     parser.add_argument("--gap-ticks", type=int_auto, default=0)
