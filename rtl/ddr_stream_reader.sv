@@ -57,6 +57,7 @@ module ddr_stream_reader #(
 
   localparam logic [63:0] BEAT_BYTES_U64 = AXIS_KEEP_BYTES;
   localparam logic [63:0] MAX_BURST_BEATS_U64 = MAX_BURST_BEATS;
+  localparam logic [AXI_ADDR_W_P-1:0] BEAT_BYTES_ADDR = AXIS_KEEP_BYTES;
 
   state_t state;
 
@@ -74,7 +75,9 @@ module ddr_stream_reader #(
   logic [63:0] ring_beats_to_wrap;
   logic        ring_overrun;
   logic        ring_empty_wait;
+  logic        next_beat_wrap;
   logic [63:0] next_ring_offset;
+  logic [AXI_ADDR_W_P-1:0] next_stream_addr;
   logic [63:0] ring_level_next;
   logic [31:0] stream_status_next;
 
@@ -121,8 +124,10 @@ module ddr_stream_reader #(
   assign ring_bytes_to_wrap = (ring_size_valid && (cfg_ring_size > ring_offset)) ?
                               (cfg_ring_size - ring_offset) : 64'd0;
   assign ring_beats_to_wrap = ring_bytes_to_wrap[63:6];
-  assign next_ring_offset = (ring_offset + BEAT_BYTES_U64 >= cfg_ring_size) ?
-                            64'd0 : (ring_offset + BEAT_BYTES_U64);
+  assign next_beat_wrap = (ring_offset + BEAT_BYTES_U64 >= cfg_ring_size);
+  assign next_ring_offset = next_beat_wrap ? 64'd0 : (ring_offset + BEAT_BYTES_U64);
+  assign next_stream_addr = next_beat_wrap ? cfg_stream_base[AXI_ADDR_W_P-1:0] :
+                            (m_axi_araddr + BEAT_BYTES_ADDR);
   assign ring_level_next = ring_available_bytes_raw;
   assign stream_status_next = {
     19'd0,
@@ -264,8 +269,7 @@ module ddr_stream_reader #(
                             (m_axi_rlast != (burst_beats_left <= 9'd1));
               read_count <= read_count + BEAT_BYTES_U64;
               ring_offset <= next_ring_offset;
-              m_axi_araddr <= cfg_stream_base[AXI_ADDR_W_P-1:0] +
-                              next_ring_offset[AXI_ADDR_W_P-1:0];
+              m_axi_araddr <= next_stream_addr;
 
               if (burst_beats_left <= 9'd1) begin
                 state <= ST_PREP0;

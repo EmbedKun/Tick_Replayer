@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-bytes", type=int_auto, default=64 * 1024 * 1024)
     parser.add_argument("--read-bytes", type=int_auto, default=64 * 1024 * 1024)
     parser.add_argument("--queue-depth", type=int_auto, default=4)
+    parser.add_argument("--writer-threads", type=int_auto, default=1)
     parser.add_argument("--host-cache-bytes", help="pass BYTES or auto to the C++ loader host-memory cache")
     parser.add_argument("--host-cache-fraction", type=float, default=0.85)
     parser.add_argument("--poll-interval", type=float, default=0.0002)
@@ -181,6 +182,8 @@ def build_loader_cmd(args: argparse.Namespace, manifest_path: Path, loader: str)
             f"0x{args.read_bytes:x}",
             "--queue-depth",
             str(args.queue_depth),
+            "--writer-threads",
+            str(args.writer_threads),
         ]
         if args.host_cache_bytes:
             cmd += ["--host-cache-bytes", args.host_cache_bytes]

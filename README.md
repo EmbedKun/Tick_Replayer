@@ -58,11 +58,14 @@ traffic trace.
 | PCIe | Xilinx `XDMA`, Gen3 x16, memory-mapped `H2C`/`C2H` |
 | Ethernet | Dual 100G `CMAC` connected to `QSFP0` and `QSFP1` |
 | Control plane | `XDMA` user `BAR` to `AXI-Lite` registers |
-| Trace memory | Current build uses one U200 `DDR4` bank, address range `16GiB` |
+| Trace memory | Default build uses one U200 `DDR4` bank; `TRAFFIC_REPLAY_DDR_BANKS=4` maps all four banks for `64GiB` |
 | Replay modes | `PRELOAD`, `LOOP`, and `STREAM` ring buffer |
 | RX path | Packet/byte/error counters, recent sample capture, SOP-to-SOP gap statistics |
-| Timing archive | `bitstreams/20260704_rxgap_precision_stream_loader_timing_clean` reports `WNS=+0.024 ns` |
-| Full 64GB DDR | Planned.  The current public build does not yet use all four U200 DDR banks |
+| Timing archive | One-bank: `bitstreams/20260704_rxgap_precision_stream_loader_timing_clean`, `WNS=+0.024 ns`; four-bank: `bitstreams/20260705_4ddr_localclock_timing_clean`, `WNS=+0.002 ns` |
+| Full 64GB DDR | Four 16GiB DDR windows validated with `H2C`/`C2H` low-address and high-address readback |
+
+Detailed four-bank board results are recorded in
+[`docs/evaluation_20260705_4ddr_localclock.md`](docs/evaluation_20260705_4ddr_localclock.md).
 
 ## Architecture
 
@@ -134,7 +137,7 @@ preload_trace_bytes_per_packet = 64 + align64(frame_len)
 where `64` is the fixed descriptor size and `align64(frame_len)` is the padded
 payload storage size.
 
-The current build uses one U200 `DDR4` bank with a `16GiB` DDR address window.
+The default build uses one U200 `DDR4` bank with a `16GiB` DDR address window.
 Approximate source `pcap` capacity is:
 
 | Frame bytes | Trace bytes per packet | Packets in `16GiB` DDR | Approx. source `pcap` size |
@@ -144,8 +147,29 @@ Approximate source `pcap` capacity is:
 | `1518` | `1600` | `10,737,418` | `15.34GiB` |
 | `9000` | `9088` | `1,890,390` | `15.87GiB` |
 
-If the design is later expanded to all four U200 DDR banks, the design-space
-capacity becomes roughly four times larger:
+With `TRAFFIC_REPLAY_DDR_BANKS=4`, the build script instantiates all four U200
+DDR controllers and maps them as four `16GiB` windows.  The archived
+`20260705_4ddr_localclock_timing_clean` bitstream validates these windows on
+hardware, including 4KiB readback checks at the end of each 16GiB bank.
+
+| DDR bank | Base address | Range |
+| --- | ---: | ---: |
+| `ddr4_0` | `0x0000000000` | `16GiB` |
+| `ddr4_1` | `0x0400000000` | `16GiB` |
+| `ddr4_2` | `0x0800000000` | `16GiB` |
+| `ddr4_3` | `0x0c00000000` | `16GiB` |
+
+The current four-bank hardware uses bank-local data paths instead of one large
+fully connected DDR crossbar: `port0` TX reads from `ddr4_0`, `port1` TX reads
+from `ddr4_1`, `rx_cap_0` writes samples to `ddr4_2`, and `rx_cap_1` writes
+samples to `ddr4_3`.  In the experimental four-bank build, the bank-local
+replay/capture masters and their local `SmartConnect` instances run in the
+corresponding DDR UI clock domain, with `AXI-Lite` clock converters used for
+control-plane access.  The host `XDMA` master can still access all four windows.
+This partitioning is intended to reduce SmartConnect timing pressure and avoid
+dual-port large-packet replay overloading a single DDR controller.
+
+The design-space capacity then becomes roughly four times larger:
 
 | Frame bytes | Packets in `64GiB` DDR | Approx. source `pcap` size |
 | ---: | ---: | ---: |
@@ -201,13 +225,18 @@ Current board measurements on the U200 optical loopback:
 | `PRELOAD` | `1518B`, `gap=38` | `97.4Gbps` wire, `95.9Gbps` frame/L2 |
 | `PRELOAD` | mixed `64:3,1518:38` | `95.4Gbps` wire |
 | `LOOP` | `1000` packets x `10` loops | correct count, no drop/stall/late/underrun |
-| `STREAM` ring | `1518B`, `gap=300`, `1M` packets | `12.1Gbps` scheduled replay in current correctness-safe test |
-| raw `XDMA H2C` | host-memory write benchmark | observed `69Gbps` to `83Gbps` depending run/configuration |
+| `PRELOAD` dual-port | `1518B`, `gap=38` on both ports, four-bank build | `194.8Gbps` aggregate wire, no drop/late/underrun/stall |
+| `PRELOAD` dual-port | `64B`, `gap=3` on both ports, four-bank build | `140.8Gbps` aggregate wire, no drop/late/underrun/stall |
+| `STREAM` ring | `1518B`, `gap=300`, C++ loader, `writer_threads=2` | `12.1Gbps` scheduled replay, no late/underrun |
+| `STREAM` ring | `1518B`, `gap<=160`, C++ loader, current `XDMA pwrite()` path | over-requested; completes but reports late/underrun |
 
 `PRELOAD` is the highest-throughput mode because the host is out of the transmit
-data path during replay.  `STREAM` ring mode is designed for much larger traces,
-but its sustained replay rate is limited by the host storage path, host memory
-copy/conversion, `XDMA H2C`, DDR ring writes, and FPGA DDR reads.
+data path during replay.  The four-bank build removes the internal shared-DDR
+bottleneck for dual-port large-packet replay by putting `port0` TX and `port1`
+TX on different DDR controllers.  `STREAM` ring mode is designed for much
+larger traces, but its sustained replay rate is still limited by the host
+storage path, host memory copy/conversion, memory-mapped `XDMA H2C` submission,
+DDR ring writes, and FPGA DDR reads.
 
 ## Replay Precision
 
@@ -391,6 +420,15 @@ TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw \
 vivado -mode batch -source scripts/build_hw_bitstream.tcl
 ```
 
+Build a dual-port, four-DDR-bank bitstream:
+
+```bash
+TRAFFIC_REPLAY_PORT_COUNT=2 \
+TRAFFIC_REPLAY_DDR_BANKS=4 \
+TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw_4ddr \
+vivado -mode batch -source scripts/build_hw_bitstream.tcl
+```
+
 Build a single-port debug bitstream:
 
 ```bash
@@ -410,6 +448,9 @@ After reprogramming an FPGA that is attached over PCIe, rescan the endpoint and
 check the XDMA character devices:
 
 ```bash
+sudo sh -c 'echo 1 > /sys/bus/pci/devices/0000:01:00.0/remove'
+sleep 2
+sudo sh -c 'echo 1 > /sys/bus/pci/rescan'
 lspci -nn -d 10ee:
 ls -l /dev/xdma*
 ```
@@ -434,6 +475,27 @@ sudo python3 software/ddr_readback_check.py \
   --repeat 2
 ```
 
+On a four-bank bitstream, check one window in each DDR bank:
+
+```bash
+sudo python3 software/ddr_readback_check.py \
+  --case 0x0000000000:1048576 \
+  --case 0x0400000000:1048576 \
+  --case 0x0800000000:1048576 \
+  --case 0x0c00000000:1048576 \
+  --repeat 2
+```
+
+Check the high end of each 16GiB DDR bank:
+
+```bash
+sudo python3 software/ddr_readback_check.py \
+  --case 0x03fffff000:4096 \
+  --case 0x07fffff000:4096 \
+  --case 0x0bfffff000:4096 \
+  --case 0x0ffffff000:4096
+```
+
 Run preload throughput cases:
 
 ```bash
@@ -449,37 +511,65 @@ sudo python3 software/preload_stress_test.py \
   --require-no-drop
 ```
 
+Run simultaneous dual-port preload with the two ports placed in different DDR
+banks:
+
+```bash
+sudo python3 software/dual_port_preload_test.py \
+  --packet-count 100000 \
+  --frame-len 1518 \
+  --gap-ticks 38 \
+  --port0-desc-base 0x0000000000 \
+  --port0-data-base 0x0010000000 \
+  --port1-desc-base 0x0400000000 \
+  --port1-data-base 0x0410000000 \
+  --require-no-drop
+```
+
 Run optical loopback payload verification:
 
 ```bash
 sudo python3 software/loopback_rx_verify.py \
   --tx-port 0 \
   --rx-port 1 \
-  --desc-base 0x1c000000 \
-  --data-base 0x4c000000 \
-  --rx-ring-base 0x70000000 \
+  --desc-base 0x0000000000 \
+  --data-base 0x0010000000 \
+  --rx-ring-base 0x0c10000000 \
   --rx-ring-size 0x01000000 \
-  --truncate-bytes 128 \
-  --packet-count 64 \
-  --frame-len 128 \
-  --gap-ticks 3000
+  --truncate-bytes 64 \
+  --packet-count 4096 \
+  --frame-len 256 \
+  --gap-ticks 2000
 ```
 
 Run stream ring stress:
 
 ```bash
-python3 software/stream_stress_test.py \
+sudo python3 software/stream_stress_test.py \
   --port 0 \
   --frame-sizes 1518 \
-  --packet-count 1000000 \
+  --packet-count 300000 \
   --gap-ticks 300 \
-  --ring-base 0x50000000 \
+  --ring-base 0x0020000000 \
   --ring-size 0x20000000 \
   --prefill-bytes 0x10000000 \
   --batch-bytes 0x08000000 \
   --read-bytes 0x08000000 \
   --queue-depth 4 \
-  --loader cpp
+  --writer-threads 2 \
+  --loader cpp \
+  --host-cache-bytes auto
+```
+
+Run the RX-side replay precision suite:
+
+```bash
+sudo python3 software/replay_precision_suite.py \
+  --tx-port 0 \
+  --rx-port 1 \
+  --desc-base 0x0000000000 \
+  --data-base 0x0010000000 \
+  --report reports/replay_precision_suite.md
 ```
 
 ## Repository Layout
@@ -498,10 +588,17 @@ reports/       Selected validation reports
 
 ## Known Limitations
 
-- The current public hardware build uses one U200 DDR bank, not all four DDR
-  banks.  Full `64GB` DDR use is planned.
-- `STREAM` ring mode is functional, but the current correctness-safe host loader
-  does not sustain 100G replay.
+- The default hardware build uses one U200 DDR bank.  The four-bank build is
+  available through `TRAFFIC_REPLAY_DDR_BANKS=4` and has a timing-clean archived
+  bitstream, but it has a larger timing/routing footprint and less WNS margin
+  than the one-bank archive.
+- `STREAM` ring mode is functional.  The C++ loader supports batched,
+  order-preserving multi-writer `H2C` submission, but memory-mapped `XDMA`
+  `pwrite()` does not sustain a full 100G dynamic replay stream on the measured
+  host.
+- The RX sample writer is a lightweight debug/correctness path, not a full-rate
+  packet capture DMA.  Low-rate loopback sample checks pass; high-rate sample
+  capture can overflow and should be treated as an expected limitation.
 - RX interval sample readback stores the most recent `4096` intervals.  Full
   long-trace statistics are available as aggregate counters, not as a complete
   per-packet timestamp log.
@@ -509,14 +606,17 @@ reports/       Selected validation reports
   framing, optical loopback, RX CMAC, and RX measurement quantization.  Mixed
   packet sizes can therefore show larger local SOP-to-SOP error than fixed-size
   traces.
-- Dual-port simultaneous near-100G large-packet replay can overload the shared
-  single-DDR-bank path.
+- Dual-port simultaneous near-100G large-packet replay should place the two
+  traces in different DDR banks on four-bank builds.  If both ports share one
+  DDR bank, the shared DDR/AXI path remains the expected bottleneck.
 
 ## Roadmap
 
-- Enable all four U200 DDR banks and expose a larger trace memory space.
-- Improve `STREAM` mode with a faster loader path and less DDR read/write
-  amplification.
+- Improve four-bank timing margin and repeat timing closure across multiple
+  implementation seeds.
+- Move the dynamic loader path beyond memory-mapped `XDMA pwrite()` if sustained
+  100G `STREAM` replay is required: QDMA/XDMA AXI4-Stream H2C, pinned hugepage
+  buffers, kernel-bypass submission, or a custom multi-queue loader.
 - Add deeper and more parallel DDR prefetch paths for dual-port replay.
 - Add an optional egress-side scheduler close to `CMAC` for tighter mixed-size
   end-to-end SOP timing.

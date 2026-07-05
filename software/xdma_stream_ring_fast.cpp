@@ -18,6 +18,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -105,6 +106,7 @@ struct Args {
   double feed_timeout = 0.0;
   double host_cache_fraction = 0.85;
   size_t queue_depth = 4;
+  size_t writer_threads = 1;
   std::string host_cache_arg;
   bool force_link_up = false;
   bool force_tx_ready = false;
@@ -113,6 +115,13 @@ struct Args {
 
 struct Chunk {
   std::vector<uint8_t> data;
+  uint64_t packets = 0;
+};
+
+struct WriteJob {
+  std::future<void> future;
+  uint64_t begin = 0;
+  uint64_t bytes = 0;
   uint64_t packets = 0;
 };
 
@@ -207,6 +216,7 @@ static void usage(const char *argv0) {
       << "  --batch-bytes BYTES        complete-record batch target, default 64MiB\n"
       << "  --read-bytes BYTES         file read chunk, default --batch-bytes\n"
       << "  --queue-depth N            producer queue depth, default 4\n"
+      << "  --writer-threads N         parallel H2C pwrite workers, default 1\n"
       << "  --host-cache-bytes BYTES|auto\n"
       << "                              grow producer queue to use host DRAM as SSD cache\n"
       << "  --host-cache-fraction F    auto cache fraction of MemAvailable, default 0.85\n"
@@ -258,6 +268,8 @@ static Args parse_args(int argc, char **argv) {
       args.read_bytes = int_auto(need_value("--read-bytes"));
     } else if (key == "--queue-depth") {
       args.queue_depth = static_cast<size_t>(int_auto(need_value("--queue-depth")));
+    } else if (key == "--writer-threads") {
+      args.writer_threads = static_cast<size_t>(int_auto(need_value("--writer-threads")));
     } else if (key == "--host-cache-bytes") {
       args.host_cache_arg = need_value("--host-cache-bytes");
     } else if (key == "--host-cache-fraction") {
@@ -292,6 +304,9 @@ static Args parse_args(int argc, char **argv) {
 
   if (args.port != 0 && args.port != 1) {
     throw std::runtime_error("--port must be 0 or 1");
+  }
+  if (args.writer_threads == 0) {
+    throw std::runtime_error("--writer-threads must be positive");
   }
   if (args.read_bytes == 0) {
     args.read_bytes = args.batch_bytes;
@@ -696,13 +711,23 @@ int main(int argc, char **argv) {
     prefill = std::max<uint64_t>(DATA_BEAT_BYTES, std::min(prefill, args.ring_size - args.guard_bytes));
     uint64_t base = reg_base_for_port(args);
 
-    int h2c_fd = ::open(args.h2c.c_str(), O_WRONLY);
-    if (h2c_fd < 0) {
-      throw std::runtime_error("cannot open H2C device: " + args.h2c);
+    std::vector<int> h2c_fds;
+    h2c_fds.reserve(args.writer_threads);
+    for (size_t idx = 0; idx < args.writer_threads; ++idx) {
+      int fd = ::open(args.h2c.c_str(), O_WRONLY);
+      if (fd < 0) {
+        for (int old_fd : h2c_fds) {
+          ::close(old_fd);
+        }
+        throw std::runtime_error("cannot open H2C device: " + args.h2c);
+      }
+      h2c_fds.push_back(fd);
     }
     int user_fd = ::open(args.user.c_str(), O_RDWR);
     if (user_fd < 0) {
-      ::close(h2c_fd);
+      for (int fd : h2c_fds) {
+        ::close(fd);
+      }
       throw std::runtime_error("cannot open user BAR device: " + args.user);
     }
 
@@ -716,15 +741,38 @@ int main(int argc, char **argv) {
 
     bool started = false;
     uint64_t write_count = 0;
+    uint64_t reserved_count = 0;
     uint64_t packet_count = 0;
     uint64_t max_level = 0;
     uint64_t min_free = args.ring_size;
+    size_t next_writer = 0;
+    std::deque<WriteJob> write_jobs;
     auto load_start = std::chrono::steady_clock::now();
     bool completed = false;
     double wall_seconds = 0.0;
 
     try {
       configure(user_fd, base, args);
+
+      auto commit_ready_jobs = [&](bool wait_front) {
+        while (!write_jobs.empty()) {
+          auto &job = write_jobs.front();
+          if (!wait_front &&
+              job.future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            break;
+          }
+          job.future.get();
+          write_count = job.begin + job.bytes;
+          packet_count += job.packets;
+          write64(user_fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, write_count);
+          if (!started && write_count >= prefill) {
+            start_replay(user_fd, base);
+            started = true;
+          }
+          write_jobs.pop_front();
+          wait_front = false;
+        }
+      };
 
       Chunk chunk;
       while (queue.pop(chunk)) {
@@ -733,6 +781,7 @@ int main(int argc, char **argv) {
         }
 
         while (true) {
+          commit_ready_jobs(false);
           double feed_elapsed = std::chrono::duration<double>(
               std::chrono::steady_clock::now() - load_start).count();
           if (args.feed_timeout > 0.0 && feed_elapsed > args.feed_timeout) {
@@ -744,21 +793,28 @@ int main(int argc, char **argv) {
           if (read_count > write_count) {
             throw std::runtime_error("FPGA read pointer advanced past host write pointer");
           }
-          uint64_t level = write_count - read_count;
+          uint64_t level = reserved_count - read_count;
           uint64_t free = args.ring_size - level - args.guard_bytes;
           max_level = std::max(max_level, level);
           min_free = std::min(min_free, free);
 
-          if (free >= chunk.data.size()) {
-            pwrite_ring(h2c_fd, chunk.data.data(), chunk.data.size(),
-                        args.ring_base, args.ring_size, write_count);
-            write_count += chunk.data.size();
-            packet_count += chunk.packets;
-            write64(user_fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, write_count);
-            if (!started && write_count >= prefill) {
-              start_replay(user_fd, base);
-              started = true;
-            }
+          if (free >= chunk.data.size() && write_jobs.size() < args.writer_threads) {
+            uint64_t job_begin = reserved_count;
+            uint64_t job_bytes = chunk.data.size();
+            uint64_t job_packets = chunk.packets;
+            int job_fd = h2c_fds[next_writer++ % h2c_fds.size()];
+            std::vector<uint8_t> job_data = std::move(chunk.data);
+            reserved_count += job_bytes;
+            write_jobs.push_back(WriteJob{
+                std::async(std::launch::async,
+                           [job_fd, data = std::move(job_data), ring_base = args.ring_base,
+                            ring_size = args.ring_size, job_begin]() {
+                             pwrite_ring(job_fd, data.data(), data.size(),
+                                         ring_base, ring_size, job_begin);
+                           }),
+                job_begin,
+                job_bytes,
+                job_packets});
             break;
           }
 
@@ -766,7 +822,11 @@ int main(int argc, char **argv) {
             start_replay(user_fd, base);
             started = true;
           }
-          std::this_thread::sleep_for(std::chrono::duration<double>(args.poll_interval));
+          if (!write_jobs.empty()) {
+            commit_ready_jobs(true);
+          } else {
+            std::this_thread::sleep_for(std::chrono::duration<double>(args.poll_interval));
+          }
         }
       }
 
@@ -775,6 +835,9 @@ int main(int argc, char **argv) {
       }
       if (producer_error) {
         std::rethrow_exception(producer_error);
+      }
+      while (!write_jobs.empty()) {
+        commit_ready_jobs(true);
       }
       if (manifest_packets != 0 && manifest_packets != packet_count) {
         throw std::runtime_error("manifest packet_count mismatch: expected " +
@@ -820,6 +883,7 @@ int main(int argc, char **argv) {
       std::cout << "ring_size         : " << args.ring_size << "\n";
       std::cout << "read_bytes        : " << args.read_bytes << "\n";
       std::cout << "queue_depth       : " << args.queue_depth << "\n";
+      std::cout << "writer_threads    : " << args.writer_threads << "\n";
       if (args.host_cache_bytes != 0) {
         std::cout << "host_cache_target : " << args.host_cache_bytes << "\n";
         std::cout << "host_cache_window : " << args.host_cache_effective_bytes << "\n";
@@ -852,12 +916,16 @@ int main(int argc, char **argv) {
         producer.join();
       }
       stop_and_clear(user_fd, base);
-      ::close(h2c_fd);
+      for (int fd : h2c_fds) {
+        ::close(fd);
+      }
       ::close(user_fd);
       throw;
     }
 
-    ::close(h2c_fd);
+    for (int fd : h2c_fds) {
+      ::close(fd);
+    }
     ::close(user_fd);
     return 0;
   } catch (const std::exception &e) {

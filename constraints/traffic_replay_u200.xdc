@@ -121,7 +121,11 @@ set_property LOC K10 [get_ports -quiet qsfp0_161mhz_clk_n]
 # traffic_replay_u200_qsfp1.xdc and are added only for dual-port builds.
 
 # DDR/UI logic and CMAC AXIS logic cross only through explicit async FIFOs.
-set_clock_groups -asynchronous -group [get_clocks -regexp -quiet {^mmcm_clkout0$}] -group [get_clocks -regexp -quiet {txoutclk.*}]
+# Match all DDR UI generated clocks so the optional four-bank build does not
+# time bank-local replay/capture clock domains against the CMAC user clocks.
+set ddr_ui_clocks [get_clocks -regexp -quiet {(^|.*/)mmcm_clkout0($|.*)}]
+set cmac_user_clocks [get_clocks -regexp -quiet {.*txoutclk.*}]
+set_clock_groups -asynchronous -group $ddr_ui_clocks -group $cmac_user_clocks
 
 # QSFP0 module and reference-clock sideband. The BD ties these to constants:
 # resetl=1, lpmode=0, refclk_reset=0, fs=2'b10 for 161.1328125 MHz.

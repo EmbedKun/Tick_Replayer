@@ -10,6 +10,11 @@
 
 </div>
 
+> 2026-07-05 更新：四 DDR bank 版本已经完成上板验证并归档到
+> `bitstreams/20260705_4ddr_localclock_timing_clean`。该版本映射 U200
+> 四个 `16GiB` DDR 窗口，总计 `64GiB`，post-route WNS 为 `+0.002ns`。
+> 详细测试记录见 `docs/evaluation_20260705_4ddr_localclock.md`。
+
 ## 项目概述
 
 `Tick Replayer` 是面向 Xilinx Alveo U200 的 FPGA 流量回放原型。Linux 主机先
