@@ -75,7 +75,7 @@ module tb_ddr_stream_reader_perf;
     .AXI_ADDR_W_P(64),
     .AXI_ID_W_P(4),
     .MAX_BURST_BEATS(MAX_BURST),
-    .MAX_OUTSTANDING_BURSTS(32)
+    .MAX_OUTSTANDING_BURSTS(64)
   ) dut (
     .clk(clk),
     .rstn(rstn),

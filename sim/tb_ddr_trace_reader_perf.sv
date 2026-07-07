@@ -130,6 +130,7 @@ module tb_ddr_trace_reader_perf;
   int unsigned cmd_wr_ptr;
   int unsigned cmd_rd_ptr;
   int unsigned cmd_count;
+  int unsigned max_cmd_count;
   int unsigned rsp_beat_idx;
 
   function automatic logic [15:0] beats_from_bytes(input logic [15:0] byte_count);
@@ -226,6 +227,7 @@ module tb_ddr_trace_reader_perf;
       cmd_wr_ptr   <= 0;
       cmd_rd_ptr   <= 0;
       cmd_count    <= 0;
+      max_cmd_count <= 0;
       rsp_beat_idx <= 0;
     end else begin
       ar_push = m_axi_arvalid && m_axi_arready;
@@ -236,6 +238,9 @@ module tb_ddr_trace_reader_perf;
         cmd_beats_mem[cmd_wr_ptr]       <= {1'b0, m_axi_arlen} + 9'd1;
         cmd_ready_cycle_mem[cmd_wr_ptr] <= cycle_count + case_latency_cycles;
         cmd_wr_ptr <= (cmd_wr_ptr + 1) % CMD_Q_DEPTH;
+        if (!cmd_pop && ((cmd_count + 1) > max_cmd_count)) begin
+          max_cmd_count <= cmd_count + 1;
+        end
       end
 
       if (m_axi_rvalid) begin
@@ -425,9 +430,9 @@ module tb_ddr_trace_reader_perf;
       $display("  steady: warmup_pkts=%0d beats=%0d bytes=%0d cycles=%0d l2=%.3fGbps axis=%.3fGbps",
                warmup_pkts, steady_beat_count, steady_byte_count, steady_cycles,
                steady_l2_gbps, steady_axis_gbps);
-      $display("  axi_ar: total=%0d desc=%0d payload=%0d desc_beats=%0d payload_beats=%0d payload_avg_burst=%.2f",
+      $display("  axi_ar: total=%0d desc=%0d payload=%0d desc_beats=%0d payload_beats=%0d payload_avg_burst=%.2f max_cmd_count=%0d",
                ar_count, desc_ar_count, payload_ar_count, desc_ar_beats,
-               payload_ar_beats, payload_avg_burst);
+               payload_ar_beats, payload_avg_burst, max_cmd_count);
 
       if (expect_over_100g && (steady_l2_gbps < 100.0)) begin
         $fatal(1, "%s steady throughput %.3fGbps below 100Gbps target", case_name, steady_l2_gbps);
@@ -487,6 +492,7 @@ module tb_ddr_trace_reader_perf;
   endtask
 
   initial begin
+    bit quick_mode;
     start = 1'b0;
     stop = 1'b0;
     clear = 1'b0;
@@ -497,10 +503,22 @@ module tb_ddr_trace_reader_perf;
     cfg_loop_count = 64'd0;
     cfg_loop_gap_ticks = 64'd0;
 
-    run_case("1518B_latency64", 4096, 1518, 0, 64, 0, 0, 1'b1);
-    run_case("1518B_latency128_ar75", 4096, 1518, 0, 128, 4, 0, 1'b1);
-    run_case("64B_latency64", 8192, 64, 0, 64, 0, 0, 1'b0);
-    run_case("256B_latency64_tready75", 4096, 256, 0, 64, 0, 4, 1'b0);
+    quick_mode = $test$plusargs("quick");
+`ifdef READER_QUICK_SIM
+    quick_mode = 1'b1;
+`endif
+
+    if (quick_mode) begin
+      run_case("quick_1518B_latency64", 512, 1518, 0, 64, 0, 0, 1'b0);
+      run_case("quick_1518B_latency128_ar75", 512, 1518, 0, 128, 4, 0, 1'b0);
+      run_case("quick_64B_latency64", 1024, 64, 0, 64, 0, 0, 1'b0);
+      run_case("quick_256B_latency64_tready75", 512, 256, 0, 64, 0, 4, 1'b0);
+    end else begin
+      run_case("1518B_latency64", 4096, 1518, 0, 64, 0, 0, 1'b1);
+      run_case("1518B_latency128_ar75", 4096, 1518, 0, 128, 4, 0, 1'b1);
+      run_case("64B_latency64", 8192, 64, 0, 64, 0, 0, 1'b0);
+      run_case("256B_latency64_tready75", 4096, 256, 0, 64, 0, 4, 1'b0);
+    end
 
     $display("PASS: ddr_trace_reader pipeline correctness and throughput simulation completed");
     $finish;

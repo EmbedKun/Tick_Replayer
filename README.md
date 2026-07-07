@@ -59,11 +59,11 @@ traffic trace.
 | PCIe | Xilinx `XDMA`, Gen3 x16, memory-mapped `H2C`/`C2H` |
 | Ethernet | 100G `CMAC` to `QSFP0` in the latest single-port timing-clean build; dual-port RTL/build flow is also kept in-tree |
 | Control plane | `XDMA` user `BAR` to `AXI-Lite` registers |
-| Trace memory | Latest evaluated build uses two U200 `DDR4` banks for a `32GiB` ping-pong `STREAM` window; `TRAFFIC_REPLAY_DDR_BANKS=4` maps all four banks for `64GiB` experimental builds |
+| Trace memory | The hardware generator now enables four U200 `DDR4` banks by default.  Dual-port builds use bank-local replay/capture paths; single-port multi-DDR builds can expose a `64GiB` FPGA trace window |
 | Replay modes | `PRELOAD`, `LOOP`, and `STREAM` ring buffer |
 | RX path | Packet/byte/error counters, recent sample capture, SOP-to-SOP gap statistics |
-| Timing archive | Current single-port two-bank STREAM build: `/home/user/tick_replayer_bitstreams/20260707_stream_ring_pipeline_2bank_timing_clean`, routed `WNS=+0.009 ns`; four-bank archive: `bitstreams/20260705_4ddr_localclock_timing_clean`, `WNS=+0.002 ns` |
-| Full 64GB DDR | Four 16GiB DDR windows validated in the four-bank archive; the latest board check below targets the two-bank STREAM pipeline build |
+| Timing archive | Current evaluated single-port STREAM build: `/home/user/tick_replayer_bitstreams/20260707_stream_ring_pipeline_2bank_timing_clean`, routed `WNS=+0.009 ns`; earlier four-bank archive: `bitstreams/20260705_4ddr_localclock_timing_clean`, `WNS=+0.002 ns` |
+| Full 64GB DDR | Four `16GiB` DDR windows are supported by the generator.  Use `scripts/build_4ddr_single_port_64g.sh` for a single-port 64GiB replay window or `scripts/build_4ddr_dual_port.sh` for dual-port bank-local high-load replay |
 
 Detailed board results are recorded in
 [`docs/evaluation_20260707_full_system_check.md`](docs/evaluation_20260707_full_system_check.md),
@@ -327,6 +327,14 @@ to the host by default.  Instead, it maintains counters, stores recent truncated
 samples when enabled, and records receive-side packet-spacing statistics for
 precision validation.
 
+The current deeper-prefetch RTL keeps the same descriptor format and register
+map, but increases the DDR read window used by `ddr_trace_reader`: descriptor
+and metadata FIFOs are `512` entries, the payload plan FIFO is `1024` entries,
+payload/AXI command queues are `64` entries, and the payload FIFO is `8192`
+512-bit beats.  The `STREAM` DDR reader can issue up to `64` outstanding read
+bursts.  These changes are intended to hide DDR latency and keep both replay
+ports fed when they read from separate DDR banks.
+
 ## Replay Capacity
 
 Capacity depends on the replay mode.
@@ -344,8 +352,8 @@ preload_trace_bytes_per_packet = 64 + align64(frame_len)
 where `64` is the fixed descriptor size and `align64(frame_len)` is the padded
 payload storage size.
 
-The default build uses one U200 `DDR4` bank with a `16GiB` DDR address window.
-Approximate source `pcap` capacity is:
+One U200 `DDR4` bank provides a `16GiB` DDR address window.  Approximate source
+`pcap` capacity per bank is:
 
 | Frame bytes | Trace bytes per packet | Packets in `16GiB` DDR | Approx. source `pcap` size |
 | ---: | ---: | ---: | ---: |
@@ -354,10 +362,12 @@ Approximate source `pcap` capacity is:
 | `1518` | `1600` | `10,737,418` | `15.34GiB` |
 | `9000` | `9088` | `1,890,390` | `15.87GiB` |
 
-With `TRAFFIC_REPLAY_DDR_BANKS=4`, the build script instantiates all four U200
-DDR controllers and maps them as four `16GiB` windows.  The archived
-`20260705_4ddr_localclock_timing_clean` bitstream validates these windows on
-hardware, including 4KiB readback checks at the end of each 16GiB bank.
+The default hardware generation instantiates all four U200 DDR controllers and
+maps them as four `16GiB` windows.  The archived
+`20260705_4ddr_localclock_timing_clean` bitstream validated these windows on
+hardware, including 4KiB readback checks at the end of each 16GiB bank.  The
+current deeper-prefetch RTL keeps the same address map and must be re-run
+through implementation before it becomes a new timing-clean board release.
 
 | DDR bank | Base address | Range |
 | --- | ---: | ---: |
@@ -366,20 +376,21 @@ hardware, including 4KiB readback checks at the end of each 16GiB bank.
 | `ddr4_2` | `0x0800000000` | `16GiB` |
 | `ddr4_3` | `0x0c00000000` | `16GiB` |
 
-The current four-bank hardware uses bank-local data paths instead of one large
-fully connected DDR crossbar: `port0` TX reads from `ddr4_0`, `port1` TX reads
-from `ddr4_1`, `rx_cap_0` writes samples to `ddr4_2`, and `rx_cap_1` writes
-samples to `ddr4_3`.  In the experimental four-bank build, the bank-local
-replay/capture masters and their local `SmartConnect` instances run in the
-corresponding DDR UI clock domain, with `AXI-Lite` clock converters used for
-control-plane access.  The host `XDMA` master can still access all four windows.
-This partitioning is intended to reduce SmartConnect timing pressure and avoid
-dual-port large-packet replay overloading a single DDR controller.
+The default dual-port four-bank build uses bank-local data paths instead of one
+large fully connected DDR crossbar: `port0` TX reads from `ddr4_0`, `port1` TX
+reads from `ddr4_1`, `rx_cap_0` writes samples to `ddr4_2`, and `rx_cap_1`
+writes samples to `ddr4_3`.  The host `XDMA` master can still access all four
+windows.  This partitioning is intended to reduce SmartConnect timing pressure
+and avoid dual-port large-packet replay overloading a single DDR controller.
 
-The latest single-port two-bank build can address two `16GiB` DDR windows for
-TX preload storage or a ping-pong `STREAM` ring.  With the internal replay trace
-format `64B descriptor + align64(frame)`, the approximate source `pcap` capacity
-for a `32GiB` FPGA-resident trace is:
+For a single-port capacity build, set `TRAFFIC_REPLAY_PORT_COUNT=1` or use
+`scripts/build_4ddr_single_port_64g.sh`.  In that profile `port0` replay reads
+are connected through the multi-DDR host fabric so one replay trace can span the
+full four-bank `64GiB` address space.  A two-bank single-port build remains a
+useful debug point and can address two `16GiB` DDR windows for TX preload storage
+or a ping-pong `STREAM` ring.  With the internal replay trace format
+`64B descriptor + align64(frame)`, the approximate source `pcap` capacity for a
+`32GiB` FPGA-resident trace is:
 
 | Frame bytes | Packets in `32GiB` DDR | Approx. source `pcap` size |
 | ---: | ---: | ---: |
@@ -388,7 +399,7 @@ for a `32GiB` FPGA-resident trace is:
 | `1518` | `21,474,836` | `30.68GiB` |
 | `9000` | `3,780,781` | `31.75GiB` |
 
-The experimental four-bank design-space capacity becomes roughly four times
+The four-bank single-port design-space capacity becomes roughly four times
 larger than a one-bank build:
 
 | Frame bytes | Packets in `64GiB` DDR | Approx. source `pcap` size |
@@ -650,26 +661,33 @@ Requirements:
 - Python 3.
 - `g++` and `make` for C++ host loaders.
 
-Build a dual-port bitstream:
+Build the default dual-port, four-DDR-bank bitstream.  This profile is intended
+for high-load dual-port replay because each replay/capture path has a local DDR
+bank:
 
 ```bash
-TRAFFIC_REPLAY_PORT_COUNT=2 \
-TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw \
-vivado -mode batch -source scripts/build_hw_bitstream.tcl
+bash scripts/build_4ddr_dual_port.sh
 ```
 
-Build a dual-port, four-DDR-bank bitstream:
+The equivalent explicit command is:
 
 ```bash
 TRAFFIC_REPLAY_PORT_COUNT=2 \
 TRAFFIC_REPLAY_DDR_BANKS=4 \
+TRAFFIC_REPLAY_PORT0_MULTI_DDR=0 \
 TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw_4ddr \
 vivado -mode batch -source scripts/build_hw_bitstream.tcl
 ```
 
 Build a single-port, four-DDR-bank bitstream with port 0 replay reads allowed to
-access multiple DDR windows.  This is the target build for two-bank ping-pong
-`STREAM` mode:
+access multiple DDR windows.  This is the target build for maximum FPGA-resident
+trace capacity and multi-bank `STREAM` rings:
+
+```bash
+bash scripts/build_4ddr_single_port_64g.sh
+```
+
+The equivalent explicit command is:
 
 ```bash
 TRAFFIC_REPLAY_PORT_COUNT=1 \
@@ -838,11 +856,11 @@ reports/       Selected validation reports
 
 ## Known Limitations
 
-- The latest timing-clean STREAM pipeline build is a single-port, two-DDR-bank
-  build.  It is the preferred build for current `PRELOAD` and `STREAM`
-  development.  A four-bank build is available through
-  `TRAFFIC_REPLAY_DDR_BANKS=4`, but it is a separate archive with a larger
-  timing/routing footprint.
+- The hardware generator now defaults to a dual-port, four-DDR-bank design.
+  The latest fully evaluated STREAM board run is still the single-port,
+  two-bank timing-clean archive from 2026-07-07.  The four-bank deeper-prefetch
+  RTL must pass a fresh implementation and board test before it should be
+  treated as a release bitstream.
 - `STREAM` ring mode is functional.  The C++ loader supports batched,
   order-preserving multi-writer `H2C` submission.  Fully prefetched large-packet
   STREAM tests reach `95.874Gbps`.  The two-bank ping-pong ring accepts a
@@ -866,17 +884,19 @@ reports/       Selected validation reports
   packet sizes can therefore show larger local SOP-to-SOP error than fixed-size
   traces.
 - Dual-port simultaneous near-100G large-packet replay should place the two
-  traces in different DDR banks on four-bank builds.  If both ports share one
-  DDR bank, the shared DDR/AXI path remains the expected bottleneck.
+  traces in different DDR banks.  The default four-bank dual-port build maps
+  `port0` and `port1` TX paths to separate DDR controllers to avoid the shared
+  single-bank bottleneck.
 
 ## Roadmap
 
-- Improve four-bank timing margin and repeat timing closure across multiple
-  implementation seeds.
+- Close timing and repeat board validation on the new four-bank deeper-prefetch
+  build across multiple implementation seeds.
 - Move the dynamic loader path beyond memory-mapped `XDMA pwrite()` if sustained
   100G `STREAM` replay is required: QDMA/XDMA AXI4-Stream H2C, pinned hugepage
   buffers, kernel-bypass submission, or a custom multi-queue loader.
-- Add deeper and more parallel DDR prefetch paths for dual-port replay.
+- Continue tuning DDR prefetch depth and arbitration after real dual-port
+  high-load measurements.
 - Add an optional egress-side scheduler close to `CMAC` for tighter mixed-size
   end-to-end SOP timing.
 - Expand RX event logging from recent gap samples to a larger timestamp/event

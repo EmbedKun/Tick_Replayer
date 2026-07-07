@@ -1,5 +1,7 @@
 set script_dir [file dirname [file normalize [info script]]]
 source [file join $script_dir create_project.tcl]
+set reports_dir [file join $script_dir .. reports]
+file mkdir $reports_dir
 
 launch_runs synth_1 -jobs 4
 wait_on_run synth_1
@@ -12,6 +14,6 @@ if {[string first "synth_design Complete" $synth_status] < 0} {
 }
 
 open_run synth_1
-report_utilization -file [file join [file dirname [file normalize [info script]]] .. reports synth_utilization.rpt]
-report_timing_summary -file [file join [file dirname [file normalize [info script]]] .. reports synth_timing_summary.rpt]
+report_utilization -file [file join $reports_dir synth_utilization.rpt]
+report_timing_summary -file [file join $reports_dir synth_timing_summary.rpt]
 exit

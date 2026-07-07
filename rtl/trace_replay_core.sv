@@ -6,7 +6,14 @@ module trace_replay_core #(
   parameter int AXIL_ADDR_W = 16,
   parameter int AXI_ADDR_W_P = AXI_ADDR_W,
   parameter int AXI_ID_W_P   = AXI_ID_W,
-  parameter int TX_STALL_WATCHDOG_CYCLES_P = 4096
+  parameter int TX_STALL_WATCHDOG_CYCLES_P = 4096,
+  parameter int TRACE_DESC_FIFO_DEPTH_P = 512,
+  parameter int TRACE_META_FIFO_DEPTH_P = 512,
+  parameter int TRACE_PLAN_FIFO_DEPTH_P = 1024,
+  parameter int TRACE_PAYLOAD_CMD_DEPTH_P = 64,
+  parameter int TRACE_AXI_CMD_DEPTH_P = 64,
+  parameter int TRACE_PAYLOAD_FIFO_DEPTH_P = 8192,
+  parameter int STREAM_MAX_OUTSTANDING_BURSTS_P = 64
 ) (
   input  logic                     clk,
   input  logic                     rstn,
@@ -409,7 +416,17 @@ module trace_replay_core #(
 
   ddr_trace_reader #(
     .AXI_ADDR_W_P(AXI_ADDR_W_P),
-    .AXI_ID_W_P(AXI_ID_W_P)
+    .AXI_ID_W_P(AXI_ID_W_P),
+    .DESC_FIFO_DEPTH_P(TRACE_DESC_FIFO_DEPTH_P),
+    .META_FIFO_DEPTH_P(TRACE_META_FIFO_DEPTH_P),
+    .PLAN_FIFO_DEPTH_P(TRACE_PLAN_FIFO_DEPTH_P),
+    .PAYLOAD_CMD_DEPTH_P(TRACE_PAYLOAD_CMD_DEPTH_P),
+    .AXI_CMD_DEPTH_P(TRACE_AXI_CMD_DEPTH_P),
+    .PAYLOAD_FIFO_DEPTH_P(TRACE_PAYLOAD_FIFO_DEPTH_P),
+    .DESC_SCAN_START_LEVEL_P(TRACE_DESC_FIFO_DEPTH_P / 2),
+    .DESC_REFILL_LEVEL_P(TRACE_DESC_FIFO_DEPTH_P / 2),
+    .DESC_SERVICE_LEVEL_P(TRACE_DESC_FIFO_DEPTH_P / 4),
+    .PAYLOAD_DESC_SERVICE_LEVEL_P(TRACE_PAYLOAD_FIFO_DEPTH_P / 4)
   ) ddr_reader_i (
     .clk(clk),
     .rstn(rstn),
@@ -455,7 +472,7 @@ module trace_replay_core #(
     .AXI_ADDR_W_P(AXI_ADDR_W_P),
     .AXI_ID_W_P(AXI_ID_W_P),
     .MAX_BURST_BEATS(256),
-    .MAX_OUTSTANDING_BURSTS(32)
+    .MAX_OUTSTANDING_BURSTS(STREAM_MAX_OUTSTANDING_BURSTS_P)
   ) stream_reader_i (
     .clk(clk),
     .rstn(rstn),

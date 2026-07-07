@@ -59,11 +59,11 @@
 | PCIe | Xilinx `XDMA`，Gen3 x16，memory-mapped `H2C`/`C2H` |
 | Ethernet | 双 100G `CMAC`，连接 `QSFP0` 和 `QSFP1` |
 | 控制面 | `XDMA` user `BAR` 到 `AXI-Lite` 寄存器 |
-| Trace 存储 | 当前工程使用一个 U200 `DDR4` bank，地址窗口 `16GiB` |
+| Trace 存储 | 硬件生成器默认启用 U200 四个 `DDR4` bank。双端口 build 使用 bank-local replay/capture 路径；单端口 multi-DDR build 可以暴露 `64GiB` FPGA trace 窗口 |
 | 回放模式 | `PRELOAD`、`LOOP`、`STREAM` ring buffer |
 | RX 功能 | 包/字节/error 计数，最近包采样，SOP-to-SOP 间隔统计 |
-| 时序归档 | `bitstreams/20260704_rxgap_precision_stream_loader_timing_clean` 记录 `WNS=+0.024 ns` |
-| 全 64GB DDR | 计划中。当前公开 build 还没有启用 U200 四个 DDR bank |
+| 时序归档 | 已评估的单口 STREAM build：`/home/user/tick_replayer_bitstreams/20260707_stream_ring_pipeline_2bank_timing_clean`，`WNS=+0.009 ns`；早期四 bank 归档：`bitstreams/20260705_4ddr_localclock_timing_clean`，`WNS=+0.002 ns` |
+| 全 64GB DDR | 生成器支持四个 `16GiB` DDR 窗口。单口 64GiB 容量 build 使用 `scripts/build_4ddr_single_port_64g.sh`；双口高负载 build 使用 `scripts/build_4ddr_dual_port.sh` |
 
 ## 快速开始
 
@@ -300,6 +300,12 @@ large pcap / stream file on host storage
 
 RX 侧默认不把所有包上传主机，而是维护计数器；需要时可以保存最近的截断包窗口，
 并记录收到包之间的 SOP-to-SOP 间隔，用来验证回放精度。
+
+当前深预取 RTL 保持原有 descriptor 格式和 BAR 寄存器映射不变，但加大了 DDR 读窗口：
+`ddr_trace_reader` 的 descriptor/meta FIFO 为 `512` 项，payload plan FIFO 为 `1024`
+项，payload/AXI command queue 为 `64` 项，payload FIFO 为 `8192` 个 512-bit beat。
+`STREAM` DDR reader 最多可发出 `64` 个 outstanding read burst。这些改动用于隐藏 DDR
+访问延迟，并在双端口分别读取不同 DDR bank 时尽量保持两个 replay port 都不断粮。
 
 ## 最大回放容量
 
@@ -558,15 +564,30 @@ host 在回放前把完整 `desc.bin` 和 `data.bin` 写入 FPGA DDR。回放过
 - Python 3。
 - `g++` 和 `make`。
 
-构建双端口 bitstream：
+构建默认的双端口、四 DDR bank bitstream。这个配置面向双端口高负载回放，两个 TX
+通路和两个 RX 采样通路分别连接到本地 DDR bank：
+
+```bash
+bash scripts/build_4ddr_dual_port.sh
+```
+
+等价的显式命令是：
 
 ```bash
 TRAFFIC_REPLAY_PORT_COUNT=2 \
-TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw \
+TRAFFIC_REPLAY_DDR_BANKS=4 \
+TRAFFIC_REPLAY_PORT0_MULTI_DDR=0 \
+TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw_4ddr \
 vivado -mode batch -source scripts/build_hw_bitstream.tcl
 ```
 
-构建单端口、四 DDR bank、支持 `port 0` 多 DDR 读访问的 ping-pong STREAM bitstream：
+构建单端口、四 DDR bank、支持 `port 0` 多 DDR 读访问的 64GiB trace/STREAM bitstream：
+
+```bash
+bash scripts/build_4ddr_single_port_64g.sh
+```
+
+等价的显式命令是：
 
 ```bash
 TRAFFIC_REPLAY_PORT_COUNT=1 \
@@ -682,18 +703,18 @@ reports/       部分验证报告
 
 ## 当前限制
 
-- 当前推荐测试版本是单口、双 DDR bank 的 timing-clean STREAM pipeline build；四 DDR bank 版本已经归档，但属于另一个 build 配置，时序和布线压力更大。
+- 硬件生成器已经默认启用双端口、四 DDR bank 设计。最新完整评估的 STREAM 上板结果仍是 2026-07-07 的单口双 bank timing-clean 归档；新的四 bank 深预取 RTL 需要重新实现和上板验证后才能作为 release bitstream。
 - `STREAM` ring 模式可用。全量预填的大包 STREAM 测试可以达到 `95.874Gbps`。双 DDR bank ping-pong ring 已验证最大 `32GiB` 配置；2026-07-07 的 container-striped 动态测试在 `2M x 1518B, gap=80` 下达到 L2 `45.540Gbps`，无 late/underrun/drop/stall。但无限长动态 `100Gbps` 回放仍受 `SSD -> host memory -> memory-mapped XDMA H2C -> FPGA DDR` 装载链路限制。
 - 最新单口测试使用 `force-link-up` 和 `force-tx-ready`，因为当前烧录 bitstream 只启用 `QSFP0`。真实光口 TX-to-RX payload 校验和 RX 侧 SOP-to-SOP 精度测试需要双口 bitstream 或有效外部链路接入当前启用端口。
 - RX interval sample 只保存最近 `4096` 个间隔。长 trace 有完整聚合统计，但没有完整逐包 timestamp 日志。
 - RX 侧端到端精度包含 scheduler、TX buffering、CMAC framing、光纤回环、RX CMAC 和 RX 采样量化；大小包混合场景的局部误差会比固定包长更大。
-- 双端口同时接近 100G 大包回放时，当前单 DDR bank 共享路径会成为瓶颈。
+- 双端口同时接近 100G 大包回放时，两份 trace 应放在不同 DDR bank。默认四 bank 双端口 build 已将 `port0` 和 `port1` TX 路径映射到不同 DDR controller，避免单 DDR bank 共享瓶颈。
 
 ## 后续计划
 
-- 启用 U200 四个 DDR bank，扩大 trace 空间。
-- 优化 `STREAM` 模式，提升动态装载和持续回放吞吐。
-- 增强 DDR 预取并行度，改善双端口高负载能力。
+- 对新的四 bank 深预取 build 做完整实现、时序收敛和上板验证。
+- 继续优化 `STREAM` 模式，提升动态装载和持续回放吞吐。
+- 根据真实双端口高负载测试继续调优 DDR 预取深度和仲裁策略。
 - 增加靠近 `CMAC` 的可选 egress-side scheduler，降低大小包混合场景的端到端 SOP 抖动。
 - 将 RX event logging 从最近 gap sample 扩展为更大的 timestamp/event ring。
 - 持续归档重要 bitstream，并记录源码 commit、时序、资源和板上验证结果。

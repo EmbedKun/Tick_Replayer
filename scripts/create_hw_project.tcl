@@ -72,7 +72,7 @@ if {![string is integer -strict $traffic_replay_port_count] || $traffic_replay_p
 set enable_port1 [expr {$traffic_replay_port_count >= 2}]
 puts "Traffic replay hardware port count: $traffic_replay_port_count"
 
-set traffic_replay_ddr_banks 1
+set traffic_replay_ddr_banks 4
 if {[info exists ::env(TRAFFIC_REPLAY_DDR_BANKS)] && $::env(TRAFFIC_REPLAY_DDR_BANKS) ne ""} {
   set traffic_replay_ddr_banks $::env(TRAFFIC_REPLAY_DDR_BANKS)
 }
@@ -86,7 +86,7 @@ for {set ddr_bank_idx 0} {$ddr_bank_idx < $traffic_replay_ddr_banks} {incr ddr_b
 }
 puts "Traffic replay DDR bank count: $traffic_replay_ddr_banks"
 
-set traffic_replay_port0_multi_ddr 0
+set traffic_replay_port0_multi_ddr [expr {(!$enable_port1 && $traffic_replay_ddr_banks > 1) ? 1 : 0}]
 if {[info exists ::env(TRAFFIC_REPLAY_PORT0_MULTI_DDR)] && $::env(TRAFFIC_REPLAY_PORT0_MULTI_DDR) ne ""} {
   set traffic_replay_port0_multi_ddr $::env(TRAFFIC_REPLAY_PORT0_MULTI_DDR)
 }

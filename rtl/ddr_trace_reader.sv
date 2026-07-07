@@ -4,7 +4,17 @@ import traffic_replay_pkg::*;
 
 module ddr_trace_reader #(
   parameter int AXI_ADDR_W_P = AXI_ADDR_W,
-  parameter int AXI_ID_W_P   = AXI_ID_W
+  parameter int AXI_ID_W_P   = AXI_ID_W,
+  parameter int DESC_FIFO_DEPTH_P = 512,
+  parameter int META_FIFO_DEPTH_P = 512,
+  parameter int PLAN_FIFO_DEPTH_P = 1024,
+  parameter int PAYLOAD_CMD_DEPTH_P = 64,
+  parameter int AXI_CMD_DEPTH_P = 64,
+  parameter int PAYLOAD_FIFO_DEPTH_P = 8192,
+  parameter int DESC_SCAN_START_LEVEL_P = 256,
+  parameter int DESC_REFILL_LEVEL_P = 256,
+  parameter int DESC_SERVICE_LEVEL_P = 128,
+  parameter int PAYLOAD_DESC_SERVICE_LEVEL_P = 2048
 ) (
   input  logic                     clk,
   input  logic                     rstn,
@@ -49,15 +59,15 @@ module ddr_trace_reader #(
   output logic                     error,
   output logic [3:0]               debug_state
 );
-  localparam int DESC_FIFO_DEPTH        = 256;
-  localparam int META_FIFO_DEPTH        = 256;
-  localparam int PLAN_FIFO_DEPTH        = 512;
-  localparam int PAYLOAD_CMD_DEPTH      = 32;
-  localparam int AXI_CMD_DEPTH          = 32;
-  localparam int PAYLOAD_FIFO_DEPTH     = 4096;
+  localparam int DESC_FIFO_DEPTH        = DESC_FIFO_DEPTH_P;
+  localparam int META_FIFO_DEPTH        = META_FIFO_DEPTH_P;
+  localparam int PLAN_FIFO_DEPTH        = PLAN_FIFO_DEPTH_P;
+  localparam int PAYLOAD_CMD_DEPTH      = PAYLOAD_CMD_DEPTH_P;
+  localparam int AXI_CMD_DEPTH          = AXI_CMD_DEPTH_P;
+  localparam int PAYLOAD_FIFO_DEPTH     = PAYLOAD_FIFO_DEPTH_P;
   localparam int MAX_PAYLOAD_RUN_PKTS   = 255;
   localparam int MAX_AXI_BURST_BEATS    = 256;
-  localparam int DESC_SCAN_START_LEVEL  = 128;
+  localparam int DESC_SCAN_START_LEVEL  = DESC_SCAN_START_LEVEL_P;
 
   localparam int DESC_PTR_W        = $clog2(DESC_FIFO_DEPTH);
   localparam int META_PTR_W        = $clog2(META_FIFO_DEPTH);
@@ -73,15 +83,15 @@ module ddr_trace_reader #(
   localparam int RESERVE_CNT_W     = PAYLOAD_CNT_W + 1;
 
   localparam logic [DESC_CNT_W-1:0]        DESC_FIFO_DEPTH_LEVEL        = DESC_FIFO_DEPTH;
-  localparam logic [DESC_CNT_W-1:0]        DESC_REFILL_LEVEL            = 128;
-  localparam logic [DESC_CNT_W-1:0]        DESC_SERVICE_LEVEL           = 64;
+  localparam logic [DESC_CNT_W-1:0]        DESC_REFILL_LEVEL            = DESC_REFILL_LEVEL_P;
+  localparam logic [DESC_CNT_W-1:0]        DESC_SERVICE_LEVEL           = DESC_SERVICE_LEVEL_P;
   localparam logic [DESC_CNT_W-1:0]        DESC_SCAN_START_LEVEL_U      = DESC_SCAN_START_LEVEL;
   localparam logic [META_CNT_W-1:0]        META_FIFO_DEPTH_LEVEL        = META_FIFO_DEPTH;
   localparam logic [PLAN_CNT_W-1:0]        PLAN_FIFO_DEPTH_LEVEL        = PLAN_FIFO_DEPTH;
   localparam logic [PAYLOAD_CMD_CNT_W-1:0] PAYLOAD_CMD_DEPTH_LEVEL      = PAYLOAD_CMD_DEPTH;
   localparam logic [AXI_CMD_CNT_W-1:0]     AXI_CMD_DEPTH_LEVEL          = AXI_CMD_DEPTH;
   localparam logic [PAYLOAD_CNT_W-1:0]     PAYLOAD_FIFO_DEPTH_LEVEL     = PAYLOAD_FIFO_DEPTH;
-  localparam logic [RESERVE_CNT_W-1:0]     PAYLOAD_DESC_SERVICE_LEVEL   = 1024;
+  localparam logic [RESERVE_CNT_W-1:0]     PAYLOAD_DESC_SERVICE_LEVEL   = PAYLOAD_DESC_SERVICE_LEVEL_P;
   localparam logic [7:0]                   MAX_PAYLOAD_RUN_PKTS_U8      = 8'(MAX_PAYLOAD_RUN_PKTS);
   localparam logic [16:0]                  MAX_AXI_BURST_BEATS_U17      = 17'(MAX_AXI_BURST_BEATS);
 

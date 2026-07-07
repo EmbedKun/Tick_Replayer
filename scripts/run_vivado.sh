@@ -19,6 +19,8 @@ Environment:
   VIVADO_BIN                     Optional Vivado executable override
   TRAFFIC_REPLAY_HW_BUILD_ROOT   Optional build root, defaults to <repo>/build
   TRAFFIC_REPLAY_PORT_COUNT      Optional hardware port count: 1 or 2, defaults to 2
+  TRAFFIC_REPLAY_DDR_BANKS       Optional DDR bank count: 1, 2, or 4, defaults to 4
+  TRAFFIC_REPLAY_PORT0_MULTI_DDR Optional port 0 multi-DDR read path, defaults to 1 for single-port multi-bank builds
   TRAFFIC_REPLAY_VIVADO_JOBS     Optional Vivado run job count
   TRAFFIC_REPLAY_IMPL_STRATEGY   Optional implementation strategy
 EOF
