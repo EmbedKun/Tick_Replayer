@@ -1,7 +1,16 @@
 set script_dir [file dirname [file normalize [info script]]]
 set repo_dir [file normalize [file join $script_dir ..]]
 
-set_param general.maxThreads 1
+set traffic_replay_vivado_threads 1
+if {[info exists ::env(TRAFFIC_REPLAY_VIVADO_THREADS)] && $::env(TRAFFIC_REPLAY_VIVADO_THREADS) ne ""} {
+  set traffic_replay_vivado_threads $::env(TRAFFIC_REPLAY_VIVADO_THREADS)
+}
+if {![string is integer -strict $traffic_replay_vivado_threads] || $traffic_replay_vivado_threads < 1} {
+  puts "ERROR: TRAFFIC_REPLAY_VIVADO_THREADS must be a positive integer"
+  exit 1
+}
+set_param general.maxThreads $traffic_replay_vivado_threads
+puts "Traffic replay Vivado maxThreads: $traffic_replay_vivado_threads"
 
 proc source_vivado_init {subdir} {
   if {![info exists ::env(XILINX_VIVADO)] || $::env(XILINX_VIVADO) eq ""} {
@@ -67,8 +76,8 @@ set traffic_replay_ddr_banks 1
 if {[info exists ::env(TRAFFIC_REPLAY_DDR_BANKS)] && $::env(TRAFFIC_REPLAY_DDR_BANKS) ne ""} {
   set traffic_replay_ddr_banks $::env(TRAFFIC_REPLAY_DDR_BANKS)
 }
-if {![string is integer -strict $traffic_replay_ddr_banks] || ($traffic_replay_ddr_banks != 1 && $traffic_replay_ddr_banks != 4)} {
-  puts "ERROR: TRAFFIC_REPLAY_DDR_BANKS must be 1 or 4"
+if {![string is integer -strict $traffic_replay_ddr_banks] || ($traffic_replay_ddr_banks != 1 && $traffic_replay_ddr_banks != 2 && $traffic_replay_ddr_banks != 4)} {
+  puts "ERROR: TRAFFIC_REPLAY_DDR_BANKS must be 1, 2, or 4"
   exit 1
 }
 set ddr_bank_ids [list]
@@ -76,6 +85,20 @@ for {set ddr_bank_idx 0} {$ddr_bank_idx < $traffic_replay_ddr_banks} {incr ddr_b
   lappend ddr_bank_ids $ddr_bank_idx
 }
 puts "Traffic replay DDR bank count: $traffic_replay_ddr_banks"
+
+set traffic_replay_port0_multi_ddr 0
+if {[info exists ::env(TRAFFIC_REPLAY_PORT0_MULTI_DDR)] && $::env(TRAFFIC_REPLAY_PORT0_MULTI_DDR) ne ""} {
+  set traffic_replay_port0_multi_ddr $::env(TRAFFIC_REPLAY_PORT0_MULTI_DDR)
+}
+if {![string is integer -strict $traffic_replay_port0_multi_ddr] || ($traffic_replay_port0_multi_ddr != 0 && $traffic_replay_port0_multi_ddr != 1)} {
+  puts "ERROR: TRAFFIC_REPLAY_PORT0_MULTI_DDR must be 0 or 1"
+  exit 1
+}
+if {$traffic_replay_ddr_banks == 1 && $traffic_replay_port0_multi_ddr} {
+  puts "ERROR: TRAFFIC_REPLAY_PORT0_MULTI_DDR requires TRAFFIC_REPLAY_DDR_BANKS=2 or 4"
+  exit 1
+}
+puts "Traffic replay port0 multi-DDR read access: $traffic_replay_port0_multi_ddr"
 
 set enable_rs_fec 1
 if {[info exists ::env(TRAFFIC_REPLAY_ENABLE_RS_FEC)] && $::env(TRAFFIC_REPLAY_ENABLE_RS_FEC) ne ""} {
@@ -429,14 +452,16 @@ foreach bank $ddr_bank_ids {
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect host_smc
 set host_smc_mi_count [expr {$traffic_replay_ddr_banks == 1 ? 1 : $traffic_replay_ddr_banks}]
-set_property -dict [list CONFIG.NUM_SI {1} CONFIG.NUM_MI $host_smc_mi_count] [get_bd_cells host_smc]
+set host_smc_si_count [expr {$traffic_replay_port0_multi_ddr ? 2 : 1}]
+set_property -dict [list CONFIG.NUM_SI $host_smc_si_count CONFIG.NUM_MI $host_smc_mi_count] [get_bd_cells host_smc]
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect ddr_smc
 set ddr_smc_si_count [expr {$enable_port1 ? 5 : 3}]
 if {$traffic_replay_ddr_banks == 1} {
   set_property -dict [list CONFIG.NUM_SI $ddr_smc_si_count CONFIG.NUM_MI {1}] [get_bd_cells ddr_smc]
 } else {
-  set_property -dict [list CONFIG.NUM_SI {2} CONFIG.NUM_MI {1}] [get_bd_cells ddr_smc]
+  set ddr_smc_bank0_si_count [expr {$traffic_replay_port0_multi_ddr ? 1 : 2}]
+  set_property -dict [list CONFIG.NUM_SI $ddr_smc_bank0_si_count CONFIG.NUM_MI {1}] [get_bd_cells ddr_smc]
   foreach bank $ddr_bank_ids {
     if {$bank == 0} {
       continue
@@ -815,7 +840,11 @@ if {$traffic_replay_ddr_banks == 1} {
       connect_bd_intf_net [get_bd_intf_pins ddr_bank${bank}_cc/M_AXI] [get_bd_intf_pins $bank_smc/S00_AXI]
     }
   }
-  connect_bd_intf_net [get_bd_intf_pins replay_core_0/M_AXI] [get_bd_intf_pins ddr_smc/S01_AXI]
+  if {$traffic_replay_port0_multi_ddr} {
+    connect_bd_intf_net [get_bd_intf_pins replay_core_0/M_AXI] [get_bd_intf_pins host_smc/S01_AXI]
+  } else {
+    connect_bd_intf_net [get_bd_intf_pins replay_core_0/M_AXI] [get_bd_intf_pins ddr_smc/S01_AXI]
+  }
   if {$enable_port1} {
     connect_bd_intf_net [get_bd_intf_pins replay_core_1/M_AXI] [get_bd_intf_pins ddr_smc_1/S01_AXI]
     connect_bd_intf_net [get_bd_intf_pins rx_cap_0/M_AXI] [get_bd_intf_pins ddr_smc_2/S01_AXI]

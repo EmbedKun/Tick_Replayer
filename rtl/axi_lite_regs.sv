@@ -43,6 +43,7 @@ module axi_lite_regs #(
   output logic [63:0]       cfg_stream_ring_size,
   output logic [63:0]       cfg_stream_write_count,
   output logic              cfg_stream_eof,
+  output logic              cfg_stream_pingpong,
   output logic              cfg_force_link_up,
   output logic              cfg_force_tx_ready,
   output logic              cfg_auto_tx_drop,
@@ -130,6 +131,7 @@ module axi_lite_regs #(
   logic [DATA_W-1:0] wdata_q;
   logic [DATA_W/8-1:0] wstrb_q;
   logic do_write;
+  logic [63:0] cfg_stream_write_shadow;
 
   assign s_axil_awready = !aw_hold && !s_axil_bvalid;
   assign s_axil_wready  = !w_hold && !s_axil_bvalid;
@@ -180,7 +182,9 @@ module axi_lite_regs #(
       cfg_watermark      <= 32'd4096;
       cfg_stream_ring_size <= '0;
       cfg_stream_write_count <= '0;
+      cfg_stream_write_shadow <= '0;
       cfg_stream_eof     <= 1'b0;
+      cfg_stream_pingpong <= 1'b0;
       cfg_force_link_up  <= 1'b0;
       cfg_force_tx_ready <= 1'b0;
       cfg_auto_tx_drop   <= 1'b1;
@@ -210,7 +214,9 @@ module axi_lite_regs #(
               pause <= wdata_q[3];
               if (wdata_q[2]) begin
                 cfg_stream_write_count <= '0;
+                cfg_stream_write_shadow <= '0;
                 cfg_stream_eof <= 1'b0;
+                cfg_stream_pingpong <= 1'b0;
               end
             end
           end
@@ -235,13 +241,22 @@ module axi_lite_regs #(
           REG_START_HI:     cfg_start_time[63:32] <= apply_wstrb(cfg_start_time[63:32], wdata_q, wstrb_q);
           REG_RATE:         cfg_rate_q16_16 <= apply_wstrb(cfg_rate_q16_16, wdata_q, wstrb_q);
           REG_WATERMARK:    cfg_watermark   <= apply_wstrb(cfg_watermark, wdata_q, wstrb_q);
-          REG_STREAM_WR_LO: cfg_stream_write_count[31:0] <= apply_wstrb(cfg_stream_write_count[31:0], wdata_q, wstrb_q);
-          REG_STREAM_WR_HI: cfg_stream_write_count[63:32] <= apply_wstrb(cfg_stream_write_count[63:32], wdata_q, wstrb_q);
+          REG_STREAM_WR_LO: begin
+            cfg_stream_write_shadow[31:0] <= apply_wstrb(cfg_stream_write_shadow[31:0], wdata_q, wstrb_q);
+          end
+          REG_STREAM_WR_HI: begin
+            cfg_stream_write_shadow[63:32] <= apply_wstrb(cfg_stream_write_shadow[63:32], wdata_q, wstrb_q);
+            cfg_stream_write_count <= {
+              apply_wstrb(cfg_stream_write_shadow[63:32], wdata_q, wstrb_q),
+              cfg_stream_write_shadow[31:0]
+            };
+          end
           REG_STREAM_RING_LO: cfg_stream_ring_size[31:0] <= apply_wstrb(cfg_stream_ring_size[31:0], wdata_q, wstrb_q);
           REG_STREAM_RING_HI: cfg_stream_ring_size[63:32] <= apply_wstrb(cfg_stream_ring_size[63:32], wdata_q, wstrb_q);
           REG_STREAM_CTRL: begin
             if (wstrb_q[0]) begin
               cfg_stream_eof <= wdata_q[0];
+              cfg_stream_pingpong <= wdata_q[1];
             end
           end
           REG_DEBUG_CTRL: begin
@@ -307,7 +322,7 @@ module axi_lite_regs #(
           REG_STREAM_RD_HI:s_axil_rdata <= stat_stream_read_count[63:32];
           REG_STREAM_RING_LO:s_axil_rdata <= cfg_stream_ring_size[31:0];
           REG_STREAM_RING_HI:s_axil_rdata <= cfg_stream_ring_size[63:32];
-          REG_STREAM_CTRL: s_axil_rdata <= {31'd0, cfg_stream_eof};
+          REG_STREAM_CTRL: s_axil_rdata <= {30'd0, cfg_stream_pingpong, cfg_stream_eof};
           REG_STREAM_STATUS:s_axil_rdata <= stat_stream_status;
           REG_STREAM_LEVEL_LO:s_axil_rdata <= stat_stream_level[31:0];
           REG_STREAM_LEVEL_HI:s_axil_rdata <= stat_stream_level[63:32];

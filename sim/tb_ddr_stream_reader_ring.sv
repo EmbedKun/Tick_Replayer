@@ -4,6 +4,7 @@ import traffic_replay_pkg::*;
 
 module tb_ddr_stream_reader_ring;
   localparam logic [63:0] BASE = 64'h2000_0000;
+  localparam logic [63:0] BASE1 = 64'h4_0000_0000;
   localparam logic [63:0] RING_SIZE = 64'd256;
 
   logic clk = 1'b0;
@@ -18,6 +19,7 @@ module tb_ddr_stream_reader_ring;
   logic [63:0] cfg_ring_size;
   logic [63:0] cfg_ring_write_count;
   logic cfg_ring_eof;
+  logic cfg_pingpong_enable;
 
   logic [3:0] arid;
   logic [63:0] araddr;
@@ -48,6 +50,7 @@ module tb_ddr_stream_reader_ring;
   logic [3:0] debug_state;
 
   logic [511:0] ring_mem [0:3];
+  logic [511:0] ring_mem1 [0:3];
   logic [511:0] expected [0:31];
   int expected_count;
   int seen_count;
@@ -71,10 +74,12 @@ module tb_ddr_stream_reader_ring;
     .stop(stop),
     .clear(clear),
     .cfg_stream_base(BASE),
+    .cfg_stream_base1(BASE1),
     .cfg_stream_bytes(cfg_stream_bytes),
     .cfg_ring_size(cfg_ring_size),
     .cfg_ring_write_count(cfg_ring_write_count),
     .cfg_ring_eof(cfg_ring_eof),
+    .cfg_pingpong_enable(cfg_pingpong_enable),
     .m_axi_arid(arid),
     .m_axi_araddr(araddr),
     .m_axi_arlen(arlen),
@@ -116,7 +121,10 @@ module tb_ddr_stream_reader_ring;
   function automatic logic [511:0] mem_read(input logic [63:0] addr);
     int idx;
     begin
-      if (addr < BASE) begin
+      if (addr >= BASE1) begin
+        idx = int'(((addr - BASE1) >> 6) & 64'h3);
+        mem_read = ring_mem1[idx];
+      end else if (addr < BASE) begin
         mem_read = '0;
       end else begin
         idx = int'(((addr - BASE) >> 6) & 64'h3);
@@ -175,9 +183,10 @@ module tb_ddr_stream_reader_ring;
     end
   endtask
 
+  assign arready = !rd_active && !rvalid;
+
   always_ff @(posedge clk) begin
     if (!rstn) begin
-      arready    <= 1'b0;
       rid        <= '0;
       rdata      <= '0;
       rresp      <= 2'b00;
@@ -191,8 +200,6 @@ module tb_ddr_stream_reader_ring;
       ar_count   <= 0;
       fatal_seen <= 1'b0;
     end else begin
-      arready <= !rd_active;
-
       if (arvalid && arready) begin
         rd_active  <= 1'b1;
         rd_addr_q  <= araddr;
@@ -235,7 +242,10 @@ module tb_ddr_stream_reader_ring;
       seen_count <= 0;
     end else if (axis_tvalid && axis_tready) begin
       if (axis_tdata !== expected[seen_count]) begin
-        $fatal(1, "stream data mismatch at beat %0d", seen_count);
+        $fatal(1,
+               "stream data mismatch at beat %0d got_lsb=0x%02x exp_lsb=0x%02x read_count=%0d status=0x%08x state=%0d ar_count=%0d",
+               seen_count, axis_tdata[7:0], expected[seen_count][7:0],
+               read_count, stream_status, debug_state, ar_count);
       end
       if (axis_tkeep !== {64{1'b1}} || axis_tlast !== 1'b0) begin
         $fatal(1, "raw ring stream beat had unexpected keep/tlast at beat %0d", seen_count);
@@ -257,10 +267,12 @@ module tb_ddr_stream_reader_ring;
     cfg_ring_size = RING_SIZE;
     cfg_ring_write_count = '0;
     cfg_ring_eof = 1'b0;
+    cfg_pingpong_enable = 1'b0;
     axis_tready = 1'b1;
     expected_count = 0;
     for (int i = 0; i < 4; i++) begin
       ring_mem[i] = '0;
+      ring_mem1[i] = '0;
     end
 
     repeat (10) @(posedge clk);
@@ -335,6 +347,50 @@ module tb_ddr_stream_reader_ring;
     $display("PASS: ring reader wraps without issuing cross-boundary bursts");
 
     pulse_clear();
+    cfg_pingpong_enable = 1'b1;
+    cfg_ring_size = RING_SIZE;
+    cfg_ring_eof = 1'b0;
+    cfg_ring_write_count = 64'd0;
+    expected_count = 0;
+
+    for (int i = 0; i < 4; i++) begin
+      ring_mem[i] = word_with_id(30 + i);
+      ring_mem1[i] = word_with_id(40 + i);
+      add_expected(ring_mem[i]);
+    end
+    for (int i = 0; i < 4; i++) begin
+      add_expected(ring_mem1[i]);
+    end
+    @(negedge clk);
+    cfg_ring_write_count = RING_SIZE * 2;
+    cfg_ring_eof = 1'b1;
+    pulse_start();
+    wait_seen(8, 400);
+    wait_done(100);
+    if (error || fatal_seen) begin
+      $fatal(1, "ping-pong ring reader test reported error status=0x%08x", stream_status);
+    end
+    if (!(stream_status & (1 << 13))) begin
+      $fatal(1, "ping-pong status bit was not visible: status=0x%08x", stream_status);
+    end
+    $display("PASS: ping-pong ring reader alternates bank0/bank1 segments");
+
+    pulse_clear();
+    cfg_pingpong_enable = 1'b1;
+    cfg_ring_size = 64'd384;
+    cfg_ring_write_count = 64'd0;
+    cfg_ring_eof = 1'b0;
+    pulse_start();
+    wait_done(50);
+    repeat (2) @(posedge clk);
+    if (!error || !(stream_status & (1 << 6)) || (stream_status & (1 << 9))) begin
+      $fatal(1, "non-power-of-two ping-pong segment was not rejected: status=0x%08x",
+             stream_status);
+    end
+    $display("PASS: ping-pong mode rejects non-power-of-two segment size");
+
+    pulse_clear();
+    cfg_pingpong_enable = 1'b0;
     cfg_ring_eof = 1'b0;
     cfg_ring_size = 64'd130;
     cfg_ring_write_count = 64'd0;

@@ -3,7 +3,15 @@ set repo_dir [file normalize [file join $script_dir ..]]
 set reports_dir [file join $repo_dir reports]
 file mkdir $reports_dir
 
-set_param general.maxThreads 1
+set traffic_replay_vivado_threads 1
+if {[info exists ::env(TRAFFIC_REPLAY_VIVADO_THREADS)] && $::env(TRAFFIC_REPLAY_VIVADO_THREADS) ne ""} {
+  set traffic_replay_vivado_threads $::env(TRAFFIC_REPLAY_VIVADO_THREADS)
+}
+if {![string is integer -strict $traffic_replay_vivado_threads] || $traffic_replay_vivado_threads < 1} {
+  puts "ERROR: TRAFFIC_REPLAY_VIVADO_THREADS must be a positive integer"
+  exit 1
+}
+set_param general.maxThreads $traffic_replay_vivado_threads
 
 source [file join $script_dir create_hw_project.tcl]
 

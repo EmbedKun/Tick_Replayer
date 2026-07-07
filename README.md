@@ -57,16 +57,18 @@ traffic trace.
 | --- | --- |
 | Target board | Xilinx Alveo U200 |
 | PCIe | Xilinx `XDMA`, Gen3 x16, memory-mapped `H2C`/`C2H` |
-| Ethernet | Dual 100G `CMAC` connected to `QSFP0` and `QSFP1` |
+| Ethernet | 100G `CMAC` to `QSFP0` in the latest single-port timing-clean build; dual-port RTL/build flow is also kept in-tree |
 | Control plane | `XDMA` user `BAR` to `AXI-Lite` registers |
-| Trace memory | Default build uses one U200 `DDR4` bank; `TRAFFIC_REPLAY_DDR_BANKS=4` maps all four banks for `64GiB` |
+| Trace memory | Latest evaluated build uses two U200 `DDR4` banks for a `32GiB` ping-pong `STREAM` window; `TRAFFIC_REPLAY_DDR_BANKS=4` maps all four banks for `64GiB` experimental builds |
 | Replay modes | `PRELOAD`, `LOOP`, and `STREAM` ring buffer |
 | RX path | Packet/byte/error counters, recent sample capture, SOP-to-SOP gap statistics |
-| Timing archive | One-bank: `bitstreams/20260704_rxgap_precision_stream_loader_timing_clean`, `WNS=+0.024 ns`; four-bank: `bitstreams/20260705_4ddr_localclock_timing_clean`, `WNS=+0.002 ns` |
-| Full 64GB DDR | Four 16GiB DDR windows validated with `H2C`/`C2H` low-address and high-address readback |
+| Timing archive | Current single-port two-bank STREAM build: `/home/user/tick_replayer_bitstreams/20260707_stream_ring_pipeline_2bank_timing_clean`, routed `WNS=+0.009 ns`; four-bank archive: `bitstreams/20260705_4ddr_localclock_timing_clean`, `WNS=+0.002 ns` |
+| Full 64GB DDR | Four 16GiB DDR windows validated in the four-bank archive; the latest board check below targets the two-bank STREAM pipeline build |
 
-Detailed four-bank board results are recorded in
-[`docs/evaluation_20260705_4ddr_localclock.md`](docs/evaluation_20260705_4ddr_localclock.md).
+Detailed board results are recorded in
+[`docs/evaluation_20260707_full_system_check.md`](docs/evaluation_20260707_full_system_check.md),
+[`docs/evaluation_20260707_stream_pingpong_pipeline.md`](docs/evaluation_20260707_stream_pingpong_pipeline.md),
+and [`docs/evaluation_20260705_4ddr_localclock.md`](docs/evaluation_20260705_4ddr_localclock.md).
 
 ## Quick Start
 
@@ -194,6 +196,10 @@ For dual-SSD STREAM loading on one QSFP/one replay port, stripe the stream file
 into record-aligned blocks first.  The host may read blocks from both SSDs in
 parallel, but the loader still commits them to the FPGA ring strictly in
 `block_id` order, so replay timing remains controlled by the FPGA scheduler.
+The recommended layout is one large container file per SSD lane; this avoids the
+metadata and fragmentation overhead of thousands of small block files.  For
+fixed `1518B` stress records, `65536000` bytes is both record-aligned and
+`O_DIRECT` page-aligned.
 
 ```bash
 export SSD0=/mnt/ssd0/tick_stream_lane0
@@ -203,7 +209,8 @@ python3 software/stream_stripe.py \
   --manifest "$STREAM_DIR/stream_manifest.json" \
   --lane-dir "$SSD0" \
   --lane-dir "$SSD1" \
-  --block-bytes 0x10000000 \
+  --block-bytes 65536000 \
+  --container-files \
   --out-manifest "$STREAM_DIR/stripe_manifest.json" \
   --force
 
@@ -216,8 +223,36 @@ sudo ./software/xdma_stream_ring_fast \
   --ring-size 0x08000000 \
   --prefill-bytes 0x04000000 \
   --batch-bytes 0x04000000 \
-  --read-bytes 0x04000000 \
+  --read-bytes 0x01000000 \
   --queue-depth 8 \
+  --direct-read \
+  --writer-threads 2 \
+  --host-cache-bytes auto \
+  --timeout 300
+```
+
+For a four-DDR-bank bitstream, `STREAM` can use a two-bank ping-pong ring on
+port 0.  In this mode `--ring-size` is the per-bank segment size, not the total
+ring capacity.  It must be a power-of-two 64-byte multiple.  The host writes
+even-numbered segments to bank 0 and odd-numbered segments to bank 1; the FPGA
+reader uses the same monotonic byte counter to select the active read bank.
+This lets `XDMA H2C` writes and replay reads usually hit different DDR banks.
+
+```bash
+sudo ./software/xdma_stream_ring_fast \
+  --port 0 \
+  --stripe-manifest "$STREAM_DIR/stripe_manifest.json" \
+  --pingpong \
+  --ring-base 0x20000000 \
+  --pingpong-bank1-base 0x400000000 \
+  --ring-size 0x200000000 \
+  --prefill-bytes 0x200000000 \
+  --guard-bytes 0x04000000 \
+  --batch-bytes 0x04000000 \
+  --read-bytes 0x04000000 \
+  --reader-threads 4 \
+  --reader-window-blocks 16 \
+  --queue-depth 16 \
   --writer-threads 2 \
   --host-cache-bytes auto \
   --timeout 300
@@ -341,7 +376,20 @@ control-plane access.  The host `XDMA` master can still access all four windows.
 This partitioning is intended to reduce SmartConnect timing pressure and avoid
 dual-port large-packet replay overloading a single DDR controller.
 
-The design-space capacity then becomes roughly four times larger:
+The latest single-port two-bank build can address two `16GiB` DDR windows for
+TX preload storage or a ping-pong `STREAM` ring.  With the internal replay trace
+format `64B descriptor + align64(frame)`, the approximate source `pcap` capacity
+for a `32GiB` FPGA-resident trace is:
+
+| Frame bytes | Packets in `32GiB` DDR | Approx. source `pcap` size |
+| ---: | ---: | ---: |
+| `64` | `268,435,456` | `20.00GiB` |
+| `512` | `59,652,323` | `29.33GiB` |
+| `1518` | `21,474,836` | `30.68GiB` |
+| `9000` | `3,780,781` | `31.75GiB` |
+
+The experimental four-bank design-space capacity becomes roughly four times
+larger than a one-bank build:
 
 | Frame bytes | Packets in `64GiB` DDR | Approx. source `pcap` size |
 | ---: | ---: | ---: |
@@ -387,7 +435,10 @@ on packet length:
 | `1518` | `98.44Gbps` | `8.11Mpps` |
 | `9000` | `99.73Gbps` | `1.39Mpps` |
 
-Current board measurements on the U200 optical loopback:
+Current board measurements.  The latest single-port tests use internal
+`force-link-up`/`force-tx-ready` gating because the two-port optical loopback is
+not present in that bitstream; older dual-port rows are from the archived
+four-bank optical-loopback build.
 
 | Mode | Case | Result |
 | --- | --- | ---: |
@@ -405,9 +456,13 @@ Current board measurements on the U200 optical loopback:
 | `STREAM` ring | `1518B`, `gap=38`, `5M` packets, `8GB` ring/dynamic refill before aligned-buffer loader | `55.306Gbps` average; late/underrun after ring drains |
 | `STREAM` ring | `1518B`, `gap=160`, `40M` packets, `64GB` stream, cold dynamic refill | `22.770Gbps` frame/L2, no late/underrun/drop/stall |
 | `STREAM` ring | `1518B`, `gap=160`, `64GB` stream, striped direct-copy loader | `28.3Gbps` load, no late/underrun |
+| `STREAM` ring | `1518B`, `gap=120`, `2M` packets, container-striped ping-pong ring | `30.360Gbps` frame/L2, no late/underrun/drop/stall |
+| `STREAM` ring | `1518B`, `gap=80`, `2M` packets, `2GiB` container-striped ping-pong ring | `45.540Gbps` frame/L2, no late/underrun/drop/stall in the 2026-07-07 run |
+| `STREAM` ring | maximum ring config sanity | `16GiB` per bank, `32GiB` total ping-pong ring accepted and completed a tiny trace |
 | SSD read bench | dual-SSD `O_DIRECT` unordered read, `64GB` striped blocks | `50.680Gbps` |
 | Host loader | dual-SSD striped dry-run, `64GB` stream, cold cache | `24.102Gbps` read/reorder |
 | Host loader | dual-SSD + memory-mapped `XDMA H2C pwrite()`, `64GB` stream | `22.190Gbps` FPGA load |
+| Raw `XDMA H2C` | current two-bank bit, `4GiB` bank0 / bank1 writes | `48.868Gbps` / `47.787Gbps`; `70.792Gbps` with two threads crossing banks |
 
 `PRELOAD` is the highest-throughput mode because the host is out of the transmit
 data path during replay.  The four-bank build removes the internal shared-DDR
@@ -417,6 +472,8 @@ larger traces.  The boosted single-port build proves that fully prefetched
 large-packet STREAM replay can hit the scheduler limit, but sustained dynamic
 replay is still limited by host memory copy/conversion, memory-mapped
 `XDMA H2C` submission, DDR ring writes, and FPGA DDR reads.
+The latest ping-pong pipeline board run is recorded in
+[`docs/evaluation_20260707_stream_pingpong_pipeline.md`](docs/evaluation_20260707_stream_pingpong_pipeline.md).
 
 ## Replay Precision
 
@@ -482,7 +539,7 @@ The host software is intentionally small and command-line oriented.
 | `software/preload_mixed_test.py` | Generate and replay mixed-size preload cases |
 | `software/loopback_rx_verify.py` | Check TX-to-RX payload samples over optical loopback |
 | `software/replay_precision_suite.py` | Run RX-side replay precision tests |
-| `software/stream_stripe.py` | Split a `STREAM` file into record-aligned blocks across SSD lanes |
+| `software/stream_stripe.py` | Split a `STREAM` file into record-aligned SSD-lane blocks; supports per-lane container files and synthetic gap override |
 | `software/xdma_stream_ring_fast.cpp` | C++ `STREAM` ring loader with batched H2C writes |
 | `software/stream_stress_test.py` | Generate and run `STREAM` ring stress datasets |
 
@@ -607,6 +664,18 @@ Build a dual-port, four-DDR-bank bitstream:
 TRAFFIC_REPLAY_PORT_COUNT=2 \
 TRAFFIC_REPLAY_DDR_BANKS=4 \
 TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw_4ddr \
+vivado -mode batch -source scripts/build_hw_bitstream.tcl
+```
+
+Build a single-port, four-DDR-bank bitstream with port 0 replay reads allowed to
+access multiple DDR windows.  This is the target build for two-bank ping-pong
+`STREAM` mode:
+
+```bash
+TRAFFIC_REPLAY_PORT_COUNT=1 \
+TRAFFIC_REPLAY_DDR_BANKS=4 \
+TRAFFIC_REPLAY_PORT0_MULTI_DDR=1 \
+TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw_1p_4ddr_pingpong \
 vivado -mode batch -source scripts/build_hw_bitstream.tcl
 ```
 
@@ -769,21 +838,23 @@ reports/       Selected validation reports
 
 ## Known Limitations
 
-- The default hardware build uses one U200 DDR bank.  The four-bank build is
-  available through `TRAFFIC_REPLAY_DDR_BANKS=4` and has a timing-clean archived
-  bitstream, but it has a larger timing/routing footprint and less WNS margin
-  than the one-bank archive.
+- The latest timing-clean STREAM pipeline build is a single-port, two-DDR-bank
+  build.  It is the preferred build for current `PRELOAD` and `STREAM`
+  development.  A four-bank build is available through
+  `TRAFFIC_REPLAY_DDR_BANKS=4`, but it is a separate archive with a larger
+  timing/routing footprint.
 - `STREAM` ring mode is functional.  The C++ loader supports batched,
   order-preserving multi-writer `H2C` submission.  Fully prefetched large-packet
-  STREAM tests reach `95.874Gbps`.  With page-aligned DMA buffers and deeper
-  striped read-ahead, the measured 64GB cold dynamic STREAM case reaches
-  `22.190Gbps` FPGA load against a `24.102Gbps` dual-SSD dry-run limit.  This is
-  close to the old loader's measured storage path.  A lower-level `O_DIRECT`
-  SSD bench reaches `50.680Gbps`; the new striped direct-copy loader improves
-  stable dynamic load to about `28.3Gbps`.  Pushing replay consumption to about
-  `48Gbps` currently exposes a FPGA stream-ring error, so the next limit is the
-  single-DDR ring hardware under simultaneous high-rate H2C writes and replay
-  reads.
+  STREAM tests reach `95.874Gbps`.  The two-bank ping-pong ring accepts a
+  `32GiB` window and the 2026-07-07 dynamic container-stripe test sustained
+  `45.540Gbps` frame/L2 on a `3.2GB` synthetic stream with no late/underrun.
+  This is still not proof of unlimited `100Gbps` dynamic replay: long traces are
+  limited by `SSD -> host memory -> memory-mapped XDMA H2C -> FPGA DDR` load
+  bandwidth.
+- The latest single-port board run uses `force-link-up` and `force-tx-ready`
+  because the programmed bitstream exposes only `QSFP0`.  Real optical
+  TX-to-RX payload verification and RX-side SOP-to-SOP precision measurement
+  require a dual-port bitstream or a valid external link into the enabled port.
 - The RX sample writer is a lightweight debug/correctness path, not a full-rate
   packet capture DMA.  Low-rate loopback sample checks pass; high-rate sample
   capture can overflow and should be treated as an expected limitation.

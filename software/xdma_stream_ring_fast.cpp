@@ -93,6 +93,7 @@ struct Args {
   int port = 0;
   uint64_t reg_base_override = UINT64_MAX;
   uint64_t ring_base = 0x20000000ULL;
+  uint64_t pingpong_bank1_base = 0x400000000ULL;
   uint64_t ring_size = 0x08000000ULL;
   uint64_t prefill_bytes = 0;
   uint64_t guard_bytes = 1ULL << 20;
@@ -121,6 +122,8 @@ struct Args {
   bool reader_window_blocks_set = false;
   bool direct_read = false;
   bool direct_read_set = false;
+  bool staged_stripe = false;
+  bool pingpong = false;
   bool force_link_up = false;
   bool force_tx_ready = false;
   bool no_wait = false;
@@ -184,6 +187,7 @@ struct BlockInfo {
   uint64_t id = 0;
   uint64_t lane = 0;
   fs::path path;
+  uint64_t file_offset = 0;
   uint64_t bytes = 0;
   uint64_t packets = 0;
   uint64_t first_packet = 0;
@@ -266,6 +270,10 @@ static uint64_t align_up(uint64_t value, uint64_t alignment) {
   return ((value + alignment - 1) / alignment) * alignment;
 }
 
+static bool is_power_of_two(uint64_t value) {
+  return value != 0 && (value & (value - 1)) == 0;
+}
+
 static uint16_t load_le16(const uint8_t *p) {
   return static_cast<uint16_t>(p[0]) |
          static_cast<uint16_t>(static_cast<uint16_t>(p[1]) << 8);
@@ -282,6 +290,8 @@ static void usage(const char *argv0) {
       << "  --port 0|1                 default 0\n"
       << "  --reg-base ADDR            override AXI-Lite base\n"
       << "  --ring-base ADDR           default 0x20000000\n"
+      << "  --pingpong                 use two DDR bank segments for STREAM ring\n"
+      << "  --pingpong-bank1-base ADDR default 0x400000000\n"
       << "  --ring-size BYTES          default 0x08000000\n"
       << "  --prefill-bytes BYTES      default min(ring/2, 64MiB)\n"
       << "  --guard-bytes BYTES        default 1MiB\n"
@@ -293,6 +303,7 @@ static void usage(const char *argv0) {
       << "  --reader-window-blocks N   striped read-ahead window, default auto\n"
       << "  --direct-read              use O_DIRECT for striped block reads; striped default\n"
       << "  --buffered-read            force normal buffered reads for striped input\n"
+      << "  --staged-stripe            stage striped blocks through host memory before H2C\n"
       << "  --block-list PATH          TSV block list for striped input\n"
       << "  --host-cache-bytes BYTES|auto\n"
       << "                              grow producer queue to use host DRAM as SSD cache\n"
@@ -338,6 +349,10 @@ static Args parse_args(int argc, char **argv) {
       args.reg_base_override = int_auto(need_value("--reg-base"));
     } else if (key == "--ring-base") {
       args.ring_base = int_auto(need_value("--ring-base"));
+    } else if (key == "--pingpong") {
+      args.pingpong = true;
+    } else if (key == "--pingpong-bank1-base") {
+      args.pingpong_bank1_base = int_auto(need_value("--pingpong-bank1-base"));
     } else if (key == "--ring-size") {
       args.ring_size = int_auto(need_value("--ring-size"));
     } else if (key == "--prefill-bytes") {
@@ -366,6 +381,8 @@ static Args parse_args(int argc, char **argv) {
     } else if (key == "--buffered-read") {
       args.direct_read = false;
       args.direct_read_set = true;
+    } else if (key == "--staged-stripe") {
+      args.staged_stripe = true;
     } else if (key == "--host-cache-bytes") {
       args.host_cache_arg = need_value("--host-cache-bytes");
     } else if (key == "--host-cache-fraction") {
@@ -618,6 +635,9 @@ static std::vector<BlockInfo> load_block_list_tsv(const fs::path &path) {
     block.bytes = int_auto(fields[3]);
     block.packets = int_auto(fields[4]);
     block.first_packet = int_auto(fields[5]);
+    if (fields.size() >= 7) {
+      block.file_offset = int_auto(fields[6]);
+    }
     if (block.bytes == 0 || (block.bytes % DATA_BEAT_BYTES) != 0) {
       throw std::runtime_error("block bytes must be a positive 64-byte multiple: " + line);
     }
@@ -767,6 +787,39 @@ static void pwrite_ring(int fd, const uint8_t *data, size_t len,
   }
 }
 
+static uint64_t stream_capacity_bytes(const Args &args) {
+  return args.pingpong ? args.ring_size * 2ULL : args.ring_size;
+}
+
+static uint32_t stream_ctrl_value(const Args &args, bool eof) {
+  return (eof ? 0x1u : 0u) | (args.pingpong ? 0x2u : 0u);
+}
+
+static void pwrite_stream_window(int fd, const uint8_t *data, size_t len,
+                                 const Args &args, uint64_t write_count) {
+  if (!args.pingpong) {
+    pwrite_ring(fd, data, len, args.ring_base, args.ring_size, write_count);
+    return;
+  }
+
+  uint64_t capacity = stream_capacity_bytes(args);
+  uint64_t pos = write_count % capacity;
+  size_t done = 0;
+  while (done < len) {
+    bool bank1 = pos >= args.ring_size;
+    uint64_t bank_offset = bank1 ? (pos - args.ring_size) : pos;
+    uint64_t bank_base = bank1 ? args.pingpong_bank1_base : args.ring_base;
+    size_t chunk = std::min<size_t>(
+        len - done, static_cast<size_t>(args.ring_size - bank_offset));
+    write_all_at(fd, data + done, chunk, bank_base + bank_offset);
+    done += chunk;
+    pos += chunk;
+    if (pos >= capacity) {
+      pos = 0;
+    }
+  }
+}
+
 static uint64_t reg_base_for_port(const Args &args) {
   if (args.reg_base_override != UINT64_MAX) {
     return args.reg_base_override;
@@ -781,7 +834,8 @@ static void configure(int user_fd, uint64_t base, const Args &args) {
   std::this_thread::sleep_for(std::chrono::milliseconds(1));
   write32(user_fd, base + REG_MODE, MODE_STREAM);
   write64(user_fd, base + REG_DESC_BASE_LO, base + REG_DESC_BASE_HI, args.ring_base);
-  write64(user_fd, base + REG_DATA_BASE_LO, base + REG_DATA_BASE_HI, 0);
+  write64(user_fd, base + REG_DATA_BASE_LO, base + REG_DATA_BASE_HI,
+          args.pingpong ? args.pingpong_bank1_base : 0);
   write64(user_fd, base + REG_TRACE_LO, base + REG_TRACE_HI, 0);
   write64(user_fd, base + REG_PKT_LO, base + REG_PKT_HI, 0);
   write64(user_fd, base + REG_START_LO, base + REG_START_HI, args.start_time);
@@ -789,7 +843,7 @@ static void configure(int user_fd, uint64_t base, const Args &args) {
   write32(user_fd, base + REG_WATERMARK, args.watermark);
   write64(user_fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, 0);
   write64(user_fd, base + REG_STREAM_RING_LO, base + REG_STREAM_RING_HI, args.ring_size);
-  write32(user_fd, base + REG_STREAM_CTRL, 0);
+  write32(user_fd, base + REG_STREAM_CTRL, stream_ctrl_value(args, false));
 
   uint32_t debug = read32(user_fd, base + REG_DEBUG_CTRL);
   if (args.force_link_up) {
@@ -998,7 +1052,9 @@ static void striped_reader_worker(const Args &args, StripedReadState &state) {
   try {
     BlockInfo block;
     while (state.get_work(block)) {
-      bool use_direct = args.direct_read && ((block.bytes % DMA_BUFFER_ALIGNMENT) == 0);
+      bool use_direct = args.direct_read &&
+                        ((block.bytes % DMA_BUFFER_ALIGNMENT) == 0) &&
+                        ((block.file_offset % DMA_BUFFER_ALIGNMENT) == 0);
       int flags = O_RDONLY | (use_direct ? O_DIRECT : 0);
       int fd = ::open(block.path.c_str(), flags);
       if (fd < 0) {
@@ -1010,13 +1066,14 @@ static void striped_reader_worker(const Args &args, StripedReadState &state) {
           throw std::runtime_error("cannot open stream block: " + block.path.string());
         }
       }
-      (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+      (void)::posix_fadvise(fd, static_cast<off_t>(block.file_offset),
+                            static_cast<off_t>(block.bytes), POSIX_FADV_SEQUENTIAL);
 
       Chunk chunk;
       chunk.data.resize(static_cast<size_t>(block.bytes));
       chunk.packets = block.packets;
       try {
-        read_all_at(fd, chunk.data.data(), chunk.data.size(), 0);
+        read_all_at(fd, chunk.data.data(), chunk.data.size(), block.file_offset);
       } catch (...) {
         ::close(fd);
         throw;
@@ -1172,6 +1229,7 @@ static void copy_block_to_ring(const Args &args, const BlockInfo &block,
                                uint64_t begin, int h2c_fd, DmaBuffer &buffer) {
   bool use_direct = args.direct_read &&
                     ((block.bytes % DMA_BUFFER_ALIGNMENT) == 0) &&
+                    ((block.file_offset % DMA_BUFFER_ALIGNMENT) == 0) &&
                     ((buffer.size() % DMA_BUFFER_ALIGNMENT) == 0);
   int flags = O_RDONLY | (use_direct ? O_DIRECT : 0);
   int fd = ::open(block.path.c_str(), flags);
@@ -1182,7 +1240,8 @@ static void copy_block_to_ring(const Args &args, const BlockInfo &block,
   if (fd < 0) {
     throw std::runtime_error("cannot open stream block: " + block.path.string());
   }
-  (void)::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+  (void)::posix_fadvise(fd, static_cast<off_t>(block.file_offset),
+                        static_cast<off_t>(block.bytes), POSIX_FADV_SEQUENTIAL);
 
   uint64_t off = 0;
   while (off < block.bytes) {
@@ -1195,7 +1254,7 @@ static void copy_block_to_ring(const Args &args, const BlockInfo &block,
     size_t done = 0;
     while (done < chunk) {
       ssize_t rc = ::pread(fd, buffer.data() + done, chunk - done,
-                           static_cast<off_t>(off + done));
+                           static_cast<off_t>(block.file_offset + off + done));
       if (rc < 0) {
         ::close(fd);
         throw std::runtime_error(std::string("pread failed: ") + std::strerror(errno));
@@ -1206,7 +1265,7 @@ static void copy_block_to_ring(const Args &args, const BlockInfo &block,
       }
       done += static_cast<size_t>(rc);
     }
-    pwrite_ring(h2c_fd, buffer.data(), chunk, args.ring_base, args.ring_size, begin + off);
+    pwrite_stream_window(h2c_fd, buffer.data(), chunk, args, begin + off);
     off += chunk;
   }
   ::close(fd);
@@ -1226,22 +1285,31 @@ int main(int argc, char **argv) {
     if (args.ring_size == 0 || (args.ring_size % DATA_BEAT_BYTES) != 0) {
       throw std::runtime_error("--ring-size must be a positive 64-byte multiple");
     }
-    if (args.guard_bytes < DATA_BEAT_BYTES || args.guard_bytes >= args.ring_size) {
-      throw std::runtime_error("--guard-bytes must be at least 64 and smaller than ring size");
+    if (args.pingpong && !is_power_of_two(args.ring_size)) {
+      throw std::runtime_error("--ring-size must be a power of two when --pingpong is used");
+    }
+    if (args.pingpong && ((args.ring_base % DATA_BEAT_BYTES) != 0 ||
+                          (args.pingpong_bank1_base % DATA_BEAT_BYTES) != 0)) {
+      throw std::runtime_error("--ring-base and --pingpong-bank1-base must be 64-byte aligned");
+    }
+    uint64_t capacity = stream_capacity_bytes(args);
+    if (args.guard_bytes < DATA_BEAT_BYTES || args.guard_bytes >= capacity) {
+      throw std::runtime_error("--guard-bytes must be at least 64 and smaller than stream capacity");
     }
     if (args.batch_bytes < DATA_BEAT_BYTES || args.read_bytes < DATA_BEAT_BYTES) {
       throw std::runtime_error("--batch-bytes and --read-bytes must be at least 64");
     }
-    if (args.batch_bytes + args.guard_bytes > args.ring_size) {
-      throw std::runtime_error("--batch-bytes plus --guard-bytes must fit in the ring");
+    if (args.batch_bytes + args.guard_bytes > capacity) {
+      throw std::runtime_error("--batch-bytes plus --guard-bytes must fit in stream capacity");
     }
     resolve_host_cache(args);
 
     uint64_t prefill = args.prefill_bytes;
     if (prefill == 0) {
-      prefill = std::min<uint64_t>(args.ring_size / 2, 64ULL << 20);
+      prefill = args.pingpong ? args.ring_size :
+                                 std::min<uint64_t>(args.ring_size / 2, 64ULL << 20);
     }
-    prefill = std::max<uint64_t>(DATA_BEAT_BYTES, std::min(prefill, args.ring_size - args.guard_bytes));
+    prefill = std::max<uint64_t>(DATA_BEAT_BYTES, std::min(prefill, capacity - args.guard_bytes));
     uint64_t base = reg_base_for_port(args);
 
     auto start_producer = [&](ChunkQueue &queue,
@@ -1335,13 +1403,13 @@ int main(int argc, char **argv) {
       throw std::runtime_error("cannot open user BAR device: " + args.user);
     }
 
-    if (striped_source) {
+    if (striped_source && !args.staged_stripe) {
       bool started = false;
       uint64_t write_count = 0;
       uint64_t reserved_count = 0;
       uint64_t packet_count = 0;
       uint64_t max_level = 0;
-      uint64_t min_free = args.ring_size;
+      uint64_t min_free = capacity;
       uint64_t in_flight = 0;
       size_t next_assign = 0;
       size_t next_commit = 0;
@@ -1391,8 +1459,8 @@ int main(int argc, char **argv) {
           while (next_assign < stripe_blocks.size() &&
                  in_flight < args.reader_window_blocks) {
             const BlockInfo &block = stripe_blocks[next_assign];
-            if (block.bytes + args.guard_bytes > args.ring_size) {
-              throw std::runtime_error("stream block is too large for selected ring");
+            if (block.bytes + args.guard_bytes > capacity) {
+              throw std::runtime_error("stream block is too large for selected stream window");
             }
             double feed_elapsed = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - load_start).count();
@@ -1407,7 +1475,8 @@ int main(int argc, char **argv) {
               throw std::runtime_error("FPGA read pointer advanced past host write pointer");
             }
             uint64_t level = reserved_count - read_count;
-            uint64_t free = args.ring_size - level - args.guard_bytes;
+            uint64_t free = (level + args.guard_bytes >= capacity) ?
+                            0 : (capacity - level - args.guard_bytes);
             max_level = std::max(max_level, level);
             min_free = std::min(min_free, free);
             if (free < block.bytes) {
@@ -1464,7 +1533,7 @@ int main(int argc, char **argv) {
         }
 
         write64(user_fd, base + REG_PKT_LO, base + REG_PKT_HI, packet_count);
-        write32(user_fd, base + REG_STREAM_CTRL, 0x1);
+        write32(user_fd, base + REG_STREAM_CTRL, stream_ctrl_value(args, true));
         if (!started) {
           start_replay(user_fd, base);
           started = true;
@@ -1500,6 +1569,11 @@ int main(int argc, char **argv) {
         std::cout << "reader_window     : " << args.reader_window_blocks << "\n";
         std::cout << "direct_read       : " << args.direct_read << "\n";
         std::cout << "ring_base         : 0x" << std::hex << args.ring_base << std::dec << "\n";
+        if (args.pingpong) {
+          std::cout << "pingpong          : true\n";
+          std::cout << "pingpong_bank1    : 0x" << std::hex << args.pingpong_bank1_base << std::dec << "\n";
+          std::cout << "stream_capacity   : " << capacity << "\n";
+        }
         std::cout << "ring_size         : " << args.ring_size << "\n";
         std::cout << "read_bytes        : " << io_chunk << "\n";
         std::cout << "queue_depth       : " << args.queue_depth << "\n";
@@ -1560,7 +1634,7 @@ int main(int argc, char **argv) {
     uint64_t reserved_count = 0;
     uint64_t packet_count = 0;
     uint64_t max_level = 0;
-    uint64_t min_free = args.ring_size;
+    uint64_t min_free = capacity;
     size_t next_writer = 0;
     std::deque<WriteJob> write_jobs;
     auto load_start = std::chrono::steady_clock::now();
@@ -1592,8 +1666,8 @@ int main(int argc, char **argv) {
 
       Chunk chunk;
       while (queue.pop(chunk)) {
-        if (chunk.data.size() + args.guard_bytes > args.ring_size) {
-          throw std::runtime_error("producer chunk is too large for selected ring");
+        if (chunk.data.size() + args.guard_bytes > capacity) {
+          throw std::runtime_error("producer chunk is too large for selected stream window");
         }
 
         while (true) {
@@ -1610,7 +1684,8 @@ int main(int argc, char **argv) {
             throw std::runtime_error("FPGA read pointer advanced past host write pointer");
           }
           uint64_t level = reserved_count - read_count;
-          uint64_t free = args.ring_size - level - args.guard_bytes;
+          uint64_t free = (level + args.guard_bytes >= capacity) ?
+                          0 : (capacity - level - args.guard_bytes);
           max_level = std::max(max_level, level);
           min_free = std::min(min_free, free);
 
@@ -1623,10 +1698,9 @@ int main(int argc, char **argv) {
             reserved_count += job_bytes;
             write_jobs.push_back(WriteJob{
                 std::async(std::launch::async,
-                           [job_fd, data = std::move(job_data), ring_base = args.ring_base,
-                            ring_size = args.ring_size, job_begin]() {
-                             pwrite_ring(job_fd, data.data(), data.size(),
-                                         ring_base, ring_size, job_begin);
+                           [job_fd, data = std::move(job_data), args, job_begin]() {
+                             pwrite_stream_window(job_fd, data.data(), data.size(),
+                                                  args, job_begin);
                            }),
                 job_begin,
                 job_bytes,
@@ -1664,7 +1738,7 @@ int main(int argc, char **argv) {
       }
 
       write64(user_fd, base + REG_PKT_LO, base + REG_PKT_HI, packet_count);
-      write32(user_fd, base + REG_STREAM_CTRL, 0x1);
+      write32(user_fd, base + REG_STREAM_CTRL, stream_ctrl_value(args, true));
       if (!started) {
         start_replay(user_fd, base);
         started = true;
@@ -1697,6 +1771,7 @@ int main(int argc, char **argv) {
         std::cout << "stripe_manifest   : " << args.stripe_manifest << "\n";
         std::cout << "block_list        : " << args.block_list << "\n";
         std::cout << "block_count       : " << stripe_blocks.size() << "\n";
+        std::cout << "staged_stripe     : " << args.staged_stripe << "\n";
       std::cout << "reader_threads    : " << args.reader_threads << "\n";
       std::cout << "reader_window     : "
                 << (args.reader_window_blocks ? args.reader_window_blocks
@@ -1711,6 +1786,11 @@ int main(int argc, char **argv) {
         std::cout << "fixed_record_len  : " << args.fixed_record_len << "\n";
       }
       std::cout << "ring_base         : 0x" << std::hex << args.ring_base << std::dec << "\n";
+      if (args.pingpong) {
+        std::cout << "pingpong          : true\n";
+        std::cout << "pingpong_bank1    : 0x" << std::hex << args.pingpong_bank1_base << std::dec << "\n";
+        std::cout << "stream_capacity   : " << capacity << "\n";
+      }
       std::cout << "ring_size         : " << args.ring_size << "\n";
       std::cout << "read_bytes        : " << args.read_bytes << "\n";
       std::cout << "queue_depth       : " << args.queue_depth << "\n";

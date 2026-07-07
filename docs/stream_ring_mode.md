@@ -45,6 +45,19 @@ The actual DDR address is:
 ring_address = ring_base + (pointer % ring_size)
 ```
 
+In two-bank ping-pong mode, `ring_size` is the per-bank segment size and must be
+a power-of-two 64-byte multiple:
+
+```text
+segment_offset = pointer & (ring_size - 1)
+bank_select    = (pointer & ring_size) != 0
+ring_address   = (bank_select ? bank1_base : bank0_base) + segment_offset
+```
+
+`STREAM_CTRL[1]` enables ping-pong mode.  `DESC_BASE` remains `bank0_base`, and
+`DATA_BASE` is reused as `bank1_base` only while `MODE=STREAM`.  `STREAM_CTRL[0]`
+is still EOF.
+
 Host software must write complete stream records first, then update
 `STREAM_WR_PTR`.  The FPGA never reads beyond `STREAM_WR_PTR`.  If the ring is
 empty and EOF is not set, the FPGA reader waits.  When the host reaches the end
@@ -56,13 +69,15 @@ Before writing more data, host software computes:
 
 ```text
 level = STREAM_WR_PTR - STREAM_RD_PTR
-free  = ring_size - level - guard_bytes
+capacity = pingpong ? (2 * ring_size) : ring_size
+free  = capacity - level - guard_bytes
 ```
 
 It writes a batch only if `free` is large enough for the complete records in that
-batch.  The FPGA also reports an overrun flag if `level > ring_size`, which means
+batch.  The FPGA also reports an overrun flag if `level > capacity`, which means
 host software advanced the producer pointer too far and may have overwritten
-unread data.
+unread data.  The C++ loader defaults the ping-pong prefill to one full segment,
+so replay usually reads one bank while H2C fills the other bank.
 
 ## Current Implementation
 
@@ -70,7 +85,7 @@ Implemented pieces:
 
 * `ddr_stream_reader` supports the dynamic DDR ring path used by `STREAM` mode.
 * `axi_lite_regs` exposes ring size, write pointer, read pointer, level, EOF,
-  and stream status.
+  ping-pong enable, and stream status.
 * `trace_replay_core` feeds the existing stream parser from the DDR stream FIFO.
   The current experimental build uses an 8192-beat XPM block-RAM prefetch FIFO
   for large STREAM FIFOs.
@@ -80,10 +95,12 @@ Implemented pieces:
   producer/consumer pipeline, large record-aligned batches, and fewer copies
   before issuing memory-mapped `XDMA H2C` writes.  It can also grow the
   producer queue with `--host-cache-bytes auto`, using host DRAM as an SSD read
-  cache before the FPGA DDR ring.
+  cache before the FPGA DDR ring.  With `--pingpong`, it alternates writes
+  across two DDR bank windows while preserving in-order `STREAM_WR_PTR`
+  commits.
 * `traffic_replay_cli.py status/regs` prints stream ring state.
-* `tb_ddr_stream_reader_ring.sv` verifies wait-empty, wrap, invalid ring size,
-  pointer error, and overrun handling.
+* `tb_ddr_stream_reader_ring.sv` verifies wait-empty, wrap, ping-pong bank
+  alternation, invalid ring size, pointer error, and overrun handling.
 * `tb_trace_replay_core.sv` verifies that invalid ring configuration exits
   cleanly, then checks that the FPGA emits one committed packet, waits for the
   host write pointer to advance, and resumes.
@@ -94,6 +111,8 @@ Validation currently completed:
 PASS: invalid DDR ring-stream configuration stops cleanly without emitting data
 PASS: DDR ring-stream replay waited for host write pointer and emitted 2 packets
 PASS: DDR preload replay emitted 3 packets
+PASS: ping-pong ring reader alternates bank0/bank1 segments
+PASS: ping-pong mode rejects non-power-of-two segment size
 ```
 
 Current U200 hardware observations with

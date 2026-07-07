@@ -75,6 +75,7 @@ module trace_replay_core #(
   logic [63:0] cfg_stream_ring_size;
   logic [63:0] cfg_stream_write_count;
   logic        cfg_stream_eof;
+  logic        cfg_stream_pingpong;
   logic        cfg_force_link_up;
   logic        cfg_force_tx_ready;
   logic        cfg_auto_tx_drop;
@@ -378,6 +379,7 @@ module trace_replay_core #(
     .cfg_stream_ring_size(cfg_stream_ring_size),
     .cfg_stream_write_count(cfg_stream_write_count),
     .cfg_stream_eof(cfg_stream_eof),
+    .cfg_stream_pingpong(cfg_stream_pingpong),
     .cfg_force_link_up(cfg_force_link_up),
     .cfg_force_tx_ready(cfg_force_tx_ready),
     .cfg_auto_tx_drop(cfg_auto_tx_drop),
@@ -452,7 +454,8 @@ module trace_replay_core #(
   ddr_stream_reader #(
     .AXI_ADDR_W_P(AXI_ADDR_W_P),
     .AXI_ID_W_P(AXI_ID_W_P),
-    .MAX_BURST_BEATS(256)
+    .MAX_BURST_BEATS(256),
+    .MAX_OUTSTANDING_BURSTS(32)
   ) stream_reader_i (
     .clk(clk),
     .rstn(rstn),
@@ -460,10 +463,12 @@ module trace_replay_core #(
     .stop(stop_pulse),
     .clear(clear_pulse),
     .cfg_stream_base(cfg_desc_base),
+    .cfg_stream_base1(cfg_data_base),
     .cfg_stream_bytes(cfg_trace_bytes),
     .cfg_ring_size(cfg_stream_ring_size),
     .cfg_ring_write_count(cfg_stream_write_count),
     .cfg_ring_eof(cfg_stream_eof),
+    .cfg_pingpong_enable(cfg_stream_pingpong),
     .m_axi_arid(stream_m_axi_arid),
     .m_axi_araddr(stream_m_axi_araddr),
     .m_axi_arlen(stream_m_axi_arlen),

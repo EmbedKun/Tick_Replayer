@@ -75,7 +75,7 @@ module tb_ddr_stream_reader_perf;
     .AXI_ADDR_W_P(64),
     .AXI_ID_W_P(4),
     .MAX_BURST_BEATS(MAX_BURST),
-    .MAX_OUTSTANDING_BURSTS(16)
+    .MAX_OUTSTANDING_BURSTS(32)
   ) dut (
     .clk(clk),
     .rstn(rstn),
@@ -83,10 +83,12 @@ module tb_ddr_stream_reader_perf;
     .stop(stop),
     .clear(clear),
     .cfg_stream_base(BASE),
+    .cfg_stream_base1(64'h0),
     .cfg_stream_bytes(cfg_stream_bytes),
     .cfg_ring_size(cfg_ring_size),
     .cfg_ring_write_count(cfg_ring_write_count),
     .cfg_ring_eof(cfg_ring_eof),
+    .cfg_pingpong_enable(1'b0),
     .m_axi_arid(arid),
     .m_axi_araddr(araddr),
     .m_axi_arlen(arlen),
@@ -277,7 +279,7 @@ module tb_ddr_stream_reader_perf;
     if (read_count != RING_SIZE) begin
       $fatal(1, "read_count mismatch: %0d", read_count);
     end
-    if (max_req_count < 4) begin
+    if (max_req_count < 16) begin
       $fatal(1, "reader did not build enough outstanding requests, max_req_count=%0d ar_count=%0d",
              max_req_count, ar_count);
     end

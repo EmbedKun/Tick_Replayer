@@ -35,6 +35,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--block-bytes", type=int_auto, default=DEFAULT_BLOCK_BYTES)
     parser.add_argument("--out-manifest", type=Path, required=True)
     parser.add_argument("--block-list", type=Path, help="TSV block list path; defaults next to out-manifest")
+    parser.add_argument(
+        "--override-gap-ticks",
+        type=int_auto,
+        help="rewrite each STREAM record gap field while striping; intended for synthetic stress tests",
+    )
+    parser.add_argument(
+        "--container-files",
+        action="store_true",
+        help="write one large lane_N.bin file per SSD lane and record per-block offsets",
+    )
     parser.add_argument("--force", action="store_true", help="overwrite existing block files")
     return parser.parse_args()
 
@@ -75,6 +85,10 @@ def open_block(lane_dirs: list[Path], block_id: int, force: bool):
     return path, path.open("wb")
 
 
+def container_path_for(lane_dirs: list[Path], lane: int) -> Path:
+    return lane_dirs[lane] / f"lane_{lane}.bin"
+
+
 def main() -> None:
     args = parse_args()
     if len(args.lane_dir) < 2:
@@ -102,7 +116,47 @@ def main() -> None:
     first_packet = 0
     block_packets = 0
     block_bytes = 0
-    block_path, block_fh = open_block(lane_dirs, block_id, args.force)
+
+    container_fhs = []
+    container_offsets = [0 for _ in lane_dirs]
+    if args.container_files:
+        for lane in range(len(lane_dirs)):
+            path = container_path_for(lane_dirs, lane)
+            if path.exists() and not args.force:
+                raise SystemExit(f"refusing to overwrite existing container file: {path}")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            container_fhs.append(path.open("wb"))
+
+    def start_block(next_block_id: int):
+        lane = next_block_id % len(lane_dirs)
+        if args.container_files:
+            path = container_path_for(lane_dirs, lane)
+            offset = container_offsets[lane]
+            return path, container_fhs[lane], offset
+        path, fh = open_block(lane_dirs, next_block_id, args.force)
+        return path, fh, 0
+
+    def finish_block(close_fh: bool) -> None:
+        nonlocal block_id, first_packet, block_packets, block_bytes, block_path, block_fh, block_offset
+        if block_packets == 0:
+            return
+        if args.container_files:
+            container_offsets[block_id % len(lane_dirs)] += block_bytes
+        elif close_fh:
+            block_fh.close()
+        blocks.append(
+            {
+                "block_id": block_id,
+                "lane": block_id % len(lane_dirs),
+                "path": str(block_path),
+                "bytes": block_bytes,
+                "packets": block_packets,
+                "first_packet": first_packet,
+                "file_offset": block_offset,
+            }
+        )
+
+    block_path, block_fh, block_offset = start_block(block_id)
 
     with stream_path.open("rb") as src:
         while True:
@@ -116,24 +170,16 @@ def main() -> None:
             payload_len = align_up(frame_len, DATA_BEAT_BYTES)
             payload = read_exact(src, payload_len, "payload")
             record_len = DATA_BEAT_BYTES + payload_len
+            if args.override_gap_ticks is not None:
+                header = struct.pack("<Q", args.override_gap_ticks) + header[8:]
 
             if block_packets != 0 and block_bytes + record_len > args.block_bytes:
-                block_fh.close()
-                blocks.append(
-                    {
-                        "block_id": block_id,
-                        "lane": block_id % len(lane_dirs),
-                        "path": str(block_path),
-                        "bytes": block_bytes,
-                        "packets": block_packets,
-                        "first_packet": first_packet,
-                    }
-                )
+                finish_block(close_fh=True)
                 block_id += 1
                 first_packet = packet_count
                 block_packets = 0
                 block_bytes = 0
-                block_path, block_fh = open_block(lane_dirs, block_id, args.force)
+                block_path, block_fh, block_offset = start_block(block_id)
 
             block_fh.write(header)
             block_fh.write(payload)
@@ -143,30 +189,26 @@ def main() -> None:
             stream_bytes += record_len
             total_frame_bytes += frame_len
 
-    block_fh.close()
     if block_packets != 0:
-        blocks.append(
-            {
-                "block_id": block_id,
-                "lane": block_id % len(lane_dirs),
-                "path": str(block_path),
-                "bytes": block_bytes,
-                "packets": block_packets,
-                "first_packet": first_packet,
-            }
-        )
+        finish_block(close_fh=True)
     else:
-        block_path.unlink(missing_ok=True)
+        if not args.container_files:
+            block_fh.close()
+            block_path.unlink(missing_ok=True)
+
+    for fh in container_fhs:
+        fh.close()
 
     if packet_count == 0:
         raise SystemExit("stream file has no packet records")
 
     with block_list.open("w", encoding="utf-8", newline="") as fh:
-        fh.write("block_id\tlane\tpath\tbytes\tpackets\tfirst_packet\n")
+        fh.write("block_id\tlane\tpath\tbytes\tpackets\tfirst_packet\tfile_offset\n")
         for block in blocks:
             fh.write(
                 f"{block['block_id']}\t{block['lane']}\t{block['path']}\t"
-                f"{block['bytes']}\t{block['packets']}\t{block['first_packet']}\n"
+                f"{block['bytes']}\t{block['packets']}\t{block['first_packet']}\t"
+                f"{block['file_offset']}\n"
             )
 
     manifest = {
@@ -175,6 +217,8 @@ def main() -> None:
         "source_stream_file": str(stream_path),
         "data_beat_bytes": DATA_BEAT_BYTES,
         "block_bytes_target": args.block_bytes,
+        "override_gap_ticks": args.override_gap_ticks,
+        "container_files": args.container_files,
         "block_list_file": str(block_list),
         "lane_count": len(lane_dirs),
         "lanes": [{"lane": idx, "dir": str(path)} for idx, path in enumerate(lane_dirs)],

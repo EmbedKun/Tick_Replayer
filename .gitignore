@@ -18,11 +18,14 @@ usage_statistics_webtalk.*
 
 # Local build outputs
 build/
+build_*/
+build_hw_*/
 reports/*
 !reports/20260628_remote_validation_stream_ring/
 !reports/20260628_remote_validation_stream_ring/**
 artifacts/
 trace_out/
+*.pid
 
 # Python
 __pycache__/

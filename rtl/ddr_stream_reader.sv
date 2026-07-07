@@ -14,10 +14,12 @@ module ddr_stream_reader #(
   input  logic                     stop,
   input  logic                     clear,
   input  logic [63:0]              cfg_stream_base,
+  input  logic [63:0]              cfg_stream_base1,
   input  logic [63:0]              cfg_stream_bytes,
   input  logic [63:0]              cfg_ring_size,
   input  logic [63:0]              cfg_ring_write_count,
   input  logic                     cfg_ring_eof,
+  input  logic                     cfg_pingpong_enable,
 
   output logic [AXI_ID_W_P-1:0]    m_axi_arid,
   output logic [AXI_ADDR_W_P-1:0]  m_axi_araddr,
@@ -65,6 +67,7 @@ module ddr_stream_reader #(
 
   logic [63:0] issue_count;
   logic [63:0] issue_offset;
+  logic        issue_bank_select;
   logic [AXI_ADDR_W_P-1:0] ar_addr_q;
   logic [8:0] ar_beats_q;
   logic       ar_stage_valid;
@@ -87,25 +90,52 @@ module ddr_stream_reader #(
   logic       rsp_fire;
   logic       rsp_error;
 
-  logic        ring_mode;
-  logic        ring_size_valid;
+  logic        ring_mode_cfg;
+  logic        ring_size_valid_cfg;
+  logic        ring_size_aligned_cfg;
+  logic        ring_size_power_of_two_cfg;
+  logic        pingpong_mode_cfg;
+  logic [63:0] cfg_stream_base_q;
+  logic [63:0] cfg_stream_base1_q;
+  logic [63:0] cfg_ring_size_q;
+  logic [63:0] ring_capacity_bytes_q;
+  logic        ring_mode_q;
+  logic        ring_size_valid_q;
+  logic        pingpong_mode_q;
+  logic        ring_mode_status;
+  logic        ring_size_valid_status;
+  logic        pingpong_mode_status;
   logic [63:0] ring_write_aligned;
   logic        ring_write_behind;
   logic        issue_write_behind;
   logic [63:0] ring_available_bytes_raw;
   logic [63:0] issue_available_bytes_raw;
   logic [63:0] issue_available_beats_raw;
+  logic [63:0] ring_capacity_bytes;
   logic [63:0] ring_bytes_to_wrap;
   logic [63:0] ring_beats_to_wrap;
   logic        ring_overrun;
   logic        ring_empty_wait;
   logic        fatal_ring_error;
+  logic        issue_metrics_valid;
+  logic        issue_metrics_ok;
+  logic        issue_window_valid;
+  logic        issue_window_ok;
+  logic [AXI_ADDR_W_P-1:0] issue_window_addr_q;
+  logic [8:0]  issue_window_available_beats_q;
+  logic [8:0]  issue_window_wrap_beats_q;
+  logic [AXI_ADDR_W_P-1:0] issue_addr_q;
+  logic [8:0]  issue_burst_beats_q;
   logic [8:0]  issue_burst_beats;
-  logic [63:0] issue_burst_bytes;
-  logic [63:0] issue_offset_after_burst;
   logic [63:0] ar_burst_bytes;
   logic [63:0] ar_offset_after_burst;
+  logic        ar_wraps_ring;
   logic        issue_req;
+  logic [63:0] issue_offset_eff;
+  logic        issue_pingpong_bank1;
+  logic [63:0] issue_base_eff;
+  logic [63:0] next_issue_count;
+  logic [63:0] next_issue_offset;
   logic        input_consumed;
   logic        pending_empty;
   logic [63:0] ring_level_next;
@@ -121,20 +151,27 @@ module ddr_stream_reader #(
     end
   endfunction
 
-  function automatic logic [8:0] min_burst_beats(
-    input logic [63:0] available_beats,
-    input logic [63:0] beats_to_wrap
+  function automatic logic [8:0] sat_burst_beats(input logic [63:0] beats);
+    begin
+      if (beats > MAX_BURST_BEATS_U64) begin
+        sat_burst_beats = MAX_BURST_BEATS_U64[8:0];
+      end else begin
+        sat_burst_beats = beats[8:0];
+      end
+    end
+  endfunction
+
+  function automatic logic [8:0] min_burst_beats_sat(
+    input logic [8:0] available_beats,
+    input logic [8:0] beats_to_wrap
   );
-    logic [63:0] n;
+    logic [8:0] n;
     begin
       n = available_beats;
-      if ((beats_to_wrap != 64'd0) && (beats_to_wrap < n)) begin
+      if ((beats_to_wrap != 9'd0) && (beats_to_wrap < n)) begin
         n = beats_to_wrap;
       end
-      if (n > MAX_BURST_BEATS_U64) begin
-        n = MAX_BURST_BEATS_U64;
-      end
-      min_burst_beats = n[8:0];
+      min_burst_beats_sat = n;
     end
   endfunction
 
@@ -144,8 +181,17 @@ module ddr_stream_reader #(
     end
   endfunction
 
-  assign ring_mode          = (cfg_ring_size != 64'd0);
-  assign ring_size_valid    = ring_mode && (cfg_ring_size[5:0] == 6'd0);
+  assign ring_mode_cfg          = (cfg_ring_size != 64'd0);
+  assign ring_size_aligned_cfg  = ring_mode_cfg && (cfg_ring_size[5:0] == 6'd0);
+  assign ring_size_power_of_two_cfg =
+    ring_mode_cfg && ((cfg_ring_size & (cfg_ring_size - 64'd1)) == 64'd0);
+  assign pingpong_mode_cfg      = cfg_pingpong_enable;
+  assign ring_size_valid_cfg    =
+    ring_size_aligned_cfg && (!pingpong_mode_cfg || ring_size_power_of_two_cfg);
+  assign ring_mode_status       = (state == ST_IDLE) ? ring_mode_cfg : ring_mode_q;
+  assign ring_size_valid_status = (state == ST_IDLE) ? ring_size_valid_cfg : ring_size_valid_q;
+  assign pingpong_mode_status   = (state == ST_IDLE) ? pingpong_mode_cfg : pingpong_mode_q;
+
   assign ring_write_aligned = {cfg_ring_write_count[63:6], 6'd0};
   assign ring_write_behind  = ring_write_aligned < read_count;
   assign issue_write_behind = ring_write_aligned < issue_count;
@@ -154,25 +200,29 @@ module ddr_stream_reader #(
   assign issue_available_bytes_raw =
     issue_write_behind ? 64'd0 : (ring_write_aligned - issue_count);
   assign issue_available_beats_raw = issue_available_bytes_raw[63:6];
-  assign ring_overrun = ring_size_valid && (ring_available_bytes_raw > cfg_ring_size);
-  assign ring_bytes_to_wrap = (ring_size_valid && (cfg_ring_size > issue_offset)) ?
-                              (cfg_ring_size - issue_offset) : 64'd0;
+  assign ring_capacity_bytes = ring_capacity_bytes_q;
+  assign ring_overrun =
+    ring_size_valid_q && (ring_available_bytes_raw > ring_capacity_bytes_q);
+  assign issue_offset_eff = issue_offset;
+  assign issue_pingpong_bank1 = pingpong_mode_q && issue_bank_select;
+  assign issue_base_eff = issue_pingpong_bank1 ? cfg_stream_base1_q : cfg_stream_base_q;
+  assign ring_bytes_to_wrap = (ring_size_valid_q && (cfg_ring_size_q > issue_offset_eff)) ?
+                              (cfg_ring_size_q - issue_offset_eff) : 64'd0;
   assign ring_beats_to_wrap = ring_bytes_to_wrap[63:6];
-  assign fatal_ring_error = !ring_size_valid || ring_write_behind ||
+  assign fatal_ring_error = !ring_size_valid_q || ring_write_behind ||
                             issue_write_behind || ring_overrun;
 
-  assign issue_burst_beats = min_burst_beats(issue_available_beats_raw,
-                                             ring_beats_to_wrap);
-  assign issue_burst_bytes = {55'd0, issue_burst_beats} << 6;
-  assign issue_offset_after_burst =
-    (issue_offset + issue_burst_bytes >= cfg_ring_size) ?
-      (issue_offset + issue_burst_bytes - cfg_ring_size) :
-      (issue_offset + issue_burst_bytes);
   assign ar_burst_bytes = {55'd0, ar_beats_q} << 6;
   assign ar_offset_after_burst =
-    (issue_offset + ar_burst_bytes >= cfg_ring_size) ?
-      (issue_offset + ar_burst_bytes - cfg_ring_size) :
-      (issue_offset + ar_burst_bytes);
+    (issue_offset_eff + ar_burst_bytes >= cfg_ring_size_q) ?
+      (issue_offset_eff + ar_burst_bytes - cfg_ring_size_q) :
+      (issue_offset_eff + ar_burst_bytes);
+  assign ar_wraps_ring = ring_size_valid_q &&
+                         ((issue_offset_eff + ar_burst_bytes) >= cfg_ring_size_q);
+  assign next_issue_count = ar_fire ? (issue_count + ar_burst_bytes) : issue_count;
+  assign next_issue_offset =
+    ar_fire ? ar_offset_after_burst : issue_offset;
+  assign issue_burst_beats = issue_burst_beats_q;
 
   assign cmd_total_occupied = {1'b0, cmd_count} +
                               {{CMD_CNT_W{1'b0}}, ar_stage_valid};
@@ -181,6 +231,8 @@ module ddr_stream_reader #(
     (state == ST_RUN) &&
     !error &&
     !fatal_ring_error &&
+    issue_metrics_valid &&
+    issue_metrics_ok &&
     !ar_stage_valid &&
     cmd_accept_ready &&
     (issue_burst_beats != 9'd0);
@@ -195,7 +247,7 @@ module ddr_stream_reader #(
   assign ring_empty_wait =
     (state == ST_RUN) &&
     !done &&
-    ring_size_valid &&
+    ring_size_valid_q &&
     !ring_write_behind &&
     !issue_write_behind &&
     !ring_overrun &&
@@ -205,13 +257,14 @@ module ddr_stream_reader #(
 
   assign ring_level_next = ring_available_bytes_raw;
   assign stream_status_next = {
-    19'd0,
+    18'd0,
+    pingpong_mode_status,
     ring_write_behind,
     ring_empty_wait,
     ring_overrun,
-    ring_size_valid,
+    ring_size_valid_status,
     cfg_ring_eof,
-    ring_mode,
+    ring_mode_status,
     error,
     done,
     busy,
@@ -251,6 +304,23 @@ module ddr_stream_reader #(
       ar_stage_valid    <= 1'b0;
       issue_count       <= '0;
       issue_offset      <= '0;
+      issue_bank_select <= 1'b0;
+      issue_metrics_valid <= 1'b0;
+      issue_metrics_ok    <= 1'b0;
+      issue_window_valid <= 1'b0;
+      issue_window_ok    <= 1'b0;
+      issue_window_addr_q <= '0;
+      issue_window_available_beats_q <= '0;
+      issue_window_wrap_beats_q <= '0;
+      issue_addr_q        <= '0;
+      issue_burst_beats_q <= '0;
+      cfg_stream_base_q  <= '0;
+      cfg_stream_base1_q <= '0;
+      cfg_ring_size_q    <= '0;
+      ring_capacity_bytes_q <= '0;
+      ring_mode_q        <= 1'b0;
+      ring_size_valid_q  <= 1'b0;
+      pingpong_mode_q    <= 1'b0;
       cmd_wr_ptr        <= '0;
       cmd_rd_ptr        <= '0;
       cmd_count         <= '0;
@@ -273,6 +343,23 @@ module ddr_stream_reader #(
         ar_stage_valid    <= 1'b0;
         issue_count       <= '0;
         issue_offset      <= '0;
+        issue_bank_select <= 1'b0;
+        issue_metrics_valid <= 1'b0;
+        issue_metrics_ok    <= 1'b0;
+        issue_window_valid <= 1'b0;
+        issue_window_ok    <= 1'b0;
+        issue_window_addr_q <= '0;
+        issue_window_available_beats_q <= '0;
+        issue_window_wrap_beats_q <= '0;
+        issue_addr_q        <= '0;
+        issue_burst_beats_q <= '0;
+        cfg_stream_base_q  <= '0;
+        cfg_stream_base1_q <= '0;
+        cfg_ring_size_q    <= '0;
+        ring_capacity_bytes_q <= '0;
+        ring_mode_q        <= 1'b0;
+        ring_size_valid_q  <= 1'b0;
+        pingpong_mode_q    <= 1'b0;
         cmd_wr_ptr        <= '0;
         cmd_rd_ptr        <= '0;
         cmd_count         <= '0;
@@ -290,14 +377,31 @@ module ddr_stream_reader #(
         ar_stage_valid    <= 1'b0;
         issue_count       <= '0;
         issue_offset      <= '0;
+        issue_bank_select <= 1'b0;
+        issue_metrics_valid <= 1'b0;
+        issue_metrics_ok    <= 1'b0;
+        issue_window_valid <= 1'b0;
+        issue_window_ok    <= 1'b0;
+        issue_window_addr_q <= '0;
+        issue_window_available_beats_q <= '0;
+        issue_window_wrap_beats_q <= '0;
+        issue_addr_q        <= '0;
+        issue_burst_beats_q <= '0;
+        cfg_stream_base_q  <= cfg_stream_base;
+        cfg_stream_base1_q <= cfg_stream_base1;
+        cfg_ring_size_q    <= cfg_ring_size;
+        ring_capacity_bytes_q <= pingpong_mode_cfg ? (cfg_ring_size << 1) : cfg_ring_size;
+        ring_mode_q        <= ring_mode_cfg;
+        ring_size_valid_q  <= ring_size_valid_cfg;
+        pingpong_mode_q    <= pingpong_mode_cfg;
         cmd_wr_ptr        <= '0;
         cmd_rd_ptr        <= '0;
         cmd_count         <= '0;
         rsp_active        <= 1'b0;
         rsp_beats_left    <= '0;
         read_count        <= '0;
-        error             <= !ring_size_valid;
-        if (ring_size_valid) begin
+        error             <= !ring_size_valid_cfg;
+        if (ring_size_valid_cfg) begin
           state <= ST_RUN;
           busy  <= 1'b1;
           done  <= 1'b0;
@@ -313,13 +417,40 @@ module ddr_stream_reader #(
           end
 
           if (ar_fire) begin
-            ar_stage_valid <= 1'b0;
-            issue_count    <= issue_count + ar_burst_bytes;
-            issue_offset   <= ar_offset_after_burst;
-          end else if (issue_req) begin
+            issue_count  <= next_issue_count;
+            issue_offset <= next_issue_offset;
+            if (pingpong_mode_q && ar_wraps_ring) begin
+              issue_bank_select <= ~issue_bank_select;
+            end
+            issue_metrics_valid <= 1'b0;
+            issue_window_valid <= 1'b0;
+          end
+
+          if (issue_req) begin
             ar_stage_valid <= 1'b1;
-            ar_addr_q      <= AXI_ADDR_W_P'(cfg_stream_base + issue_offset);
+            ar_addr_q      <= issue_addr_q;
             ar_beats_q     <= issue_burst_beats;
+            issue_metrics_valid <= 1'b0;
+            issue_window_valid <= 1'b0;
+          end else if (ar_fire) begin
+            ar_stage_valid <= 1'b0;
+          end else if (!ar_stage_valid && !issue_metrics_valid) begin
+            if (issue_window_valid) begin
+              issue_window_valid <= 1'b0;
+              issue_metrics_ok    <= issue_window_ok;
+              issue_addr_q        <= issue_window_addr_q;
+              issue_burst_beats_q <= min_burst_beats_sat(issue_window_available_beats_q,
+                                                         issue_window_wrap_beats_q);
+              issue_metrics_valid <= issue_window_ok &&
+                                     (min_burst_beats_sat(issue_window_available_beats_q,
+                                                          issue_window_wrap_beats_q) != 9'd0);
+            end else begin
+              issue_window_valid <= 1'b1;
+              issue_window_ok    <= !fatal_ring_error;
+              issue_window_addr_q <= AXI_ADDR_W_P'(issue_base_eff + issue_offset_eff);
+              issue_window_available_beats_q <= sat_burst_beats(issue_available_beats_raw);
+              issue_window_wrap_beats_q      <= sat_burst_beats(ring_beats_to_wrap);
+            end
           end
 
           if (cmd_push) begin

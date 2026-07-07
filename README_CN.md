@@ -213,6 +213,32 @@ sudo ./software/xdma_stream_ring_fast \
   --timeout 300
 ```
 
+在四 DDR bank bitstream 上，`port 0` 的 `STREAM` 可以启用双 bank ping-pong ring。
+此时 `--ring-size` 表示每个 DDR bank 的 segment 大小，而不是总 ring 容量，并且必须是
+2 的幂且 64 字节对齐。host 将偶数 segment 写入 bank 0、奇数 segment 写入 bank 1；
+FPGA reader 用同一个单调递增的读指针选择当前读 bank，从而让 `XDMA H2C` 写和 replay
+读尽量落在不同 DDR bank 上。
+
+```bash
+sudo ./software/xdma_stream_ring_fast \
+  --port 0 \
+  --stripe-manifest "$STREAM_DIR/stripe_manifest.json" \
+  --pingpong \
+  --ring-base 0x20000000 \
+  --pingpong-bank1-base 0x400000000 \
+  --ring-size 0x200000000 \
+  --prefill-bytes 0x200000000 \
+  --guard-bytes 0x04000000 \
+  --batch-bytes 0x04000000 \
+  --read-bytes 0x04000000 \
+  --reader-threads 4 \
+  --reader-window-blocks 16 \
+  --queue-depth 16 \
+  --writer-threads 2 \
+  --host-cache-bytes auto \
+  --timeout 300
+```
+
 ### 端口和地址说明
 
 上面的例子使用 `port 0` 和单 DDR bank 下安全的地址布局。四 DDR bank build 中，
@@ -355,6 +381,9 @@ header 带来更明显的膨胀。
 | `STREAM` ring | `1518B`, `gap=38`, `5M` packets，aligned-buffer loader 前的 `8GB` ring 动态换入 | 平均 `55.306Gbps`；ring 耗尽后出现 late/underrun |
 | `STREAM` ring | `1518B`, `gap=160`, `40M` packets，`64GB` stream 冷态动态换入 | L2 `22.770Gbps`，无 late/underrun/drop/stall |
 | `STREAM` ring | `1518B`, `gap=160`, `64GB` stream，striped direct-copy loader | 装载 `28.3Gbps`，无 late/underrun |
+| `STREAM` ring | `1518B`, `gap=120`, `2M` packets，container-striped ping-pong ring | L2 `30.360Gbps`，无 late/underrun/drop/stall |
+| `STREAM` ring | `1518B`, `gap=80`, `2M` packets，`2GiB` container-striped ping-pong ring | L2 `45.540Gbps`，2026-07-07 测试无 late/underrun/drop/stall |
+| `STREAM` ring | 最大 ring 配置 sanity | `16GiB` per bank，`32GiB` total ping-pong ring 可配置并完成小 trace |
 | SSD read bench | 双 SSD `O_DIRECT` 乱序读，`64GB` striped blocks | `50.680Gbps` |
 | Host loader | 双 SSD striped dry-run，`64GB` stream，cold cache | 读取/重排 `24.102Gbps` |
 | Host loader | 双 SSD + memory-mapped `XDMA H2C pwrite()`，`64GB` stream | FPGA 装载 `22.190Gbps` |
@@ -537,6 +566,16 @@ TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw \
 vivado -mode batch -source scripts/build_hw_bitstream.tcl
 ```
 
+构建单端口、四 DDR bank、支持 `port 0` 多 DDR 读访问的 ping-pong STREAM bitstream：
+
+```bash
+TRAFFIC_REPLAY_PORT_COUNT=1 \
+TRAFFIC_REPLAY_DDR_BANKS=4 \
+TRAFFIC_REPLAY_PORT0_MULTI_DDR=1 \
+TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw_1p_4ddr_pingpong \
+vivado -mode batch -source scripts/build_hw_bitstream.tcl
+```
+
 构建单端口调试 bitstream：
 
 ```bash
@@ -643,8 +682,9 @@ reports/       部分验证报告
 
 ## 当前限制
 
-- 当前公开硬件 build 默认使用一个 U200 DDR bank；四 DDR bank timing-clean 版本已经归档，但默认版本仍保持单 bank，便于调试和复现。
-- `STREAM` ring 模式可用。全量预填的大包 STREAM 测试可以达到 `95.874Gbps`。双 SSD `O_DIRECT` 乱序读上限约 `50.680Gbps`；使用 direct-copy loader 后，稳定动态换入提升到约 `28.3Gbps`。当把 replay stream 消费推到约 `48Gbps` 时，当前单 DDR stream ring 会触发 `0x2d1` error，下一步需要修硬件侧高并发 DDR read/write 和 ring 鲁棒性。
+- 当前推荐测试版本是单口、双 DDR bank 的 timing-clean STREAM pipeline build；四 DDR bank 版本已经归档，但属于另一个 build 配置，时序和布线压力更大。
+- `STREAM` ring 模式可用。全量预填的大包 STREAM 测试可以达到 `95.874Gbps`。双 DDR bank ping-pong ring 已验证最大 `32GiB` 配置；2026-07-07 的 container-striped 动态测试在 `2M x 1518B, gap=80` 下达到 L2 `45.540Gbps`，无 late/underrun/drop/stall。但无限长动态 `100Gbps` 回放仍受 `SSD -> host memory -> memory-mapped XDMA H2C -> FPGA DDR` 装载链路限制。
+- 最新单口测试使用 `force-link-up` 和 `force-tx-ready`，因为当前烧录 bitstream 只启用 `QSFP0`。真实光口 TX-to-RX payload 校验和 RX 侧 SOP-to-SOP 精度测试需要双口 bitstream 或有效外部链路接入当前启用端口。
 - RX interval sample 只保存最近 `4096` 个间隔。长 trace 有完整聚合统计，但没有完整逐包 timestamp 日志。
 - RX 侧端到端精度包含 scheduler、TX buffering、CMAC framing、光纤回环、RX CMAC 和 RX 采样量化；大小包混合场景的局部误差会比固定包长更大。
 - 双端口同时接近 100G 大包回放时，当前单 DDR bank 共享路径会成为瓶颈。
