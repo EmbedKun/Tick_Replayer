@@ -45,6 +45,7 @@ traffic trace.
 - [Current Status](#current-status)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
+- [RTL Module Guide](#rtl-module-guide)
 - [Replay Capacity](#replay-capacity)
 - [Replay Throughput](#replay-throughput)
 - [Replay Precision](#replay-precision)
@@ -341,6 +342,41 @@ payload/AXI command queues are `64` entries, and the payload FIFO is `8192`
 512-bit beats.  The `STREAM` DDR reader can issue up to `64` outstanding read
 bursts.  These changes are intended to hide DDR latency and keep both replay
 ports fed when they read from separate DDR banks.
+
+## RTL Module Guide
+
+The RTL is easiest to read from the outside in: Vivado block-design wrappers
+expose clean `AXI-Lite`, `AXI4`, `AXI-Stream`, and CMAC `LBUS` interfaces; the
+core replay logic then splits into control registers, DDR readers, packet
+scheduling, transmit formatting, and receive-side debug/capture.
+
+| RTL file / module | Purpose |
+| --- | --- |
+| `traffic_replay_pkg.sv` | Shared constants and helper functions: `512-bit` datapath width, `64B` descriptor size, replay mode IDs, `tkeep` generation, and bytes-per-beat helpers. |
+| `traffic_replay_bd_core.v` | Vivado block-design wrapper for one TX replay interface.  It exposes the replay core as `S_AXIL`, read-only `M_AXI`, and `M_TX_AXIS`; unused AXI write channels are tied off. |
+| `traffic_replay_top_stub.sv` | Simulation-friendly wrapper around `trace_replay_core`, useful for RTL tests that do not instantiate the full Vivado block design. |
+| `trace_replay_core.sv` | Main TX replay core.  It owns the replay state machine, register block, mode selection, PRELOAD/LOOP DDR reader, STREAM ring reader, stream parser, scheduler, TX engine, counters, stall/drop handling, and debug status. |
+| `axi_lite_regs.sv` | Replay control/status register file behind the XDMA user `BAR`.  It decodes `start`, `stop`, `clear`, mode selection, DDR base addresses, packet counts, loop settings, STREAM write pointer, debug controls, and TX statistics. |
+| `ddr_trace_reader.sv` | PRELOAD/LOOP trace reader.  It scans `64B` descriptors from DDR, validates packet order, issues payload `AXI4` read bursts, maintains deep descriptor/meta/payload FIFOs, and emits synchronized packet metadata plus payload AXI-Stream beats. |
+| `ddr_stream_reader.sv` | STREAM ring reader.  It treats FPGA DDR as a bounded record ring, tracks monotonic read/write byte counters, prevents wrap/overrun errors, supports EOF completion, and can alternate ping-pong segments across two DDR banks. |
+| `host_stream_parser.sv` | Parses STREAM records after they are fetched from DDR.  The first `64B` beat becomes packet metadata (`gap_ticks`, length, flags); following beats become payload for the scheduler/TX engine. |
+| `replay_scheduler.sv` | Converts descriptor `gap_ticks` into absolute replay-relative target ticks, buffers packet metadata, releases packets when due, resets the time base on `start`/`clear`, and flags late packets. |
+| `replay_tx_engine.sv` | Couples scheduled packet metadata with payload beats.  It generates `tkeep`/`tlast`, forwards payload to the TX path, counts transmitted packets/bytes, and reports underrun when a due packet has no payload beat available. |
+| `axis_sync_fifo.sv` | Same-clock AXI-Stream FIFO based on XPM simple dual-port RAM.  The current version has configurable BRAM read latency and output buffering so DDR read bursts can be absorbed without creating scheduler-visible bubbles. |
+| `axis_async_fifo.v` | Clock-domain-crossing AXI-Stream FIFO with Gray-coded pointers.  It bridges replay/DDR clocks and CMAC user clocks while preserving `tdata`, `tkeep`, `tlast`, and `tuser`. |
+| `axis_to_lbus_512.sv` | TX adapter from internal `512-bit` AXI-Stream packets to the CMAC four-segment `LBUS` transmit interface.  It handles byte order conversion, SOP/EOP placement, MTY generation, and frame-aware buffering against `tx_rdyout`. |
+| `axis_to_lbus_512_bd.v` | Vivado block-design wrapper around `axis_to_lbus_512`, adding interface metadata so the adapter can be connected cleanly to the CMAC IP. |
+| `lbus_to_axis_512.sv` | RX adapter from CMAC four-segment `LBUS` output into an internal AXI-Stream-like bus.  It reconstructs `tdata`, `tkeep`, `tstart`, `tlast`, and packet error indication. |
+| `rx_capture_bd_core.v` | Vivado block-design wrapper for an RX capture interface that already receives AXI-Stream-like RX packets. |
+| `rx_capture_lbus_bd_core.v` | Vivado block-design wrapper for an RX capture interface connected directly to CMAC `LBUS`; it instantiates the `LBUS`-to-AXIS conversion before the capture core. |
+| `rx_capture_bd_core.sv` / `rx_capture_core` | Lightweight RX statistics and sample-capture core.  It counts packets/bytes/errors, records SOP-to-SOP interval statistics in the RX clock domain, truncates recent packets into a DDR sample ring, and exposes control/status through `AXI-Lite`. |
+
+In the default four-DDR dual-port build, `scripts/create_hw_project.tcl`
+instantiates two TX replay cores, two RX capture cores, two CMACs, XDMA, four
+DDR controllers, SmartConnect fabrics, clock converters, register slices, and
+AXI-Stream/LBUS adapters.  The Tcl build is therefore the system-level top; the
+checked-in RTL modules are the reusable datapath blocks that the block design
+wires together.
 
 ## Replay Capacity
 

@@ -39,6 +39,7 @@
 - [当前状态](#当前状态)
 - [快速开始](#快速开始)
 - [系统架构](#系统架构)
+- [RTL 模块导览](#rtl-模块导览)
 - [最大回放容量](#最大回放容量)
 - [最大回放吞吐](#最大回放吞吐)
 - [回放精度](#回放精度)
@@ -312,6 +313,38 @@ RX 侧默认不把所有包上传主机，而是维护计数器；需要时可�
 项，payload/AXI command queue 为 `64` 项，payload FIFO 为 `8192` 个 512-bit beat。
 `STREAM` DDR reader 最多可发出 `64` 个 outstanding read burst。这些改动用于隐藏 DDR
 访问延迟，并在双端口分别读取不同 DDR bank 时尽量保持两个 replay port 都不断粮。
+
+## RTL 模块导览
+
+阅读 RTL 时建议从外到内看：Vivado block design wrapper 负责把模块包装成标准
+`AXI-Lite`、`AXI4`、`AXI-Stream` 和 CMAC `LBUS` 接口；核心逻辑再拆成控制寄存器、
+DDR 读出、包间隔调度、TX 格式化和 RX 侧统计/采样。
+
+| RTL 文件 / 模块 | 作用 |
+| --- | --- |
+| `traffic_replay_pkg.sv` | 全局常量和工具函数：`512-bit` 数据通路宽度、`64B` descriptor 大小、回放模式编号、`tkeep` 生成、每 beat 字节数计算等。 |
+| `traffic_replay_bd_core.v` | 单个 TX replay interface 的 Vivado block design wrapper。它把 replay core 暴露成 `S_AXIL`、只读 `M_AXI` 和 `M_TX_AXIS` 接口，并把未使用的 AXI 写通道绑成常量。 |
+| `traffic_replay_top_stub.sv` | 面向仿真的轻量 wrapper，直接包住 `trace_replay_core`，不用实例化完整 Vivado block design 就能做 RTL 测试。 |
+| `trace_replay_core.sv` | TX 回放主核心。负责 replay 状态机、寄存器、模式选择、PRELOAD/LOOP DDR reader、STREAM ring reader、stream parser、scheduler、TX engine、计数器、stall/drop 处理和 debug 状态。 |
+| `axi_lite_regs.sv` | XDMA user `BAR` 后面的控制/状态寄存器文件。解析 `start`、`stop`、`clear`、模式、DDR 基地址、包数、loop 参数、STREAM 写指针、debug 控制和 TX 统计。 |
+| `ddr_trace_reader.sv` | PRELOAD/LOOP trace reader。从 DDR 扫描 `64B` descriptor，检查包顺序，发起 payload `AXI4` read burst，维护深 descriptor/meta/payload FIFO，并输出对齐的包 metadata 和 payload AXI-Stream beat。 |
+| `ddr_stream_reader.sv` | STREAM ring reader。把 FPGA DDR 当作有界 record ring，维护单调递增的读/写字节计数，防止 wrap/overrun，支持 EOF 完成，并可在两个 DDR bank 之间做 ping-pong segment 读取。 |
+| `host_stream_parser.sv` | STREAM record 解析器。每条 record 的第一个 `64B` beat 解析为 packet metadata，也就是 `gap_ticks`、长度和 flags；后续 beat 作为 payload 送入 scheduler/TX engine。 |
+| `replay_scheduler.sv` | 包间隔调度器。把 descriptor 里的 `gap_ticks` 累加为相对回放目标 tick，缓存 packet metadata，到期后释放包；`start`/`clear` 时重置相对时间基准，并统计 late packet。 |
+| `replay_tx_engine.sv` | 把 scheduler 给出的 packet metadata 和 payload beat 合并成 TX AXI-Stream。它生成 `tkeep`/`tlast`，统计 TX 包数/字节数，并在包已经到期但 payload 没准备好时报告 underrun。 |
+| `axis_sync_fifo.sv` | 同时钟 AXI-Stream FIFO，底层使用 XPM simple dual-port RAM。当前版本支持可配置 BRAM read latency 和输出缓冲，用来吸收 DDR read burst，减少 scheduler 可见的气泡。 |
+| `axis_async_fifo.v` | 跨时钟 AXI-Stream FIFO，使用 Gray pointer 做 CDC，保留 `tdata`、`tkeep`、`tlast`、`tuser`，用于 replay/DDR 时钟域和 CMAC 用户时钟域之间。 |
+| `axis_to_lbus_512.sv` | TX 方向 AXI-Stream 到 CMAC 四段 `LBUS` 的适配器。负责字节序转换、SOP/EOP 放置、MTY 生成，以及基于 `tx_rdyout` 的帧级缓存。 |
+| `axis_to_lbus_512_bd.v` | `axis_to_lbus_512` 的 Vivado block design wrapper，加上接口元信息，方便在 IP Integrator 里连接 CMAC。 |
+| `lbus_to_axis_512.sv` | RX 方向 CMAC 四段 `LBUS` 到内部 AXI-Stream-like 总线的适配器，重建 `tdata`、`tkeep`、`tstart`、`tlast` 和包错误标志。 |
+| `rx_capture_bd_core.v` | RX capture 的 Vivado block design wrapper，适用于已经转成 AXI-Stream-like RX 包的连接方式。 |
+| `rx_capture_lbus_bd_core.v` | 直接接 CMAC `LBUS` 的 RX capture wrapper，内部先做 `LBUS` 到 AXI-Stream-like 的转换，再进入 capture core。 |
+| `rx_capture_bd_core.sv` / `rx_capture_core` | 轻量 RX 统计和采样核心。统计包数/字节数/error，在 RX 时钟域统计 SOP-to-SOP 间隔，将最近包按截断长度写入 DDR sample ring，并通过 `AXI-Lite` 暴露控制/状态寄存器。 |
+
+默认四 DDR 双端口 build 中，`scripts/create_hw_project.tcl` 是系统级 top。它实例化两个
+TX replay core、两个 RX capture core、两个 CMAC、XDMA、四个 DDR controller、
+SmartConnect、clock converter、register slice 以及 AXI-Stream/LBUS adapter。仓库里的
+RTL 文件则是这些 block design 中可复用的数据通路模块。
 
 ## 最大回放容量
 
