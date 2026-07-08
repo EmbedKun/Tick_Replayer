@@ -10,10 +10,10 @@
 
 </div>
 
-> 2026-07-05 更新：四 DDR bank 版本已经完成上板验证并归档到
-> `bitstreams/20260705_4ddr_localclock_timing_clean`。该版本映射 U200
-> 四个 `16GiB` DDR 窗口，总计 `64GiB`，post-route WNS 为 `+0.002ns`。
-> 详细测试记录见 `docs/evaluation_20260705_4ddr_localclock.md`。
+> 2026-07-08 更新：默认双端口、四 DDR bank、深预取版本已经完成实现并归档到
+> `bitstreams/20260708_040647_4ddr_dual_prefetch_timing_clean`。该版本映射 U200
+> 四个 `16GiB` DDR 窗口，总计 `64GiB`，post-route `WNS=+0.010ns`、
+> `WHS=+0.006ns`。
 
 ## 项目概述
 
@@ -62,8 +62,14 @@
 | Trace 存储 | 硬件生成器默认启用 U200 四个 `DDR4` bank。双端口 build 使用 bank-local replay/capture 路径；单端口 multi-DDR build 可以暴露 `64GiB` FPGA trace 窗口 |
 | 回放模式 | `PRELOAD`、`LOOP`、`STREAM` ring buffer |
 | RX 功能 | 包/字节/error 计数，最近包采样，SOP-to-SOP 间隔统计 |
-| 时序归档 | 已评估的单口 STREAM build：`/home/user/tick_replayer_bitstreams/20260707_stream_ring_pipeline_2bank_timing_clean`，`WNS=+0.009 ns`；早期四 bank 归档：`bitstreams/20260705_4ddr_localclock_timing_clean`，`WNS=+0.002 ns` |
+| 时序归档 | 当前四 bank 双端口归档：`bitstreams/20260708_040647_4ddr_dual_prefetch_timing_clean`，`WNS=+0.010 ns`；已完整上板评估的单口 STREAM build：`/home/user/tick_replayer_bitstreams/20260707_stream_ring_pipeline_2bank_timing_clean`，`WNS=+0.009 ns` |
 | 全 64GB DDR | 生成器支持四个 `16GiB` DDR 窗口。单口 64GiB 容量 build 使用 `scripts/build_4ddr_single_port_64g.sh`；双口高负载 build 使用 `scripts/build_4ddr_dual_port.sh` |
+
+详细上板结果记录在
+[`docs/evaluation_20260708_4ddr_dual_prefetch.md`](docs/evaluation_20260708_4ddr_dual_prefetch.md)、
+[`docs/evaluation_20260707_full_system_check.md`](docs/evaluation_20260707_full_system_check.md)、
+[`docs/evaluation_20260707_stream_pingpong_pipeline.md`](docs/evaluation_20260707_stream_pingpong_pipeline.md)
+和 [`docs/evaluation_20260705_4ddr_localclock.md`](docs/evaluation_20260705_4ddr_localclock.md)。
 
 ## 快速开始
 
@@ -331,7 +337,9 @@ preload_trace_bytes_per_packet = 64 + align64(frame_len)
 | `1518` | `1600` | `10,737,418` | `15.34GiB` |
 | `9000` | `9088` | `1,890,390` | `15.87GiB` |
 
-如果后续启用 U200 四个 DDR bank，设计空间约为四倍：
+当前默认硬件生成会启用 U200 四个 DDR bank。`20260708_040647_4ddr_dual_prefetch_timing_clean`
+已经在板上验证四个 `16GiB` 窗口的起始地址和高端地址均可通过 `H2C` 写入和
+`C2H` 读回。四 bank 设计空间约为单 bank 的四倍：
 
 | Frame bytes | `64GiB` DDR 可容纳包数 | 约等于原始 `pcap` 大小 |
 | ---: | ---: | ---: |
@@ -389,6 +397,8 @@ header 带来更明显的膨胀。
 | `STREAM` ring | `1518B`, `gap=160`, `64GB` stream，striped direct-copy loader | 装载 `28.3Gbps`，无 late/underrun |
 | `STREAM` ring | `1518B`, `gap=120`, `2M` packets，container-striped ping-pong ring | L2 `30.360Gbps`，无 late/underrun/drop/stall |
 | `STREAM` ring | `1518B`, `gap=80`, `2M` packets，`2GiB` container-striped ping-pong ring | L2 `45.540Gbps`，2026-07-07 测试无 late/underrun/drop/stall |
+| `STREAM` ring | `1518B`, `gap=80`, `500k` packets，双 SSD striped warm-cache，2026-07-08 四 bank bit | 装载 `70.016Gbps`，回放 L2 `45.540Gbps`，无 late/underrun |
+| `STREAM` ring | 同一数据集，清空 Linux page cache 后冷读 | 冷装载 `28.252Gbps`，无 late/underrun |
 | `STREAM` ring | 最大 ring 配置 sanity | `16GiB` per bank，`32GiB` total ping-pong ring 可配置并完成小 trace |
 | SSD read bench | 双 SSD `O_DIRECT` 乱序读，`64GB` striped blocks | `50.680Gbps` |
 | Host loader | 双 SSD striped dry-run，`64GB` stream，cold cache | 读取/重排 `24.102Gbps` |
@@ -703,16 +713,15 @@ reports/       部分验证报告
 
 ## 当前限制
 
-- 硬件生成器已经默认启用双端口、四 DDR bank 设计。最新完整评估的 STREAM 上板结果仍是 2026-07-07 的单口双 bank timing-clean 归档；新的四 bank 深预取 RTL 需要重新实现和上板验证后才能作为 release bitstream。
-- `STREAM` ring 模式可用。全量预填的大包 STREAM 测试可以达到 `95.874Gbps`。双 DDR bank ping-pong ring 已验证最大 `32GiB` 配置；2026-07-07 的 container-striped 动态测试在 `2M x 1518B, gap=80` 下达到 L2 `45.540Gbps`，无 late/underrun/drop/stall。但无限长动态 `100Gbps` 回放仍受 `SSD -> host memory -> memory-mapped XDMA H2C -> FPGA DDR` 装载链路限制。
-- 最新单口测试使用 `force-link-up` 和 `force-tx-ready`，因为当前烧录 bitstream 只启用 `QSFP0`。真实光口 TX-to-RX payload 校验和 RX 侧 SOP-to-SOP 精度测试需要双口 bitstream 或有效外部链路接入当前启用端口。
+- 硬件生成器已经默认启用双端口、四 DDR bank 设计。新的四 bank 深预取 bitstream 已经 timing clean，并归档到 `bitstreams/20260708_040647_4ddr_dual_prefetch_timing_clean`。本轮上板 smoke 已验证四个 DDR 窗口、双端口 PRELOAD 吞吐、双向真实光口 TX/RX sample payload 正确性，以及 RX 侧固定 gap SOP-to-SOP 精度。
+- `STREAM` ring 模式可用。全量预填的大包 STREAM 测试可以达到 `95.874Gbps`。双 DDR bank ping-pong ring 已验证最大 `32GiB` 配置；2026-07-08 四 bank bit 的双 SSD striped warm-cache 动态测试达到 `70.016Gbps` 装载和 L2 `45.540Gbps` 回放，清 page cache 后冷装载约 `28.252Gbps`。无限长动态 `100Gbps` 回放仍受 `SSD -> host memory -> memory-mapped XDMA H2C -> FPGA DDR` 装载链路限制。
 - RX interval sample 只保存最近 `4096` 个间隔。长 trace 有完整聚合统计，但没有完整逐包 timestamp 日志。
 - RX 侧端到端精度包含 scheduler、TX buffering、CMAC framing、光纤回环、RX CMAC 和 RX 采样量化；大小包混合场景的局部误差会比固定包长更大。
 - 双端口同时接近 100G 大包回放时，两份 trace 应放在不同 DDR bank。默认四 bank 双端口 build 已将 `port0` 和 `port1` TX 路径映射到不同 DDR controller，避免单 DDR bank 共享瓶颈。
 
 ## 后续计划
 
-- 对新的四 bank 深预取 build 做完整实现、时序收敛和上板验证。
+- 对四 bank 深预取 build 多跑几个实现 seed，持续归档最优 bitstream 和对应验证记录。
 - 继续优化 `STREAM` 模式，提升动态装载和持续回放吞吐。
 - 根据真实双端口高负载测试继续调优 DDR 预取深度和仲裁策略。
 - 增加靠近 `CMAC` 的可选 egress-side scheduler，降低大小包混合场景的端到端 SOP 抖动。

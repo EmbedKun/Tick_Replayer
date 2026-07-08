@@ -516,7 +516,9 @@ module trace_replay_core #(
   axis_sync_fifo #(
     .DATA_W(AXIS_DATA_W),
     .KEEP_W(AXIS_KEEP_W),
-    .DEPTH(STREAM_FIFO_DEPTH)
+    .DEPTH(STREAM_FIFO_DEPTH),
+    .RAM_READ_LATENCY_P(3),
+    .OUT_DEPTH_P(8)
   ) stream_prefetch_fifo_i (
     .clk(clk),
     .rstn(rstn),

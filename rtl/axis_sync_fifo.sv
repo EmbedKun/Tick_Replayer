@@ -3,7 +3,9 @@
 module axis_sync_fifo #(
   parameter int DATA_W = 512,
   parameter int KEEP_W = DATA_W / 8,
-  parameter int DEPTH  = 1024
+  parameter int DEPTH  = 1024,
+  parameter int RAM_READ_LATENCY_P = 2,
+  parameter int OUT_DEPTH_P = 4
 ) (
   input  logic                         clk,
   input  logic                         rstn,
@@ -26,10 +28,10 @@ module axis_sync_fifo #(
   localparam int ADDR_W = (DEPTH <= 2) ? 1 : $clog2(DEPTH);
   localparam int COUNT_W = $clog2(DEPTH + 1);
   localparam int PAYLOAD_W = DATA_W + KEEP_W + 1;
-  localparam int RAM_READ_LATENCY = 2;
-  localparam int OUT_DEPTH = 4;
-  localparam int OUT_PTR_W = 2;
-  localparam int OUT_COUNT_W = 3;
+  localparam int RAM_READ_LATENCY = (RAM_READ_LATENCY_P < 2) ? 2 : RAM_READ_LATENCY_P;
+  localparam int OUT_DEPTH = (OUT_DEPTH_P < 2) ? 2 : OUT_DEPTH_P;
+  localparam int OUT_PTR_W = (OUT_DEPTH <= 2) ? 1 : $clog2(OUT_DEPTH);
+  localparam int OUT_COUNT_W = $clog2(OUT_DEPTH + RAM_READ_LATENCY + 1);
   localparam int READY_MARGIN_RAW = OUT_DEPTH + RAM_READ_LATENCY + 4;
   localparam int READY_MARGIN = (DEPTH > READY_MARGIN_RAW) ? READY_MARGIN_RAW : 1;
 
@@ -70,9 +72,12 @@ module axis_sync_fifo #(
     end
   endfunction
 
-  assign outstanding_count =
-    {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[0]} +
-    {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[1]};
+  always_comb begin
+    outstanding_count = '0;
+    for (int unsigned pipe_idx = 0; pipe_idx < RAM_READ_LATENCY; pipe_idx++) begin
+      outstanding_count = outstanding_count + {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[pipe_idx]};
+    end
+  end
   assign buffered_count = outstanding_count + out_count;
   assign total_level = ram_count +
                        {{(COUNT_W-OUT_COUNT_W){1'b0}}, buffered_count} +

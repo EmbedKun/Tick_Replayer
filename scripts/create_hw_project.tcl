@@ -507,6 +507,25 @@ foreach bank $ddr_bank_ids {
   }
   create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter ddr_bank${bank}_cc
   set_property -dict [list CONFIG.PROTOCOL {AXI4} CONFIG.DATA_WIDTH {512} CONFIG.ADDR_WIDTH {64} CONFIG.ID_WIDTH {4}] [get_bd_cells ddr_bank${bank}_cc]
+  create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice ddr_bank${bank}_regslice
+  set_property -dict [list \
+    CONFIG.PROTOCOL {AXI4} \
+    CONFIG.DATA_WIDTH {512} \
+    CONFIG.ADDR_WIDTH {34} \
+    CONFIG.ID_WIDTH {4} \
+    CONFIG.MAX_BURST_LENGTH {256} \
+    CONFIG.NUM_SLR_CROSSINGS {1} \
+    CONFIG.PIPELINES_MASTER_AR {1} \
+    CONFIG.PIPELINES_MASTER_AW {1} \
+    CONFIG.PIPELINES_MASTER_B {1} \
+    CONFIG.PIPELINES_MASTER_R {1} \
+    CONFIG.PIPELINES_MASTER_W {1} \
+    CONFIG.PIPELINES_SLAVE_AR {1} \
+    CONFIG.PIPELINES_SLAVE_AW {1} \
+    CONFIG.PIPELINES_SLAVE_B {1} \
+    CONFIG.PIPELINES_SLAVE_R {1} \
+    CONFIG.PIPELINES_SLAVE_W {1} \
+  ] [get_bd_cells ddr_bank${bank}_regslice]
 }
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect ctrl_smc
@@ -723,6 +742,7 @@ foreach bank $ddr_bank_ids {
     ddr_bank${bank}_cc/m_axi_aclk \
     ctrl_ddr${bank}_cc/m_axi_aclk \
     ddr_smc_$bank/aclk \
+    ddr_bank${bank}_regslice/aclk \
   ]
   if {$enable_port1 && $bank == 1} {
     lappend bank_clk_pins replay_core_1/clk tx_axis_fifo_1/s_clk ctrl_replay1_cc/m_axi_aclk
@@ -745,6 +765,7 @@ foreach bank $ddr_bank_ids {
     ddr_bank${bank}_cc/m_axi_aresetn \
     ctrl_ddr${bank}_cc/m_axi_aresetn \
     ddr_smc_$bank/aresetn \
+    ddr_bank${bank}_regslice/aresetn \
   ]
   if {$enable_port1 && $bank == 1} {
     lappend bank_resetn_pins replay_core_1/resetn tx_axis_fifo_1/s_resetn ctrl_replay1_cc/m_axi_aresetn
@@ -859,7 +880,8 @@ foreach bank $ddr_bank_ids {
   if {$bank == 0} {
     continue
   }
-  connect_bd_intf_net [get_bd_intf_pins ddr_smc_$bank/M00_AXI] [get_bd_intf_pins ddr4_$bank/C0_DDR4_S_AXI]
+  connect_bd_intf_net [get_bd_intf_pins ddr_smc_$bank/M00_AXI] [get_bd_intf_pins ddr_bank${bank}_regslice/S_AXI]
+  connect_bd_intf_net [get_bd_intf_pins ddr_bank${bank}_regslice/M_AXI] [get_bd_intf_pins ddr4_$bank/C0_DDR4_S_AXI]
 }
 
 connect_bd_intf_net [get_bd_intf_pins xdma_0/M_AXI_LITE] [get_bd_intf_pins axil_ctrl_cc/S_AXI]

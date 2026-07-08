@@ -3,7 +3,15 @@ set repo_dir [file normalize [file join $script_dir ..]]
 set reports_dir [file join $repo_dir reports]
 file mkdir $reports_dir
 
-set_param general.maxThreads 1
+set traffic_replay_vivado_threads 1
+if {[info exists ::env(TRAFFIC_REPLAY_VIVADO_THREADS)] && $::env(TRAFFIC_REPLAY_VIVADO_THREADS) ne ""} {
+  set traffic_replay_vivado_threads $::env(TRAFFIC_REPLAY_VIVADO_THREADS)
+}
+if {![string is integer -strict $traffic_replay_vivado_threads] || $traffic_replay_vivado_threads < 1} {
+  puts "ERROR: TRAFFIC_REPLAY_VIVADO_THREADS must be a positive integer"
+  exit 1
+}
+set_param general.maxThreads $traffic_replay_vivado_threads
 
 if {[info exists ::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)] && $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT) ne ""} {
   set hw_build_root [file normalize $::env(TRAFFIC_REPLAY_HW_BUILD_ROOT)]
@@ -26,6 +34,14 @@ if {[info exists ::env(TRAFFIC_REPLAY_VIVADO_JOBS)] && $::env(TRAFFIC_REPLAY_VIV
 }
 
 open_project $project_file
+
+set impl_strategy "Performance_ExplorePostRoutePhysOpt"
+if {[info exists ::env(TRAFFIC_REPLAY_IMPL_STRATEGY)] && $::env(TRAFFIC_REPLAY_IMPL_STRATEGY) ne ""} {
+  set impl_strategy $::env(TRAFFIC_REPLAY_IMPL_STRATEGY)
+}
+if {[catch {set_property strategy $impl_strategy [get_runs impl_1]} strategy_err]} {
+  puts "WARNING: failed to set implementation strategy $impl_strategy: $strategy_err"
+}
 
 set synth_status [get_property STATUS [get_runs synth_1]]
 puts "Hardware synthesis status: $synth_status"

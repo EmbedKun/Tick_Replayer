@@ -10,6 +10,12 @@
 
 </div>
 
+> 2026-07-08 update: the default dual-port, four-DDR-bank build with deeper
+> replay prefetch is implemented and archived at
+> `bitstreams/20260708_040647_4ddr_dual_prefetch_timing_clean`.  The routed
+> design is timing clean with `WNS=+0.010ns`, `WHS=+0.006ns`, and all four
+> `16GiB` U200 DDR windows enabled.
+
 ## Overview
 
 `Tick Replayer` is an FPGA traffic replay prototype for the Xilinx Alveo U200.
@@ -57,15 +63,16 @@ traffic trace.
 | --- | --- |
 | Target board | Xilinx Alveo U200 |
 | PCIe | Xilinx `XDMA`, Gen3 x16, memory-mapped `H2C`/`C2H` |
-| Ethernet | 100G `CMAC` to `QSFP0` in the latest single-port timing-clean build; dual-port RTL/build flow is also kept in-tree |
+| Ethernet | Dual 100G `CMAC` ports connected to `QSFP0` and `QSFP1` in the latest four-DDR timing-clean build |
 | Control plane | `XDMA` user `BAR` to `AXI-Lite` registers |
 | Trace memory | The hardware generator now enables four U200 `DDR4` banks by default.  Dual-port builds use bank-local replay/capture paths; single-port multi-DDR builds can expose a `64GiB` FPGA trace window |
 | Replay modes | `PRELOAD`, `LOOP`, and `STREAM` ring buffer |
 | RX path | Packet/byte/error counters, recent sample capture, SOP-to-SOP gap statistics |
-| Timing archive | Current evaluated single-port STREAM build: `/home/user/tick_replayer_bitstreams/20260707_stream_ring_pipeline_2bank_timing_clean`, routed `WNS=+0.009 ns`; earlier four-bank archive: `bitstreams/20260705_4ddr_localclock_timing_clean`, `WNS=+0.002 ns` |
+| Timing archive | Current four-bank dual-port archive: `bitstreams/20260708_040647_4ddr_dual_prefetch_timing_clean`, routed `WNS=+0.010 ns`; current evaluated single-port STREAM board run: `/home/user/tick_replayer_bitstreams/20260707_stream_ring_pipeline_2bank_timing_clean`, routed `WNS=+0.009 ns` |
 | Full 64GB DDR | Four `16GiB` DDR windows are supported by the generator.  Use `scripts/build_4ddr_single_port_64g.sh` for a single-port 64GiB replay window or `scripts/build_4ddr_dual_port.sh` for dual-port bank-local high-load replay |
 
 Detailed board results are recorded in
+[`docs/evaluation_20260708_4ddr_dual_prefetch.md`](docs/evaluation_20260708_4ddr_dual_prefetch.md),
 [`docs/evaluation_20260707_full_system_check.md`](docs/evaluation_20260707_full_system_check.md),
 [`docs/evaluation_20260707_stream_pingpong_pipeline.md`](docs/evaluation_20260707_stream_pingpong_pipeline.md),
 and [`docs/evaluation_20260705_4ddr_localclock.md`](docs/evaluation_20260705_4ddr_localclock.md).
@@ -364,10 +371,9 @@ One U200 `DDR4` bank provides a `16GiB` DDR address window.  Approximate source
 
 The default hardware generation instantiates all four U200 DDR controllers and
 maps them as four `16GiB` windows.  The archived
-`20260705_4ddr_localclock_timing_clean` bitstream validated these windows on
-hardware, including 4KiB readback checks at the end of each 16GiB bank.  The
-current deeper-prefetch RTL keeps the same address map and must be re-run
-through implementation before it becomes a new timing-clean board release.
+`20260708_040647_4ddr_dual_prefetch_timing_clean` bitstream validated both the
+start and high end of each 16GiB bank on hardware with `H2C` write and `C2H`
+readback checks.
 
 | DDR bank | Base address | Range |
 | --- | ---: | ---: |
@@ -446,10 +452,10 @@ on packet length:
 | `1518` | `98.44Gbps` | `8.11Mpps` |
 | `9000` | `99.73Gbps` | `1.39Mpps` |
 
-Current board measurements.  The latest single-port tests use internal
-`force-link-up`/`force-tx-ready` gating because the two-port optical loopback is
-not present in that bitstream; older dual-port rows are from the archived
-four-bank optical-loopback build.
+Current board measurements.  The latest dual-port rows are from the
+`20260708_040647_4ddr_dual_prefetch_timing_clean` four-bank optical-loopback
+build.  Older single-port rows are retained because they cover larger STREAM
+stress cases and fully prefetched replay behavior.
 
 | Mode | Case | Result |
 | --- | --- | ---: |
@@ -469,6 +475,8 @@ four-bank optical-loopback build.
 | `STREAM` ring | `1518B`, `gap=160`, `64GB` stream, striped direct-copy loader | `28.3Gbps` load, no late/underrun |
 | `STREAM` ring | `1518B`, `gap=120`, `2M` packets, container-striped ping-pong ring | `30.360Gbps` frame/L2, no late/underrun/drop/stall |
 | `STREAM` ring | `1518B`, `gap=80`, `2M` packets, `2GiB` container-striped ping-pong ring | `45.540Gbps` frame/L2, no late/underrun/drop/stall in the 2026-07-07 run |
+| `STREAM` ring | `1518B`, `gap=80`, `500k` packets, two-SSD striped warm-cache load, 2026-07-08 four-bank bit | `70.016Gbps` load, `45.540Gbps` frame/L2, no late/underrun |
+| `STREAM` ring | same dataset after dropping Linux page cache | `28.252Gbps` cold load, no late/underrun |
 | `STREAM` ring | maximum ring config sanity | `16GiB` per bank, `32GiB` total ping-pong ring accepted and completed a tiny trace |
 | SSD read bench | dual-SSD `O_DIRECT` unordered read, `64GB` striped blocks | `50.680Gbps` |
 | Host loader | dual-SSD striped dry-run, `64GB` stream, cold cache | `24.102Gbps` read/reorder |
@@ -483,7 +491,9 @@ larger traces.  The boosted single-port build proves that fully prefetched
 large-packet STREAM replay can hit the scheduler limit, but sustained dynamic
 replay is still limited by host memory copy/conversion, memory-mapped
 `XDMA H2C` submission, DDR ring writes, and FPGA DDR reads.
-The latest ping-pong pipeline board run is recorded in
+The latest four-bank board run is recorded in
+[`docs/evaluation_20260708_4ddr_dual_prefetch.md`](docs/evaluation_20260708_4ddr_dual_prefetch.md).
+The ping-pong pipeline board run is recorded in
 [`docs/evaluation_20260707_stream_pingpong_pipeline.md`](docs/evaluation_20260707_stream_pingpong_pipeline.md).
 
 ## Replay Precision
@@ -856,11 +866,12 @@ reports/       Selected validation reports
 
 ## Known Limitations
 
-- The hardware generator now defaults to a dual-port, four-DDR-bank design.
-  The latest fully evaluated STREAM board run is still the single-port,
-  two-bank timing-clean archive from 2026-07-07.  The four-bank deeper-prefetch
-  RTL must pass a fresh implementation and board test before it should be
-  treated as a release bitstream.
+- The hardware generator now defaults to a dual-port, four-DDR-bank design.  The
+  latest four-bank deeper-prefetch bitstream is timing clean and archived as
+  `bitstreams/20260708_040647_4ddr_dual_prefetch_timing_clean`.  Board smoke
+  tests validated all four DDR windows, dual-port PRELOAD throughput, optical
+  TX/RX sample payload correctness in both directions, and RX-side fixed-gap
+  SOP-to-SOP precision.
 - `STREAM` ring mode is functional.  The C++ loader supports batched,
   order-preserving multi-writer `H2C` submission.  Fully prefetched large-packet
   STREAM tests reach `95.874Gbps`.  The two-bank ping-pong ring accepts a
@@ -869,10 +880,6 @@ reports/       Selected validation reports
   This is still not proof of unlimited `100Gbps` dynamic replay: long traces are
   limited by `SSD -> host memory -> memory-mapped XDMA H2C -> FPGA DDR` load
   bandwidth.
-- The latest single-port board run uses `force-link-up` and `force-tx-ready`
-  because the programmed bitstream exposes only `QSFP0`.  Real optical
-  TX-to-RX payload verification and RX-side SOP-to-SOP precision measurement
-  require a dual-port bitstream or a valid external link into the enabled port.
 - The RX sample writer is a lightweight debug/correctness path, not a full-rate
   packet capture DMA.  Low-rate loopback sample checks pass; high-rate sample
   capture can overflow and should be treated as an expected limitation.
@@ -890,8 +897,8 @@ reports/       Selected validation reports
 
 ## Roadmap
 
-- Close timing and repeat board validation on the new four-bank deeper-prefetch
-  build across multiple implementation seeds.
+- Repeat the timing-clean four-bank build across multiple implementation seeds
+  and keep archiving the best bitstreams with their validation notes.
 - Move the dynamic loader path beyond memory-mapped `XDMA pwrite()` if sustained
   100G `STREAM` replay is required: QDMA/XDMA AXI4-Stream H2C, pinned hugepage
   buffers, kernel-bypass submission, or a custom multi-queue loader.

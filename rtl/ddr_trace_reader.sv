@@ -181,6 +181,11 @@ module ddr_trace_reader #(
   logic [63:0] meta_gap_mem [META_FIFO_DEPTH];
   logic [15:0] meta_len_mem [META_FIFO_DEPTH];
   logic [15:0] meta_flags_mem [META_FIFO_DEPTH];
+  logic        meta_stage_valid;
+  logic        meta_stage_ready;
+  logic [63:0] meta_stage_gap;
+  logic [15:0] meta_stage_len;
+  logic [15:0] meta_stage_flags;
 
   logic [PLAN_PTR_W-1:0] plan_wr_ptr;
   logic [PLAN_PTR_W-1:0] plan_rd_ptr;
@@ -245,6 +250,15 @@ module ddr_trace_reader #(
   logic                   payload_fifo_s_tvalid;
   logic                   payload_fifo_s_tready;
   logic                   payload_fifo_s_tlast;
+  logic                   payload_stage_valid;
+  logic                   payload_stage_ready;
+  logic                   payload_stage_fire;
+  logic [AXIS_DATA_W-1:0] payload_stage_tdata;
+  logic [AXIS_KEEP_W-1:0] payload_stage_tkeep;
+  logic                   payload_stage_tlast;
+  logic [63:0]            payload_stage_gap;
+  logic [15:0]            payload_stage_len;
+  logic [15:0]            payload_stage_flags;
   logic [AXIS_DATA_W-1:0] payload_fifo_m_tdata;
   logic [AXIS_KEEP_W-1:0] payload_fifo_m_tkeep;
   logic                   payload_fifo_m_tvalid;
@@ -321,7 +335,9 @@ module ddr_trace_reader #(
   assign desc_free = (desc_total_occupied >= {1'b0, DESC_FIFO_DEPTH_LEVEL}) ?
                      '0 : DESC_CNT_W'({1'b0, DESC_FIFO_DEPTH_LEVEL} - desc_total_occupied);
   assign meta_total_occupied = {1'b0, meta_count} + meta_reserved;
-  assign payload_buffered_beats = {1'b0, payload_fifo_level} + payload_reserved;
+  assign payload_buffered_beats = {1'b0, payload_fifo_level} +
+                                  payload_reserved +
+                                  RESERVE_CNT_W'(payload_stage_valid);
   assign axi_cmd_total_occupied = {1'b0, axi_cmd_count} +
                                   {{AXI_CMD_CNT_W{1'b0}}, axi_cmd_head_valid};
   assign axi_cmd_accept_ready = (axi_cmd_total_occupied < {1'b0, AXI_CMD_DEPTH_LEVEL});
@@ -482,25 +498,29 @@ module ddr_trace_reader #(
     ((rsp_kind == CMD_DESC) ?
       (desc_count != DESC_FIFO_DEPTH_LEVEL) :
       ((rsp_kind == CMD_PAYLOAD) &&
-       payload_fifo_s_tready &&
+       payload_stage_ready &&
        (cur_plan_valid || (plan_count != '0))));
 
   assign desc_r_fire    = m_axi_rvalid && m_axi_rready && (rsp_kind == CMD_DESC);
   assign payload_r_fire = m_axi_rvalid && m_axi_rready && (rsp_kind == CMD_PAYLOAD);
   assign rsp_cmd_pop    = m_axi_rvalid && m_axi_rready && rsp_last_beat;
 
-  assign payload_fifo_s_tdata  = m_axi_rdata;
-  assign payload_fifo_s_tkeep  = (eff_bytes_left <= AXIS_KEEP_BYTES) ?
-                                 keep_from_len(eff_bytes_left) : {AXIS_KEEP_W{1'b1}};
-  assign payload_fifo_s_tvalid = payload_r_fire;
-  assign payload_fifo_s_tlast  = (eff_beats_left == 16'd1);
-  assign payload_packet_complete = payload_r_fire && (eff_beats_left == 16'd1);
+  assign payload_stage_ready = !payload_stage_valid || payload_fifo_s_tready;
+  assign payload_stage_fire  = payload_stage_valid && payload_fifo_s_tready;
+
+  assign payload_fifo_s_tdata  = payload_stage_tdata;
+  assign payload_fifo_s_tkeep  = payload_stage_tkeep;
+  assign payload_fifo_s_tvalid = payload_stage_valid;
+  assign payload_fifo_s_tlast  = payload_stage_tlast;
+  assign payload_packet_complete = payload_stage_fire && payload_stage_tlast;
   assign plan_pop = payload_r_fire && !cur_plan_valid;
 
   axis_sync_fifo #(
     .DATA_W(AXIS_DATA_W),
     .KEEP_W(AXIS_KEEP_W),
-    .DEPTH(PAYLOAD_FIFO_DEPTH)
+    .DEPTH(PAYLOAD_FIFO_DEPTH),
+    .RAM_READ_LATENCY_P(3),
+    .OUT_DEPTH_P(8)
   ) payload_fifo_i (
     .clk(clk),
     .rstn(rstn),
@@ -519,7 +539,8 @@ module ddr_trace_reader #(
   );
 
   assign meta_push = payload_packet_complete;
-  assign meta_pop  = m_meta_valid && m_meta_ready;
+  assign meta_stage_ready = !meta_stage_valid || m_meta_ready;
+  assign meta_pop  = running && meta_stage_ready && (meta_count != '0);
   assign desc_push = desc_r_fire;
   assign desc_pop  = scan_accept;
   assign payload_cmd_push = scan_command_push;
@@ -527,10 +548,10 @@ module ddr_trace_reader #(
   assign desc_plan_pop    = ar_load && (ar_sel_kind == CMD_DESC);
   assign axi_cmd_push     = ar_fire;
 
-  assign m_meta_valid     = running && (meta_count != '0);
-  assign m_meta_gap_ticks = meta_gap_mem[meta_rd_ptr];
-  assign m_meta_len       = meta_len_mem[meta_rd_ptr];
-  assign m_meta_flags     = meta_flags_mem[meta_rd_ptr];
+  assign m_meta_valid     = running && meta_stage_valid;
+  assign m_meta_gap_ticks = meta_stage_gap;
+  assign m_meta_len       = meta_stage_len;
+  assign m_meta_flags     = meta_stage_flags;
 
   assign payload_fifo_m_tready = running && (!out_axis_tvalid || m_axis_tready);
   assign out_axis_load = payload_fifo_m_tvalid && payload_fifo_m_tready;
@@ -554,8 +575,10 @@ module ddr_trace_reader #(
     (plan_count == '0) &&
     !cur_plan_valid &&
     (meta_count == '0) &&
+    !meta_stage_valid &&
     (meta_reserved == '0) &&
     (payload_fifo_level == '0) &&
+    !payload_stage_valid &&
     !out_axis_tvalid &&
     (payload_reserved == '0);
 
@@ -602,6 +625,10 @@ module ddr_trace_reader #(
       meta_rd_ptr           <= '0;
       meta_count            <= '0;
       meta_reserved         <= '0;
+      meta_stage_valid      <= 1'b0;
+      meta_stage_gap        <= '0;
+      meta_stage_len        <= '0;
+      meta_stage_flags      <= '0;
       plan_wr_ptr           <= '0;
       plan_rd_ptr           <= '0;
       plan_count            <= '0;
@@ -637,6 +664,13 @@ module ddr_trace_reader #(
       cur_flags             <= '0;
       cur_bytes_left        <= '0;
       cur_beats_left        <= '0;
+      payload_stage_valid   <= 1'b0;
+      payload_stage_tdata   <= '0;
+      payload_stage_tkeep   <= '0;
+      payload_stage_tlast   <= 1'b0;
+      payload_stage_gap     <= '0;
+      payload_stage_len     <= '0;
+      payload_stage_flags   <= '0;
       payload_reserved      <= '0;
       payload_buffered_beats_q <= '0;
     end else begin
@@ -673,6 +707,10 @@ module ddr_trace_reader #(
         meta_rd_ptr           <= '0;
         meta_count            <= '0;
         meta_reserved         <= '0;
+        meta_stage_valid      <= 1'b0;
+        meta_stage_gap        <= '0;
+        meta_stage_len        <= '0;
+        meta_stage_flags      <= '0;
         plan_wr_ptr           <= '0;
         plan_rd_ptr           <= '0;
         plan_count            <= '0;
@@ -703,8 +741,18 @@ module ddr_trace_reader #(
         scan_expected_word    <= '0;
         scan_run_addr         <= '0;
         cur_plan_valid        <= 1'b0;
+        cur_gap               <= '0;
+        cur_len               <= '0;
+        cur_flags             <= '0;
         cur_bytes_left        <= '0;
         cur_beats_left        <= '0;
+        payload_stage_valid   <= 1'b0;
+        payload_stage_tdata   <= '0;
+        payload_stage_tkeep   <= '0;
+        payload_stage_tlast   <= 1'b0;
+        payload_stage_gap     <= '0;
+        payload_stage_len     <= '0;
+        payload_stage_flags   <= '0;
         payload_reserved      <= '0;
         payload_buffered_beats_q <= '0;
       end else begin
@@ -741,6 +789,10 @@ module ddr_trace_reader #(
           meta_rd_ptr           <= '0;
           meta_count            <= '0;
           meta_reserved         <= '0;
+          meta_stage_valid      <= 1'b0;
+          meta_stage_gap        <= '0;
+          meta_stage_len        <= '0;
+          meta_stage_flags      <= '0;
           plan_wr_ptr           <= '0;
           plan_rd_ptr           <= '0;
           plan_count            <= '0;
@@ -771,8 +823,18 @@ module ddr_trace_reader #(
           scan_expected_word    <= '0;
           scan_run_addr         <= '0;
           cur_plan_valid        <= 1'b0;
+          cur_gap               <= '0;
+          cur_len               <= '0;
+          cur_flags             <= '0;
           cur_bytes_left        <= '0;
           cur_beats_left        <= '0;
+          payload_stage_valid   <= 1'b0;
+          payload_stage_tdata   <= '0;
+          payload_stage_tkeep   <= '0;
+          payload_stage_tlast   <= 1'b0;
+          payload_stage_gap     <= '0;
+          payload_stage_len     <= '0;
+          payload_stage_flags   <= '0;
           payload_reserved      <= '0;
           payload_buffered_beats_q <= '0;
         end
@@ -936,6 +998,21 @@ module ddr_trace_reader #(
           end
         end
 
+        if (payload_stage_fire && !payload_r_fire) begin
+          payload_stage_valid <= 1'b0;
+        end
+
+        if (payload_r_fire) begin
+          payload_stage_valid <= 1'b1;
+          payload_stage_tdata <= m_axi_rdata;
+          payload_stage_tkeep <= (eff_bytes_left <= AXIS_KEEP_BYTES) ?
+                                 keep_from_len(eff_bytes_left) : {AXIS_KEEP_W{1'b1}};
+          payload_stage_tlast <= (eff_beats_left == 16'd1);
+          payload_stage_gap   <= eff_gap;
+          payload_stage_len   <= eff_len;
+          payload_stage_flags <= eff_flags;
+        end
+
         if (payload_r_fire) begin
           if (!cur_plan_valid) begin
             plan_rd_ptr <= plan_rd_ptr + {{(PLAN_PTR_W-1){1'b0}}, 1'b1};
@@ -964,14 +1041,20 @@ module ddr_trace_reader #(
         end
 
         if (meta_push) begin
-          meta_gap_mem[meta_wr_ptr]   <= eff_gap;
-          meta_len_mem[meta_wr_ptr]   <= eff_len;
-          meta_flags_mem[meta_wr_ptr] <= eff_flags;
+          meta_gap_mem[meta_wr_ptr]   <= payload_stage_gap;
+          meta_len_mem[meta_wr_ptr]   <= payload_stage_len;
+          meta_flags_mem[meta_wr_ptr] <= payload_stage_flags;
           meta_wr_ptr                 <= meta_wr_ptr + {{(META_PTR_W-1){1'b0}}, 1'b1};
         end
 
         if (meta_pop) begin
+          meta_stage_valid <= 1'b1;
+          meta_stage_gap   <= meta_gap_mem[meta_rd_ptr];
+          meta_stage_len   <= meta_len_mem[meta_rd_ptr];
+          meta_stage_flags <= meta_flags_mem[meta_rd_ptr];
           meta_rd_ptr   <= meta_rd_ptr + {{(META_PTR_W-1){1'b0}}, 1'b1};
+        end else if (m_meta_valid && m_meta_ready) begin
+          meta_stage_valid <= 1'b0;
         end
 
         unique case ({desc_push, desc_pop})
