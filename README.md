@@ -27,12 +27,7 @@ an `AXI-Lite` register space.  The FPGA then transmits packets through 100G
 The name `Tick Replayer` comes from the timing unit used by the hardware.  A
 pcap timestamp delta is converted into `gap_ticks`, and the replay scheduler
 uses a replay-relative hardware tick counter to decide when each packet is
-released.  The project is therefore organized around four practical questions:
-
-- How large a trace can be replayed?
-- How much replay throughput can the FPGA generate?
-- How accurately does it preserve packet spacing?
-- How do the host tools prepare, load, control, and validate a replay?
+released.
 
 The current design is a dual-port prototype.  `QSFP0` and `QSFP1` each have an
 independent transmit replay path and a lightweight receive statistics/capture
