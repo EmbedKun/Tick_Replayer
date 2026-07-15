@@ -14,6 +14,8 @@ set_property simulator_language Mixed [current_project]
 
 set rtl_files [list \
   [file join $repo_dir rtl traffic_replay_pkg.sv] \
+  [file join $repo_dir rtl replay_global_timebase.sv] \
+  [file join $repo_dir rtl replay_time_sync.sv] \
   [file join $repo_dir rtl axi_lite_regs.sv] \
   [file join $repo_dir rtl replay_scheduler.sv] \
   [file join $repo_dir rtl replay_tx_engine.sv] \
@@ -24,6 +26,8 @@ set rtl_files [list \
   [file join $repo_dir rtl trace_replay_core.sv] \
   [file join $repo_dir rtl traffic_replay_bd_core.v] \
   [file join $repo_dir rtl traffic_replay_top_stub.sv] \
+  [file join $repo_dir rtl axis_async_fifo.v] \
+  [file join $repo_dir rtl scheduled_axis_async_fifo.sv] \
 ]
 
 add_files -fileset sources_1 $rtl_files

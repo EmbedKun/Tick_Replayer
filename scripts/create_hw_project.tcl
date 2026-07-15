@@ -110,6 +110,17 @@ if {![string is integer -strict $enable_rs_fec] || ($enable_rs_fec != 0 && $enab
 }
 puts "Traffic replay CMAC RS-FEC: $enable_rs_fec"
 
+set traffic_replay_h2c_channels 2
+if {[info exists ::env(TRAFFIC_REPLAY_H2C_CHANNELS)] && $::env(TRAFFIC_REPLAY_H2C_CHANNELS) ne ""} {
+  set traffic_replay_h2c_channels $::env(TRAFFIC_REPLAY_H2C_CHANNELS)
+}
+if {![string is integer -strict $traffic_replay_h2c_channels] || \
+    ($traffic_replay_h2c_channels != 1 && $traffic_replay_h2c_channels != 2 && $traffic_replay_h2c_channels != 4)} {
+  puts "ERROR: TRAFFIC_REPLAY_H2C_CHANNELS must be 1, 2, or 4"
+  exit 1
+}
+puts "Traffic replay XDMA H2C channel count: $traffic_replay_h2c_channels"
+
 set project_name traffic_replay_hw
 set bd_name traffic_replay_bd
 set part_name xcu200-fsgd2104-2-e
@@ -144,6 +155,9 @@ if {[file exists $hw_floorplan_xdc]} {
 
 set rtl_files [list \
   [file join $repo_dir rtl traffic_replay_pkg.sv] \
+  [file join $repo_dir rtl replay_global_timebase.sv] \
+  [file join $repo_dir rtl replay_global_timebase_bd.v] \
+  [file join $repo_dir rtl replay_time_sync.sv] \
   [file join $repo_dir rtl axi_lite_regs.sv] \
   [file join $repo_dir rtl replay_scheduler.sv] \
   [file join $repo_dir rtl replay_tx_engine.sv] \
@@ -160,6 +174,8 @@ set rtl_files [list \
   [file join $repo_dir rtl rx_capture_bd_core.v] \
   [file join $repo_dir rtl rx_capture_lbus_bd_core.v] \
   [file join $repo_dir rtl axis_async_fifo.v] \
+  [file join $repo_dir rtl scheduled_axis_async_fifo.sv] \
+  [file join $repo_dir rtl scheduled_axis_async_fifo_bd.v] \
 ]
 add_files -fileset sources_1 $rtl_files
 set sv_files [lsearch -all -inline $rtl_files *.sv]
@@ -382,6 +398,7 @@ proc connect_rx_lbus_capture {cmac cap} {
 }
 
 create_bd_cell -type module -reference traffic_replay_bd_core replay_core_0
+create_bd_cell -type module -reference replay_global_timebase_bd replay_timebase
 create_bd_cell -type module -reference rx_capture_lbus_bd_core rx_cap_0
 if {$enable_port1} {
   create_bd_cell -type module -reference traffic_replay_bd_core replay_core_1
@@ -414,7 +431,7 @@ set_property -dict [list \
   CONFIG.axilite_master_size {1} \
   CONFIG.axilite_master_scale {Megabytes} \
   CONFIG.xdma_rnum_chnl {1} \
-  CONFIG.xdma_wnum_chnl {1} \
+  CONFIG.xdma_wnum_chnl $traffic_replay_h2c_channels \
 ] [get_bd_cells xdma_0]
 
 create_bd_cell -type ip -vlnv xilinx.com:ip:util_ds_buf pcie_refclk_buf
@@ -541,6 +558,9 @@ set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.DATA_WIDTH {32}] [get
 create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice ctrl_ddr_regslice
 set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.DATA_WIDTH {32}] [get_bd_cells ctrl_ddr_regslice]
 
+create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice ctrl_replay0_regslice
+set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.DATA_WIDTH {32}] [get_bd_cells ctrl_replay0_regslice]
+
 foreach bank $ddr_bank_ids {
   if {$bank == 0} {
     continue
@@ -560,12 +580,12 @@ if {$traffic_replay_ddr_banks != 1} {
   set_property -dict [list CONFIG.PROTOCOL {AXI4LITE} CONFIG.DATA_WIDTH {32}] [get_bd_cells ctrl_rx0_cc]
 }
 
-create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo_0
+create_bd_cell -type module -reference scheduled_axis_async_fifo_bd tx_axis_fifo_0
 create_bd_cell -type module -reference axis_to_lbus_512_bd tx_lbus_0
 set_property -dict [list CONFIG.DEPTH_LOG2 {10}] [get_bd_cells tx_axis_fifo_0]
 set_property -dict [list CONFIG.FIFO_DEPTH {32}] [get_bd_cells tx_lbus_0]
 if {$enable_port1} {
-  create_bd_cell -type module -reference axis_async_fifo tx_axis_fifo_1
+  create_bd_cell -type module -reference scheduled_axis_async_fifo_bd tx_axis_fifo_1
   create_bd_cell -type module -reference axis_to_lbus_512_bd tx_lbus_1
   set_property -dict [list CONFIG.DEPTH_LOG2 {10}] [get_bd_cells tx_axis_fifo_1]
   set_property -dict [list CONFIG.FIFO_DEPTH {32}] [get_bd_cells tx_lbus_1]
@@ -672,9 +692,11 @@ set ddr_clk_pins [list \
   ddr_axi_regslice/aclk \
   ctrl_smc/aclk \
   ctrl_ddr_regslice/aclk \
+  ctrl_replay0_regslice/aclk \
   xdma_to_ddr_cc/m_axi_aclk \
   axil_ctrl_cc/m_axi_aclk \
   replay_core_0/clk \
+  replay_timebase/clk \
   tx_axis_fifo_0/s_clk \
   cmac_init_clk_wiz/clk_in1 \
   rst_ddr/slowest_sync_clk \
@@ -706,9 +728,11 @@ set ddr_resetn_pins [list \
   ddr_axi_regslice/aresetn \
   ctrl_smc/aresetn \
   ctrl_ddr_regslice/aresetn \
+  ctrl_replay0_regslice/aresetn \
   xdma_to_ddr_cc/m_axi_aresetn \
   axil_ctrl_cc/m_axi_aresetn \
   replay_core_0/resetn \
+  replay_timebase/rstn \
   tx_axis_fifo_0/s_resetn \
   ddr4_0/c0_ddr4_aresetn \
 ]
@@ -819,8 +843,10 @@ if {$enable_port1} {
 }
 connect_bd_net {*}[bd_pin_list $cmac_reset_pins]
 connect_bd_net [get_bd_pins cmac_0/stat_rx_aligned] [get_bd_pins replay_core_0/link_up] [get_bd_pins rx_cap_0/link_up]
+connect_bd_net [get_bd_pins replay_timebase/time_gray] [get_bd_pins replay_core_0/global_time_gray]
 if {$enable_port1} {
   connect_bd_net [get_bd_pins cmac_1/stat_rx_aligned] [get_bd_pins replay_core_1/link_up] [get_bd_pins rx_cap_1/link_up]
+  connect_bd_net [get_bd_pins replay_timebase/time_gray] [get_bd_pins replay_core_1/global_time_gray]
 }
 
 if {$enable_debug_ila} {
@@ -886,7 +912,8 @@ foreach bank $ddr_bank_ids {
 
 connect_bd_intf_net [get_bd_intf_pins xdma_0/M_AXI_LITE] [get_bd_intf_pins axil_ctrl_cc/S_AXI]
 connect_bd_intf_net [get_bd_intf_pins axil_ctrl_cc/M_AXI] [get_bd_intf_pins ctrl_smc/S00_AXI]
-connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M00_AXI] [get_bd_intf_pins replay_core_0/S_AXIL]
+connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M00_AXI] [get_bd_intf_pins ctrl_replay0_regslice/S_AXI]
+connect_bd_intf_net [get_bd_intf_pins ctrl_replay0_regslice/M_AXI] [get_bd_intf_pins replay_core_0/S_AXIL]
 if {$enable_port1} {
   if {$traffic_replay_ddr_banks == 1} {
     connect_bd_intf_net [get_bd_intf_pins ctrl_smc/M01_AXI] [get_bd_intf_pins replay_core_1/S_AXIL]
@@ -924,11 +951,23 @@ foreach bank $ddr_bank_ids {
 
 connect_bd_intf_net [get_bd_intf_pins replay_core_0/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo_0/S_AXIS]
 connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo_0/M_AXIS] [get_bd_intf_pins tx_lbus_0/S_AXIS]
+connect_bd_net [get_bd_pins replay_core_0/m_tx_axis_target] [get_bd_pins tx_axis_fifo_0/s_axis_target]
+connect_bd_net [get_bd_pins replay_core_0/m_tx_axis_target_valid] [get_bd_pins tx_axis_fifo_0/s_axis_target_valid]
+connect_bd_net [get_bd_pins tx_axis_fifo_0/m_axis_target] [get_bd_pins tx_lbus_0/s_axis_target]
+connect_bd_net [get_bd_pins tx_axis_fifo_0/m_axis_target_valid] [get_bd_pins tx_lbus_0/s_axis_target_valid]
+connect_bd_net [get_bd_pins replay_core_0/egress_schedule_enable] [get_bd_pins tx_lbus_0/egress_schedule_enable]
+connect_bd_net [get_bd_pins replay_timebase/time_gray] [get_bd_pins tx_lbus_0/global_time_gray]
 connect_bd_net [get_bd_pins replay_core_0/tx_path_clear] [get_bd_pins tx_axis_fifo_0/clear] [get_bd_pins tx_lbus_0/clear]
 connect_tx_lbus_bridge tx_lbus_0 cmac_0
 if {$enable_port1} {
   connect_bd_intf_net [get_bd_intf_pins replay_core_1/M_TX_AXIS] [get_bd_intf_pins tx_axis_fifo_1/S_AXIS]
   connect_bd_intf_net [get_bd_intf_pins tx_axis_fifo_1/M_AXIS] [get_bd_intf_pins tx_lbus_1/S_AXIS]
+  connect_bd_net [get_bd_pins replay_core_1/m_tx_axis_target] [get_bd_pins tx_axis_fifo_1/s_axis_target]
+  connect_bd_net [get_bd_pins replay_core_1/m_tx_axis_target_valid] [get_bd_pins tx_axis_fifo_1/s_axis_target_valid]
+  connect_bd_net [get_bd_pins tx_axis_fifo_1/m_axis_target] [get_bd_pins tx_lbus_1/s_axis_target]
+  connect_bd_net [get_bd_pins tx_axis_fifo_1/m_axis_target_valid] [get_bd_pins tx_lbus_1/s_axis_target_valid]
+  connect_bd_net [get_bd_pins replay_core_1/egress_schedule_enable] [get_bd_pins tx_lbus_1/egress_schedule_enable]
+  connect_bd_net [get_bd_pins replay_timebase/time_gray] [get_bd_pins tx_lbus_1/global_time_gray]
   connect_bd_net [get_bd_pins replay_core_1/tx_path_clear] [get_bd_pins tx_axis_fifo_1/clear] [get_bd_pins tx_lbus_1/clear]
   connect_tx_lbus_bridge tx_lbus_1 cmac_1
 }
@@ -996,6 +1035,23 @@ foreach master $ddr_core_masters {
         set_property range 16G $seg
       }
     }
+  }
+}
+
+validate_bd_design
+
+# The default 32-deep SmartConnect write buffers infer distributed RAM.  At
+# 300 MHz their intra-slice RAM-to-output-register path can be impossible for
+# the router to delay enough for hold closure.  A depth of 512 makes
+# SmartConnect use block RAM and also absorbs longer concurrent H2C/RX bursts.
+foreach smc_cell [get_bd_cells -quiet ddr_smc*] {
+  if {[get_property CONFIG.NUM_SI $smc_cell] > 1} {
+    set smc_advanced [get_property CONFIG.ADVANCED_PROPERTIES $smc_cell]
+    if {$smc_advanced eq "0" || $smc_advanced eq ""} {
+      set smc_advanced [dict create]
+    }
+    dict set smc_advanced __view__ functional M00_Buffer W_SIZE 512
+    set_property CONFIG.ADVANCED_PROPERTIES $smc_advanced $smc_cell
   }
 }
 

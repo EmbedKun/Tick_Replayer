@@ -39,7 +39,7 @@ def parse_frame_sizes(value: str) -> list[int]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--h2c", default="/dev/xdma0_h2c_0")
+    parser.add_argument("--h2c", default="auto")
     parser.add_argument("--user", default="/dev/xdma0_user")
     parser.add_argument("--port", type=int, choices=[0, 1], default=0)
     parser.add_argument("--reg-base", type=int_auto, help="override AXI-Lite replay register base")
@@ -140,13 +140,14 @@ def selected_loader(args: argparse.Namespace) -> str:
 
 
 def build_loader_cmd(args: argparse.Namespace, manifest_path: Path, loader: str, striped: bool = False) -> list[str]:
+    h2c = args.h2c if loader == "cpp" else ("/dev/xdma0_h2c_0" if args.h2c == "auto" else args.h2c)
     common = [
         "--port",
         str(args.port),
         "--stripe-manifest" if striped else "--manifest",
         str(manifest_path),
         "--h2c",
-        args.h2c,
+        h2c,
         "--user",
         args.user,
         "--ring-base",

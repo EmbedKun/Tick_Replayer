@@ -2,942 +2,605 @@
 
 # Tick Replayer
 
-**DDR-backed 100G FPGA traffic replay engine with tick-based packet scheduling.**
+**A DDR-backed, tick-scheduled 100G FPGA traffic replay and measurement system.**
 
-`FPGA` / `100G Ethernet` / `PCIe XDMA` / `DDR4` / `CMAC` / `PCAP Replay`
+`Alveo U200` | `Dual 100G CMAC` | `PCIe XDMA` | `4 x DDR4` | `PCAP Replay`
 
-[Chinese README](README_CN.md)
+[中文文档](README_CN.md)
 
 </div>
 
-> 2026-07-08 update: the default dual-port, four-DDR-bank build with deeper
-> replay prefetch is implemented and archived at
-> `bitstreams/20260708_040647_4ddr_dual_prefetch_timing_clean`.  The routed
-> design is timing clean with `WNS=+0.010ns`, `WHS=+0.006ns`, and all four
-> `16GiB` U200 DDR windows enabled.
+Tick Replayer converts a classic `pcap` trace on a Linux host, loads packet
+descriptors and payloads through PCIe, and replays the packets from FPGA DDR at
+hardware-controlled intervals.  Both U200 QSFP ports have independent TX
+replay and RX measurement paths, so one FPGA can represent both sides of a
+bidirectional traffic experiment.
 
-## Overview
+The name comes from the hardware timing contract: host software converts pcap
+timestamps into integer `gap_ticks`, and the FPGA schedules packet starts from
+those ticks.  At the default `300 MHz` replay clock, one tick is approximately
+`3.333 ns`.
 
-`Tick Replayer` is an FPGA traffic replay prototype for the Xilinx Alveo U200.
-The Linux host converts a `pcap` file into packet descriptors and payload data,
-loads the trace into FPGA `DDR4` through `PCIe XDMA`, and controls replay through
-an `AXI-Lite` register space.  The FPGA then transmits packets through 100G
-`CMAC` ports according to per-packet timing gaps.
+> **Release status:** the latest archived and board-validated release candidate
+> is [`20260715_0754_rc5_4ddr_dual_timing_clean`](bitstreams/20260715_0754_rc5_4ddr_dual_timing_clean).
+> It is a dual-port, four-DDR-bank U200 build with routed `300 MHz` timing
+> closure, unified `tick-replay` host control, RX interval measurement, and
+> validated PRELOAD, LOOP, STREAM, dual-port, and optical-loopback tests.
 
-The name `Tick Replayer` comes from the timing unit used by the hardware.  A
-pcap timestamp delta is converted into `gap_ticks`, and the replay scheduler
-uses a replay-relative hardware tick counter to decide when each packet is
-released.
+## Contents
 
-The current design is a dual-port prototype.  `QSFP0` and `QSFP1` each have an
-independent transmit replay path and a lightweight receive statistics/capture
-path.  A single FPGA can therefore transmit and receive on both high-speed
-ports, which is the intended direction for emulating two sides of a bidirectional
-traffic trace.
-
-## Table Of Contents
-
-- [Current Status](#current-status)
+- [Capabilities](#capabilities)
+- [Measured Baseline](#measured-baseline)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
-- [RTL Module Guide](#rtl-module-guide)
-- [Replay Capacity](#replay-capacity)
-- [Replay Throughput](#replay-throughput)
-- [Replay Precision](#replay-precision)
-- [Host Software Tools](#host-software-tools)
 - [Replay Modes](#replay-modes)
-- [Trace Descriptor Format](#trace-descriptor-format)
+- [Scheduling And Precision](#scheduling-and-precision)
+- [Capacity And Addressing](#capacity-and-addressing)
+- [Trace Format](#trace-format)
+- [Control Plane](#control-plane)
+- [RTL Modules](#rtl-modules)
+- [Host Software](#host-software)
 - [Build And Program](#build-and-program)
-- [Validation Commands](#validation-commands)
+- [Validation](#validation)
 - [Repository Layout](#repository-layout)
-- [Known Limitations](#known-limitations)
-- [Roadmap](#roadmap)
+- [Limitations](#limitations)
 
-## Current Status
+## Capabilities
 
-| Area | Status |
+| Area | Current design |
 | --- | --- |
-| Target board | Xilinx Alveo U200 |
-| PCIe | Xilinx `XDMA`, Gen3 x16, memory-mapped `H2C`/`C2H` |
-| Ethernet | Dual 100G `CMAC` ports connected to `QSFP0` and `QSFP1` in the latest four-DDR timing-clean build |
-| Control plane | `XDMA` user `BAR` to `AXI-Lite` registers |
-| Trace memory | The hardware generator now enables four U200 `DDR4` banks by default.  Dual-port builds use bank-local replay/capture paths; single-port multi-DDR builds can expose a `64GiB` FPGA trace window |
-| Replay modes | `PRELOAD`, `LOOP`, and `STREAM` ring buffer |
-| RX path | Packet/byte/error counters, recent sample capture, SOP-to-SOP gap statistics |
-| Timing archive | Current four-bank dual-port archive: `bitstreams/20260708_040647_4ddr_dual_prefetch_timing_clean`, routed `WNS=+0.010 ns`; current evaluated single-port STREAM board run: `/home/user/tick_replayer_bitstreams/20260707_stream_ring_pipeline_2bank_timing_clean`, routed `WNS=+0.009 ns` |
-| Full 64GB DDR | Four `16GiB` DDR windows are supported by the generator.  Use `scripts/build_4ddr_single_port_64g.sh` for a single-port 64GiB replay window or `scripts/build_4ddr_dual_port.sh` for dual-port bank-local high-load replay |
+| FPGA | Xilinx Alveo U200, `xcu200-fsgd2104-2-e` |
+| Ethernet | Two Xilinx 100G CMACs connected to `QSFP0` and `QSFP1` |
+| PCIe | Gen3 x16 XDMA endpoint, memory-mapped `H2C`/`C2H` plus AXI-Lite user BAR |
+| FPGA memory | Four independent `16 GiB` DDR4 banks, `64 GiB` physical address space |
+| Replay modes | `PRELOAD`, `LOOP`, and bounded `STREAM` ring |
+| TX timing | Per-packet descriptor gaps, shared absolute timebase, optional CMAC-domain SOP release |
+| RX measurement | Packet/byte/error counters, payload sample ring, aggregate gap statistics, histogram, and per-gap event ring |
+| Host interface | Unified Linux command `tick-replay` plus reusable Python and C++ tools |
+| Robustness | Explicit stop/clear/restart, ring overrun protection, late/underrun/drop/stall counters |
 
-Detailed board results are recorded in
-[`docs/evaluation_20260708_4ddr_dual_prefetch.md`](docs/evaluation_20260708_4ddr_dual_prefetch.md),
-[`docs/evaluation_20260707_full_system_check.md`](docs/evaluation_20260707_full_system_check.md),
-[`docs/evaluation_20260707_stream_pingpong_pipeline.md`](docs/evaluation_20260707_stream_pingpong_pipeline.md),
-and [`docs/evaluation_20260705_4ddr_localclock.md`](docs/evaluation_20260705_4ddr_localclock.md).
+The current archived release build exposes one XDMA H2C channel
+(`/dev/xdma0_h2c_0`).  `1`, `2`, and `4` engine builds remain selectable
+through `TRAFFIC_REPLAY_H2C_CHANNELS`; the release configuration favors routed
+timing closure and deterministic validation over experimental channel count.
+
+## Measured Baseline
+
+These are board measurements from the latest archived timing-clean baseline,
+not estimates from RTL simulation.
+
+| Test | Board result |
+| --- | ---: |
+| Single-port `1518 B`, `gap=38`, `PRELOAD` | `95.873 Gbps` L2, `97.389 Gbps` wire |
+| Single-port `64 B`, `gap=3`, `PRELOAD` | `51.200 Gbps` L2, `70.400 Gbps` wire |
+| Mixed `64:3,1518:38`, `PRELOAD` | `92.604 Gbps` L2, `95.414 Gbps` wire |
+| Dual-port `1518 B`, `gap=38`, `PRELOAD` | `191.746 Gbps` aggregate L2, `194.778 Gbps` aggregate wire |
+| Dual-port `64 B`, `gap=3`, `PRELOAD` | `102.399 Gbps` aggregate L2, `140.798 Gbps` aggregate wire |
+| `LOOP`, `100` packets x `3` loops | `300` TX packets, no late/underrun/drop |
+| `STREAM`, striped source, single DDR ring, `1518 B`, `gap=800` | `4.554 Gbps` L2, no late/underrun/drop |
+| Two-SSD striped source dry-run | `41.828 Gbps` direct read, `43.586 Gbps` buffered read |
+| XDMA H2C benchmark | `53.276 Gbps` single-bank two-thread, `70.150 Gbps` DDR0+DDR1 parallel |
+| TX0 -> RX1 optical payload check | `256/256` samples matched, `0` RX errors |
+| RX-side interval precision suite | all cases passed, worst case `85.043 ns` max absolute error |
+| Routed timing | `WNS=+0.006 ns`, `WHS=+0.006 ns` |
+
+For small packets, wire rate and pcap/L2 rate are different.  A `64 B` Ethernet
+frame occupies `88 B` of line time when FCS, preamble/SFD, and IFG are included.
+Therefore, a full `100 Gbps` wire corresponds to approximately `72.73 Gbps`
+of `64 B` pcap frame data and `142.05 Mpps`.
+
+Detailed board results for this release candidate are recorded in
+[`docs/evaluation_20260715_rc5_board_validation.md`](docs/evaluation_20260715_rc5_board_validation.md).
+Historical experiments and design-space notes are kept under [`docs/`](docs/).
 
 ## Quick Start
 
-The examples below show how to replay one classic `pcap` file through `port 0`.
-Run them from the repository root after the FPGA bitstream has been programmed,
-the Xilinx `XDMA` driver has created `/dev/xdma0_*`, and the selected `QSFP`
-link is connected.
+The repository and host software target Linux.  The commands below assume the
+FPGA is programmed, the Xilinx XDMA driver has created `/dev/xdma0_*`, and the
+QSFP link is connected.
 
-Set input and output paths:
-
-```bash
-export PCAP=/data/input.pcap
-export TRACE_DIR=/tmp/tick_trace
-export STREAM_DIR=/tmp/tick_stream
-```
-
-Build the host-side C++ loaders and convert the `pcap` into the hardware trace
-format:
+### 1. Build And Install The Host Tools
 
 ```bash
 make -C software
+sudo make -C software install
+tick-replay --version
+```
 
-rm -rf "$TRACE_DIR" "$STREAM_DIR"
-mkdir -p "$TRACE_DIR" "$STREAM_DIR"
+### 2. Convert A PCAP
 
-python3 software/pcap2trace.py "$PCAP" \
-  --out-dir "$TRACE_DIR" \
+```bash
+tick-replay prepare /data/input.pcap \
+  --out-dir /var/tmp/tick-trace \
   --tick-hz 300000000
 ```
 
-Check that the board and control plane are visible:
+The output directory contains `desc.bin`, `data.bin`, and `manifest.json`.
+
+### 3. PRELOAD Replay
 
 ```bash
-lspci -nn -d 10ee:
-ls -l /dev/xdma*
-sudo python3 software/traffic_replay_cli.py --port 0 clear
-sudo python3 software/traffic_replay_cli.py --port 0 status
-```
-
-For normal optical replay, keep `debug-force-link` and `debug-tx-ready`
-disabled.  For no-fiber bring-up only, `debug-force-link on` can open the TX
-gate, and `debug-tx-ready on` can drain the replay core without putting packets
-on the wire.
-
-### PRELOAD Replay
-
-`PRELOAD` mode copies the whole converted trace into FPGA `DDR4` first, then the
-FPGA replays it from DDR without host involvement in the transmit data path.
-
-```bash
-sudo python3 software/xdma_load_trace.py \
+sudo tick-replay load \
   --port 0 \
-  --manifest "$TRACE_DIR/manifest.json" \
-  --desc-base 0x04000000 \
-  --data-base 0x14000000 \
   --mode preload \
-  --no-auto-drop
+  --manifest /var/tmp/tick-trace/manifest.json
 
-sudo python3 software/traffic_replay_cli.py --port 0 status
+sudo tick-replay status --port 0
 ```
 
-Stop and clear the replay core before loading another trace:
+### 4. LOOP Replay
 
 ```bash
-sudo python3 software/traffic_replay_cli.py --port 0 stop
-sudo python3 software/traffic_replay_cli.py --port 0 clear
-```
-
-### LOOP Replay
-
-`LOOP` mode uses the same DDR-resident trace repeatedly.  This example replays
-the converted `pcap` ten times and inserts `300000` replay ticks between loops,
-which is `1ms` at `300MHz`.
-
-```bash
-sudo python3 software/xdma_load_trace.py \
+sudo tick-replay load \
   --port 0 \
-  --manifest "$TRACE_DIR/manifest.json" \
-  --desc-base 0x04000000 \
-  --data-base 0x14000000 \
   --mode loop \
-  --loop-count 10 \
+  --loop-count 100 \
   --loop-gap 300000 \
-  --no-auto-drop
-
-sudo python3 software/traffic_replay_cli.py --port 0 status
+  --manifest /var/tmp/tick-trace/manifest.json
 ```
 
-### STREAM Ring Replay
+At `300 MHz`, `300000` loop-gap ticks are `1 ms`.
 
-`STREAM` ring mode is for traces that are too large to preload into FPGA DDR.
-The host converts `desc.bin` and `data.bin` into a record stream, keeps a bounded
-ring in FPGA DDR filled through `XDMA H2C`, and advances the FPGA-visible write
-pointer only after complete records have been committed.  Packet timing is still
-owned by the FPGA scheduler.
+### 5. STREAM Ring Replay
+
+Convert the descriptor/data trace into complete stream records:
 
 ```bash
 python3 software/trace_to_stream.py \
-  --manifest "$TRACE_DIR/manifest.json" \
-  --out "$STREAM_DIR/stream.bin" \
-  --out-manifest "$STREAM_DIR/stream_manifest.json"
+  --manifest /var/tmp/tick-trace/manifest.json \
+  --out /var/tmp/tick-trace/stream.bin
+```
 
-sudo ./software/xdma_stream_ring_fast \
+Run the high-performance bounded ring loader.  `--h2c auto` discovers every
+available H2C engine and distributes ordered writes across them.
+
+```bash
+sudo tick-replay stream \
   --port 0 \
-  --manifest "$STREAM_DIR/stream_manifest.json" \
+  --manifest /var/tmp/tick-trace/stream_manifest.json \
+  --h2c auto \
   --ring-base 0x20000000 \
   --ring-size 0x08000000 \
   --prefill-bytes 0x04000000 \
-  --batch-bytes 0x04000000 \
-  --read-bytes 0x04000000 \
-  --queue-depth 4 \
-  --writer-threads 2 \
-  --host-cache-bytes auto \
-  --timeout 300
-
-sudo python3 software/traffic_replay_cli.py --port 0 status
+  --writer-threads 4 \
+  --queue-depth 128
 ```
 
-If the requested replay rate is higher than the safe dynamic loading rate, the
-status output will show `late_packets` or `underrun_packets`.  In that case,
-increase packet gaps, reduce the requested pcap rate, or use `PRELOAD` mode for
-maximum throughput.
+For traces striped across multiple SSDs, create a record-aligned stripe
+manifest with `software/stream_stripe.py` and pass it with
+`--stripe-manifest` instead of `--manifest`.
 
-For dual-SSD STREAM loading on one QSFP/one replay port, stripe the stream file
-into record-aligned blocks first.  The host may read blocks from both SSDs in
-parallel, but the loader still commits them to the FPGA ring strictly in
-`block_id` order, so replay timing remains controlled by the FPGA scheduler.
-The recommended layout is one large container file per SSD lane; this avoids the
-metadata and fragmentation overhead of thousands of small block files.  For
-fixed `1518B` stress records, `65536000` bytes is both record-aligned and
-`O_DIRECT` page-aligned.
+The current dual-port release uses a bank-local replay path: port `0` reads
+from `DDR0`, and port `1` reads from `DDR1`.  A port-0 multi-DDR `STREAM`
+ping-pong ring is a separate single-port/high-stream build profile.
+
+### 6. Synchronized Dual-Port Start
+
+Load both ports without issuing `START`, then arm them for the same absolute
+FPGA tick:
 
 ```bash
-export SSD0=/mnt/ssd0/tick_stream_lane0
-export SSD1=/mnt/ssd1/tick_stream_lane1
+sudo tick-replay load --port 0 --mode preload \
+  --manifest /var/tmp/trace0/manifest.json --arm-only
 
-python3 software/stream_stripe.py \
-  --manifest "$STREAM_DIR/stream_manifest.json" \
-  --lane-dir "$SSD0" \
-  --lane-dir "$SSD1" \
-  --block-bytes 65536000 \
-  --container-files \
-  --out-manifest "$STREAM_DIR/stripe_manifest.json" \
-  --force
+sudo tick-replay load --port 1 --mode preload \
+  --manifest /var/tmp/trace1/manifest.json --arm-only
 
-sudo ./software/xdma_stream_ring_fast \
-  --port 0 \
-  --stripe-manifest "$STREAM_DIR/stripe_manifest.json" \
-  --reader-threads 2 \
-  --reader-window-blocks 8 \
-  --ring-base 0x20000000 \
-  --ring-size 0x08000000 \
-  --prefill-bytes 0x04000000 \
-  --batch-bytes 0x04000000 \
-  --read-bytes 0x01000000 \
-  --queue-depth 8 \
-  --direct-read \
-  --writer-threads 2 \
-  --host-cache-bytes auto \
-  --timeout 300
+sudo tick-replay sync-start \
+  --ports 0,1 \
+  --delay-ms 100 \
+  --egress-schedule
 ```
 
-For a four-DDR-bank bitstream, `STREAM` can use a two-bank ping-pong ring on
-port 0.  In this mode `--ring-size` is the per-bank segment size, not the total
-ring capacity.  It must be a power-of-two 64-byte multiple.  The host writes
-even-numbered segments to bank 0 and odd-numbered segments to bank 1; the FPGA
-reader uses the same monotonic byte counter to select the active read bank.
-This lets `XDMA H2C` writes and replay reads usually hit different DDR banks.
+### 7. Observe And Reset
 
 ```bash
-sudo ./software/xdma_stream_ring_fast \
-  --port 0 \
-  --stripe-manifest "$STREAM_DIR/stripe_manifest.json" \
-  --pingpong \
-  --ring-base 0x20000000 \
-  --pingpong-bank1-base 0x400000000 \
-  --ring-size 0x200000000 \
-  --prefill-bytes 0x200000000 \
-  --guard-bytes 0x04000000 \
-  --batch-bytes 0x04000000 \
-  --read-bytes 0x04000000 \
-  --reader-threads 4 \
-  --reader-window-blocks 16 \
-  --queue-depth 16 \
-  --writer-threads 2 \
-  --host-cache-bytes auto \
-  --timeout 300
+sudo tick-replay status --port all
+sudo tick-replay rx --port 1 status
+sudo tick-replay rx --port 1 events --limit 64
+
+sudo tick-replay stop --port 0
+sudo tick-replay clear --port 0
 ```
 
-### Port And Address Notes
-
-The examples above use `port 0` and a one-bank-safe memory layout.  On a
-four-DDR-bank build, a typical `port 1` layout places TX data in bank 1:
-
-```bash
-# PRELOAD or LOOP on port 1
---port 1 --desc-base 0x0400000000 --data-base 0x0410000000
-
-# STREAM ring on port 1
---port 1 --ring-base 0x0420000000 --ring-size 0x08000000
-```
-
-Do not overlap `desc`, `data`, `STREAM` ring, or RX sample regions inside the
-same DDR bank.
+`force_link_up` and `force_tx_ready` are debug-only controls.  Do not use them
+for reported throughput, packet-integrity, or precision results.
 
 ## Architecture
 
 ![Tick Replayer architecture](docs/images/replay_arch.png)
 
-Block diagram of the `Tick Replayer` FPGA traffic replay system.  `APP`:
-host-side trace generation, `XDMA` loading, and replay control tools; `XDMA
-Driver`: Xilinx DMA Linux driver exposing `H2C`, `C2H`, and user `BAR`
-character devices; `PCIe XDMA IP`: Xilinx PCI Express DMA endpoint; `AXIL M`:
-`AXI-Lite` master used by `XDMA` to access control/status registers; `AXI M`:
-memory-mapped AXI master used for `H2C` and `C2H` DDR access; `SmartConnect`:
-Xilinx AXI interconnect and arbitration fabric; `DDR4`: external packet
-descriptor, payload, stream ring, and RX sample storage; `TX Replay Core`:
-descriptor/payload prefetch, timestamp scheduling, and transmit packet
-generation; `RX Capture Core`: receive counters, recent sample writer, and
-SOP-to-SOP gap measurement; `CMAC`: Xilinx 100G Ethernet MAC; `QSFP`: optical
-Ethernet port.
+Block diagram abbreviations: `APP`, host trace preparation and control
+application; `XDMA`, Xilinx PCIe DMA endpoint; `AXIL M`, AXI-Lite control
+master; `AXI M`, memory-mapped AXI DMA master; `H2C`, host-to-card DMA; `C2H`,
+card-to-host DMA; `DDR4`, external descriptor, payload, stream, and RX sample
+storage; `TX DESC`, transmit descriptors; `TX DATA`, transmit payloads;
+`RX SAMPLE`, truncated receive samples; `CMAC`, 100G Ethernet media access
+controller; `QSFP`, optical port.
 
-High-level `PRELOAD` data path:
+### Host-To-TX Data Path
 
 ```text
 pcap
-  -> pcap2trace.py
-  -> desc.bin + data.bin + manifest.json
-  -> xdma_load_trace.py
-  -> /dev/xdma0_h2c_0
-  -> FPGA DDR4
-  -> ddr_trace_reader
-  -> replay_scheduler
-  -> replay_tx_engine
-  -> AXI-Stream FIFO
-  -> CMAC TX
+  -> tick-replay prepare
+  -> descriptor/payload or stream records
+  -> XDMA H2C
+  -> DDR4
+  -> descriptor and payload prefetch
+  -> tick scheduler
+  -> scheduled async FIFO
+  -> CMAC-clock egress scheduler
+  -> AXI-Stream to LBUS adapter
+  -> 100G CMAC
   -> QSFP
 ```
 
-High-level `STREAM` ring data path:
+### RX Measurement Path
 
 ```text
-large pcap / stream file on host storage
-  -> host loader batches complete stream records
-  -> /dev/xdma0_h2c_0
-  -> FPGA DDR4 ring
-  -> host advances STREAM_WR_PTR after full records are committed
-  -> FPGA advances STREAM_RD_PTR as records are consumed
-  -> host_stream_parser
-  -> replay_scheduler
-  -> CMAC TX
+QSFP
+  -> 100G CMAC RX LBUS
+  -> LBUS packet reconstruction
+  -> packet/byte/error counters
+  -> SOP interval pipeline
+  -> aggregate statistics + histogram + on-chip event ring
+  -> optional truncated DDR sample writer
+  -> AXI-Lite status or C2H DDR readback
 ```
 
-The receive path is intentionally lightweight.  It does not upload every packet
-to the host by default.  Instead, it maintains counters, stores recent truncated
-samples when enabled, and records receive-side packet-spacing statistics for
-precision validation.
+### Clock Domains
 
-The current deeper-prefetch RTL keeps the same descriptor format and register
-map, but increases the DDR read window used by `ddr_trace_reader`: descriptor
-and metadata FIFOs are `512` entries, the payload plan FIFO is `1024` entries,
-payload/AXI command queues are `64` entries, and the payload FIFO is `8192`
-512-bit beats.  The `STREAM` DDR reader can issue up to `64` outstanding read
-bursts.  These changes are intended to hide DDR latency and keep both replay
-ports fed when they read from separate DDR banks.
+| Domain | Nominal frequency | Main logic |
+| --- | ---: | --- |
+| DDR/replay | `300 MHz` | DDR readers, trace parser, replay scheduler, shared timebase |
+| XDMA AXI | `250 MHz` | PCIe DMA and AXI interconnect ingress |
+| CMAC TX/RX | approximately `322 MHz` | LBUS adapters, final SOP gate, RX interval measurement |
+| CMAC init | `100 MHz` | reset and initialization control |
 
-## RTL Module Guide
-
-The RTL is easiest to read from the outside in: Vivado block-design wrappers
-expose clean `AXI-Lite`, `AXI4`, `AXI-Stream`, and CMAC `LBUS` interfaces; the
-core replay logic then splits into control registers, DDR readers, packet
-scheduling, transmit formatting, and receive-side debug/capture.
-
-| RTL file / module | Purpose |
-| --- | --- |
-| `traffic_replay_pkg.sv` | Shared constants and helper functions: `512-bit` datapath width, `64B` descriptor size, replay mode IDs, `tkeep` generation, and bytes-per-beat helpers. |
-| `traffic_replay_bd_core.v` | Vivado block-design wrapper for one TX replay interface.  It exposes the replay core as `S_AXIL`, read-only `M_AXI`, and `M_TX_AXIS`; unused AXI write channels are tied off. |
-| `traffic_replay_top_stub.sv` | Simulation-friendly wrapper around `trace_replay_core`, useful for RTL tests that do not instantiate the full Vivado block design. |
-| `trace_replay_core.sv` | Main TX replay core.  It owns the replay state machine, register block, mode selection, PRELOAD/LOOP DDR reader, STREAM ring reader, stream parser, scheduler, TX engine, counters, stall/drop handling, and debug status. |
-| `axi_lite_regs.sv` | Replay control/status register file behind the XDMA user `BAR`.  It decodes `start`, `stop`, `clear`, mode selection, DDR base addresses, packet counts, loop settings, STREAM write pointer, debug controls, and TX statistics. |
-| `ddr_trace_reader.sv` | PRELOAD/LOOP trace reader.  It scans `64B` descriptors from DDR, validates packet order, issues payload `AXI4` read bursts, maintains deep descriptor/meta/payload FIFOs, and emits synchronized packet metadata plus payload AXI-Stream beats. |
-| `ddr_stream_reader.sv` | STREAM ring reader.  It treats FPGA DDR as a bounded record ring, tracks monotonic read/write byte counters, prevents wrap/overrun errors, supports EOF completion, and can alternate ping-pong segments across two DDR banks. |
-| `host_stream_parser.sv` | Parses STREAM records after they are fetched from DDR.  The first `64B` beat becomes packet metadata (`gap_ticks`, length, flags); following beats become payload for the scheduler/TX engine. |
-| `replay_scheduler.sv` | Converts descriptor `gap_ticks` into absolute replay-relative target ticks, buffers packet metadata, releases packets when due, resets the time base on `start`/`clear`, and flags late packets. |
-| `replay_tx_engine.sv` | Couples scheduled packet metadata with payload beats.  It generates `tkeep`/`tlast`, forwards payload to the TX path, counts transmitted packets/bytes, and reports underrun when a due packet has no payload beat available. |
-| `axis_sync_fifo.sv` | Same-clock AXI-Stream FIFO based on XPM simple dual-port RAM.  The current version has configurable BRAM read latency and output buffering so DDR read bursts can be absorbed without creating scheduler-visible bubbles. |
-| `axis_async_fifo.v` | Clock-domain-crossing AXI-Stream FIFO with Gray-coded pointers.  It bridges replay/DDR clocks and CMAC user clocks while preserving `tdata`, `tkeep`, `tlast`, and `tuser`. |
-| `axis_to_lbus_512.sv` | TX adapter from internal `512-bit` AXI-Stream packets to the CMAC four-segment `LBUS` transmit interface.  It handles byte order conversion, SOP/EOP placement, MTY generation, and frame-aware buffering against `tx_rdyout`. |
-| `axis_to_lbus_512_bd.v` | Vivado block-design wrapper around `axis_to_lbus_512`, adding interface metadata so the adapter can be connected cleanly to the CMAC IP. |
-| `lbus_to_axis_512.sv` | RX adapter from CMAC four-segment `LBUS` output into an internal AXI-Stream-like bus.  It reconstructs `tdata`, `tkeep`, `tstart`, `tlast`, and packet error indication. |
-| `rx_capture_bd_core.v` | Vivado block-design wrapper for an RX capture interface that already receives AXI-Stream-like RX packets. |
-| `rx_capture_lbus_bd_core.v` | Vivado block-design wrapper for an RX capture interface connected directly to CMAC `LBUS`; it instantiates the `LBUS`-to-AXIS conversion before the capture core. |
-| `rx_capture_bd_core.sv` / `rx_capture_core` | Lightweight RX statistics and sample-capture core.  It counts packets/bytes/errors, records SOP-to-SOP interval statistics in the RX clock domain, truncates recent packets into a DDR sample ring, and exposes control/status through `AXI-Lite`. |
-
-In the default four-DDR dual-port build, `scripts/create_hw_project.tcl`
-instantiates two TX replay cores, two RX capture cores, two CMACs, XDMA, four
-DDR controllers, SmartConnect fabrics, clock converters, register slices, and
-AXI-Stream/LBUS adapters.  The Tcl build is therefore the system-level top; the
-checked-in RTL modules are the reusable datapath blocks that the block design
-wires together.
-
-## Replay Capacity
-
-Capacity depends on the replay mode.
-
-### PRELOAD Capacity
-
-`PRELOAD` mode requires the whole replay trace to fit in FPGA DDR before replay
-starts.  The stored trace is not exactly the same size as the source `pcap`.
-Each packet consumes:
-
-```text
-preload_trace_bytes_per_packet = 64 + align64(frame_len)
-```
-
-where `64` is the fixed descriptor size and `align64(frame_len)` is the padded
-payload storage size.
-
-One U200 `DDR4` bank provides a `16GiB` DDR address window.  Approximate source
-`pcap` capacity per bank is:
-
-| Frame bytes | Trace bytes per packet | Packets in `16GiB` DDR | Approx. source `pcap` size |
-| ---: | ---: | ---: | ---: |
-| `64` | `128` | `134,217,728` | `10.00GiB` |
-| `512` | `576` | `29,826,161` | `14.67GiB` |
-| `1518` | `1600` | `10,737,418` | `15.34GiB` |
-| `9000` | `9088` | `1,890,390` | `15.87GiB` |
-
-The default hardware generation instantiates all four U200 DDR controllers and
-maps them as four `16GiB` windows.  The archived
-`20260708_040647_4ddr_dual_prefetch_timing_clean` bitstream validated both the
-start and high end of each 16GiB bank on hardware with `H2C` write and `C2H`
-readback checks.
-
-| DDR bank | Base address | Range |
-| --- | ---: | ---: |
-| `ddr4_0` | `0x0000000000` | `16GiB` |
-| `ddr4_1` | `0x0400000000` | `16GiB` |
-| `ddr4_2` | `0x0800000000` | `16GiB` |
-| `ddr4_3` | `0x0c00000000` | `16GiB` |
-
-The default dual-port four-bank build uses bank-local data paths instead of one
-large fully connected DDR crossbar: `port0` TX reads from `ddr4_0`, `port1` TX
-reads from `ddr4_1`, `rx_cap_0` writes samples to `ddr4_2`, and `rx_cap_1`
-writes samples to `ddr4_3`.  The host `XDMA` master can still access all four
-windows.  This partitioning is intended to reduce SmartConnect timing pressure
-and avoid dual-port large-packet replay overloading a single DDR controller.
-
-For a single-port capacity build, set `TRAFFIC_REPLAY_PORT_COUNT=1` or use
-`scripts/build_4ddr_single_port_64g.sh`.  In that profile `port0` replay reads
-are connected through the multi-DDR host fabric so one replay trace can span the
-full four-bank `64GiB` address space.  A two-bank single-port build remains a
-useful debug point and can address two `16GiB` DDR windows for TX preload storage
-or a ping-pong `STREAM` ring.  With the internal replay trace format
-`64B descriptor + align64(frame)`, the approximate source `pcap` capacity for a
-`32GiB` FPGA-resident trace is:
-
-| Frame bytes | Packets in `32GiB` DDR | Approx. source `pcap` size |
-| ---: | ---: | ---: |
-| `64` | `268,435,456` | `20.00GiB` |
-| `512` | `59,652,323` | `29.33GiB` |
-| `1518` | `21,474,836` | `30.68GiB` |
-| `9000` | `3,780,781` | `31.75GiB` |
-
-The four-bank single-port design-space capacity becomes roughly four times
-larger than a one-bank build:
-
-| Frame bytes | Packets in `64GiB` DDR | Approx. source `pcap` size |
-| ---: | ---: | ---: |
-| `64` | `536,870,912` | `40.00GiB` |
-| `512` | `119,304,647` | `58.67GiB` |
-| `1518` | `42,949,672` | `61.36GiB` |
-| `9000` | `7,561,562` | `63.49GiB` |
-
-### STREAM Ring Capacity
-
-`STREAM` ring mode uses FPGA DDR as a sliding buffer.  The complete trace does
-not need to fit in FPGA DDR, so the maximum source `pcap` size is mainly bounded
-by host storage and the host-side conversion/loading pipeline.
-
-For the measured remote host, the design-space notes used the following storage
-budget:
-
-| Storage condition | Approx. maximum source `pcap` |
-| --- | ---: |
-| Available free SSD space during measurement | `1.475TB` |
-| Two 2TB SSDs as raw design space | `4.001TB` |
-
-If a preconverted `stream.bin` must also be stored on disk, small packets suffer
-from larger expansion because every packet still carries a 64-byte stream
-header.
-
-## Replay Throughput
-
-Throughput should be read with two different units in mind:
-
-- `wire throughput`: physical Ethernet line usage, including FCS, preamble/SFD,
-  and IFG.
-- `pcap` or frame throughput: bytes visible in the trace file, usually excluding
-  FCS, preamble/SFD, and IFG.
-
-At 100G Ethernet line rate, the corresponding source `pcap` throughput depends
-on packet length:
-
-| Frame bytes | 100G line-rate `pcap` throughput | Packet rate |
-| ---: | ---: | ---: |
-| `64` | `72.73Gbps` | `142.05Mpps` |
-| `512` | `95.52Gbps` | `23.32Mpps` |
-| `1518` | `98.44Gbps` | `8.11Mpps` |
-| `9000` | `99.73Gbps` | `1.39Mpps` |
-
-Current board measurements.  The latest dual-port rows are from the
-`20260708_040647_4ddr_dual_prefetch_timing_clean` four-bank optical-loopback
-build.  Older single-port rows are retained because they cover larger STREAM
-stress cases and fully prefetched replay behavior.
-
-| Mode | Case | Result |
-| --- | --- | ---: |
-| `PRELOAD` | `64B`, `gap=3` | `70.4Gbps` wire, `51.2Gbps` frame/L2 |
-| `PRELOAD` | `256B`, `gap=8` | `84.0Gbps` wire, `76.8Gbps` frame/L2 |
-| `PRELOAD` | `512B`, `gap=14` | `91.9Gbps` wire, `87.8Gbps` frame/L2 |
-| `PRELOAD` | `1518B`, `gap=38` | `97.4Gbps` wire, `95.9Gbps` frame/L2 |
-| `PRELOAD` | mixed `64:3,1518:38` | `95.4Gbps` wire |
-| `LOOP` | `1000` packets x `10` loops | correct count, no drop/stall/late/underrun |
-| `PRELOAD` dual-port | `1518B`, `gap=38` on both ports, four-bank build | `194.8Gbps` aggregate wire, no drop/late/underrun/stall |
-| `PRELOAD` dual-port | `64B`, `gap=3` on both ports, four-bank build | `140.8Gbps` aggregate wire, no drop/late/underrun/stall |
-| `STREAM` ring | `1518B`, `gap=38`, `1M` packets, full DDR prefill | `95.874Gbps` frame/L2, no late/underrun/drop |
-| `STREAM` ring | `1518B`, `gap=38`, `5M` packets, `12GB` ring/full prefill | `95.874Gbps` frame/L2, no late/underrun/drop |
-| `STREAM` ring | `1518B`, `gap=36`, `1M` packets, full DDR prefill | `101.200Gbps` internal forced-ready TX test |
-| `STREAM` ring | `1518B`, `gap=38`, `5M` packets, `8GB` ring/dynamic refill before aligned-buffer loader | `55.306Gbps` average; late/underrun after ring drains |
-| `STREAM` ring | `1518B`, `gap=160`, `40M` packets, `64GB` stream, cold dynamic refill | `22.770Gbps` frame/L2, no late/underrun/drop/stall |
-| `STREAM` ring | `1518B`, `gap=160`, `64GB` stream, striped direct-copy loader | `28.3Gbps` load, no late/underrun |
-| `STREAM` ring | `1518B`, `gap=120`, `2M` packets, container-striped ping-pong ring | `30.360Gbps` frame/L2, no late/underrun/drop/stall |
-| `STREAM` ring | `1518B`, `gap=80`, `2M` packets, `2GiB` container-striped ping-pong ring | `45.540Gbps` frame/L2, no late/underrun/drop/stall in the 2026-07-07 run |
-| `STREAM` ring | `1518B`, `gap=80`, `500k` packets, two-SSD striped warm-cache load, 2026-07-08 four-bank bit | `70.016Gbps` load, `45.540Gbps` frame/L2, no late/underrun |
-| `STREAM` ring | same dataset after dropping Linux page cache | `28.252Gbps` cold load, no late/underrun |
-| `STREAM` ring | maximum ring config sanity | `16GiB` per bank, `32GiB` total ping-pong ring accepted and completed a tiny trace |
-| SSD read bench | dual-SSD `O_DIRECT` unordered read, `64GB` striped blocks | `50.680Gbps` |
-| Host loader | dual-SSD striped dry-run, `64GB` stream, cold cache | `24.102Gbps` read/reorder |
-| Host loader | dual-SSD + memory-mapped `XDMA H2C pwrite()`, `64GB` stream | `22.190Gbps` FPGA load |
-| Raw `XDMA H2C` | current two-bank bit, `4GiB` bank0 / bank1 writes | `48.868Gbps` / `47.787Gbps`; `70.792Gbps` with two threads crossing banks |
-
-`PRELOAD` is the highest-throughput mode because the host is out of the transmit
-data path during replay.  The four-bank build removes the internal shared-DDR
-bottleneck for dual-port large-packet replay by putting `port0` TX and `port1`
-TX on different DDR controllers.  `STREAM` ring mode is designed for much
-larger traces.  The boosted single-port build proves that fully prefetched
-large-packet STREAM replay can hit the scheduler limit, but sustained dynamic
-replay is still limited by host memory copy/conversion, memory-mapped
-`XDMA H2C` submission, DDR ring writes, and FPGA DDR reads.
-The latest four-bank board run is recorded in
-[`docs/evaluation_20260708_4ddr_dual_prefetch.md`](docs/evaluation_20260708_4ddr_dual_prefetch.md).
-The ping-pong pipeline board run is recorded in
-[`docs/evaluation_20260707_stream_pingpong_pipeline.md`](docs/evaluation_20260707_stream_pingpong_pipeline.md).
-
-## Replay Precision
-
-The replay scheduler runs from the `300MHz` DDR/replay clock, so the scheduler
-tick resolution is:
-
-```text
-1 / 300MHz = 3.333ns
-```
-
-For board-level precision testing, the project uses RX-side `SOP-to-SOP`
-measurement.  The FPGA RX capture core keeps a free-running counter in the CMAC
-RX clock domain.  On each received start-of-packet (`SOP`), it computes:
-
-```text
-rx_gap_cycles = current_sop_tick - previous_sop_tick
-```
-
-The host then compares each sampled RX interval with the original descriptor
-`gap_ticks`, converted to nanoseconds.  This measures end-to-end packet spacing
-through the TX replay path, CMAC TX, optical loopback, and CMAC RX.  It is more
-realistic than only reading the TX scheduler counter.
-
-Current RX-side precision suite results:
-
-| Test case | Purpose | Result |
-| --- | --- | ---: |
-| `uniform_128B_gap3000` | fixed gap baseline | max abs error `10.38ns` |
-| `mixed_gap_128B` | mixed packet gaps | max abs error `12.61ns` |
-| `small_packet_small_gap` | 64B packets with `3/4/5/6/8` tick gaps | max abs error `8.05ns` |
-| `mixed_size_legal` | mixed 64B to 1518B packets | max abs error `85.04ns` |
-| `long_uniform_128B_gap3000` | `200000` packets, long-run drift check | max abs error `14.45ns` on sampled gaps |
-
-The RX gap sample ring stores the most recent `4096` intervals.  Long traces
-still update full aggregate statistics (`count`, `sum`, `min`, `max`, `last`),
-but per-gap CSV readback is limited to the most recent sample window.
-
-Run the precision suite:
-
-```bash
-python3 software/replay_precision_suite.py \
-  --tx-port 0 --rx-port 1 \
-  --work-dir /tmp/precision_suite \
-  --desc-base 0x04000000 \
-  --data-base 0x14000000 \
-  --timeout 180 \
-  --report /tmp/precision_suite/report.md
-```
-
-## Host Software Tools
-
-The host software is intentionally small and command-line oriented.
-
-| Tool | Purpose |
-| --- | --- |
-| `software/pcap2trace.py` | Convert classic `pcap` into `desc.bin`, `data.bin`, and `manifest.json` |
-| `software/gen_synthetic_trace.py` | Generate deterministic synthetic descriptor/data traces |
-| `software/gen_synthetic_pcap.py` | Generate synthetic `pcap` inputs |
-| `software/xdma_load_trace.py` | Load `PRELOAD`/`LOOP` traces into FPGA DDR and program TX registers |
-| `software/traffic_replay_cli.py` | Read/write control and status registers through `/dev/xdma0_user` |
-| `software/ddr_readback_check.py` | Verify `XDMA H2C` and `C2H` access to FPGA DDR |
-| `software/preload_stress_test.py` | Generate and replay fixed-size preload stress cases |
-| `software/preload_mixed_test.py` | Generate and replay mixed-size preload cases |
-| `software/loopback_rx_verify.py` | Check TX-to-RX payload samples over optical loopback |
-| `software/replay_precision_suite.py` | Run RX-side replay precision tests |
-| `software/stream_stripe.py` | Split a `STREAM` file into record-aligned SSD-lane blocks; supports per-lane container files and synthetic gap override |
-| `software/xdma_stream_ring_fast.cpp` | C++ `STREAM` ring loader with batched H2C writes |
-| `software/stream_stress_test.py` | Generate and run `STREAM` ring stress datasets |
-
-Build the C++ loaders:
-
-```bash
-cd software
-make
-```
-
-Convert a pcap:
-
-```bash
-python3 software/pcap2trace.py input.pcap \
-  --out-dir /tmp/trace_out \
-  --tick-hz 300000000
-```
-
-Load and start a preload replay:
-
-```bash
-sudo python3 software/xdma_load_trace.py \
-  --port 0 \
-  --manifest /tmp/trace_out/manifest.json \
-  --desc-base 0x04000000 \
-  --data-base 0x14000000 \
-  --mode preload
-```
-
-Inspect status:
-
-```bash
-sudo python3 software/traffic_replay_cli.py --port 0 status
-sudo python3 software/traffic_replay_cli.py --port 0 regs
-sudo python3 software/traffic_replay_cli.py --port 1 rx-status
-```
+Clock-domain crossings use AXI clock converters, XPM asynchronous FIFOs, or
+Gray-coded counters.  Packet target ticks travel with the packet through the TX
+asynchronous FIFO, so final SOP release occurs in the CMAC TX clock domain.
 
 ## Replay Modes
 
 ### PRELOAD
 
-The host loads the complete descriptor and payload regions into FPGA DDR before
-starting replay.  During replay, the FPGA reads everything from DDR and the host
-is not in the transmit data path.
-
-Best for:
-
-- Maximum replay throughput.
-- Best timing stability.
-- Repeatable benchmark and precision tests.
-
-Tradeoff:
-
-- Maximum trace size is bounded by the allocated FPGA DDR space.
+The host loads the complete descriptor and payload regions before `START`.
+During replay, the host is not in the TX data path.  This mode provides the
+highest throughput, the most repeatable timing, and the simplest correctness
+model.  Its trace size is limited by the DDR region assigned to the replay port.
 
 ### LOOP
 
-`LOOP` mode reuses the same DDR-resident trace multiple times.  It is useful for
-long-duration stress tests without repeatedly loading data from the host.
+`LOOP` reuses a PRELOAD trace for a configured number of iterations, with an
+optional hardware loop gap.  It is intended for long-running DUT stress tests
+without repeated PCIe loading.
 
 ### STREAM Ring
 
-`STREAM` ring mode keeps a bounded ring in FPGA DDR.  The host writes complete
-stream records into the ring, then advances `STREAM_WR_PTR`.  The FPGA consumes
-records and advances `STREAM_RD_PTR`.
+`STREAM` treats FPGA DDR as a bounded producer/consumer ring.  The host commits
+only complete packet records and advances a monotonic write counter after DMA
+completion.  The FPGA advances its read counter as records are consumed.  A
+guard region prevents the producer from overwriting unread data.
 
-Best for:
+The scheduler still owns packet timing.  If the host/SSD/PCIe path falls behind,
+the replay core records an underrun or late packet instead of silently changing
+the requested timestamps.
 
-- Traces larger than the available FPGA DDR preload window.
-- Future SSD-to-host-memory-to-FPGA streaming workflows.
+## Scheduling And Precision
 
-Tradeoff:
+Each descriptor carries a gap in replay ticks.  The scheduler accumulates those
+gaps into absolute targets.  Host timestamp conversion uses cumulative absolute
+rounding, which prevents per-packet rounding errors from accumulating into
+long-trace drift.
 
-- Sustained throughput is limited by the dynamic loading path.
-- The current correctness-safe implementation is functional but not yet 100G
-  sustained.
+Two timing modes are available:
 
-## Trace Descriptor Format
+1. Local replay time resets on every `START` or `CLEAR`.
+2. Synchronized time uses a shared 64-bit FPGA counter and an absolute start
+   tick, allowing both replay ports to arm independently and begin together.
 
-`PRELOAD` and `LOOP` use two binary files:
+With egress scheduling enabled, a packet can be prefetched through DDR and the
+CDC FIFO before it is due.  The CMAC-domain adapter holds only the packet SOP
+until the target time.  This separates memory latency from the final release
+decision and preserves payload continuity once a frame starts.
 
-- `desc.bin`: one 64-byte descriptor per packet.
-- `data.bin`: packet payload bytes padded to 64-byte AXI beats.
+RX precision validation measures consecutive receive SOP timestamps:
 
-Each descriptor is little-endian and exactly one 512-bit AXI beat:
+```text
+rx_gap_cycles = current_sop_tick - previous_sop_tick
+error_ns      = measured_gap_ns - requested_gap_ns
+```
 
-| Byte offset | Field | Width | Description |
+The RX core maintains aggregate count/sum/min/max values, a 16-bin logarithmic
+histogram, and a `524288`-entry per-port interval event ring.  Eight 64-bit
+intervals are packed into each 512-bit UltraRAM word.  This avoids the old
+small-window limitation while keeping measurement in the full-rate RX domain.
+
+## Capacity And Addressing
+
+The U200 exposes four `16 GiB` DDR windows:
+
+| Bank | Base address | Default dual-port ownership |
+| --- | ---: | --- |
+| `DDR0` | `0x0000000000` | TX0 descriptors, payloads, or STREAM ring |
+| `DDR1` | `0x0400000000` | TX1 descriptors, payloads, or STREAM ring |
+| `DDR2` | `0x0800000000` | RX0 sample storage |
+| `DDR3` | `0x0c00000000` | RX1 sample storage |
+
+The host XDMA master can access all four windows.  The default dual-port data
+plane keeps replay and capture traffic bank-local to reduce SmartConnect
+contention and make simultaneous high-rate operation predictable.
+
+### PRELOAD Capacity
+
+Each packet consumes one `64 B` descriptor plus a `64 B`-aligned payload:
+
+```text
+trace_bytes_per_packet = 64 + align64(frame_len)
+```
+
+Approximate capacity for one `16 GiB` replay bank:
+
+| Frame length | Stored bytes/packet | Packet capacity | Approx. source frame bytes |
+| ---: | ---: | ---: | ---: |
+| `64 B` | `128 B` | `134,217,728` | `8.00 GiB` |
+| `512 B` | `576 B` | `29,826,161` | `14.22 GiB` |
+| `1518 B` | `1600 B` | `10,737,418` | `15.18 GiB` |
+| `9000 B` | `9088 B` | `1,890,390` | `15.84 GiB` |
+
+A single-port multi-DDR build can expose a larger replay window.  The default
+dual-port release assigns one replay bank per port and reserves the remaining
+banks for RX capture, so each port has an independent `16 GiB` PRELOAD region.
+
+### STREAM Capacity
+
+The complete trace does not need to fit in FPGA DDR.  Maximum replay length is
+bounded by host storage and the ability of SSD, host memory, XDMA, and the DDR
+ring loader to sustain the requested trace rate.  The FPGA ring is a cache, not
+the capacity limit.
+
+## Trace Format
+
+`PRELOAD` and `LOOP` use:
+
+- `desc.bin`: one fixed `64 B` descriptor per packet.
+- `data.bin`: frame bytes padded to `64 B` AXI beats.
+- `manifest.json`: filenames, packet count, byte count, and conversion metadata.
+
+Each little-endian descriptor occupies one 512-bit beat:
+
+| Byte offset | Field | Width | Meaning |
 | ---: | --- | ---: | --- |
-| `0x00` | `gap_ticks` | 64 bits | Gap from the previous packet in replay clock ticks |
-| `0x08` | `data_word_offset` | 32 bits | Payload offset from `DATA_BASE`, measured in 64-byte words |
-| `0x0c` | `frame_len` | 16 bits | Ethernet frame length in bytes, excluding preamble and FCS |
-| `0x0e` | `flags` | 16 bits | Reserved for future per-packet controls |
-| `0x10` | reserved | 48 bytes | Must be zero for forward compatibility |
+| `0x00` | `gap_ticks` | `64 bits` | Requested packet gap in replay-clock ticks |
+| `0x08` | `data_word_offset` | `32 bits` | Payload offset from `DATA_BASE` in `64 B` words |
+| `0x0c` | `frame_len` | `16 bits` | Ethernet frame bytes, excluding preamble and FCS |
+| `0x0e` | `flags` | `16 bits` | Reserved per-packet controls |
+| `0x10` | reserved | `48 B` | Written as zero |
 
-See [docs/preload.md](docs/preload.md) for the detailed register map and
-preload implementation notes.
+STREAM records use the same `64 B` metadata header followed immediately by the
+aligned payload.  The producer commits only complete records to the ring.
+
+## Control Plane
+
+XDMA exposes an AXI-Lite master through `/dev/xdma0_user`.  The BAR contains
+four `64 KiB` application windows:
+
+| BAR offset | Window |
+| ---: | --- |
+| `0x00000` | TX0 replay control and statistics |
+| `0x10000` | TX1 replay control and statistics |
+| `0x20000` | RX0 measurement and capture |
+| `0x30000` | RX1 measurement and capture |
+
+Important TX register groups include mode and lifecycle control, descriptor and
+payload bases, packet/loop configuration, stream producer/consumer pointers,
+debug policy, TX counters, shared-time synchronization, and egress scheduling.
+Important RX groups include capture configuration, packet/byte/error counters,
+gap aggregates, event-ring indexing, histogram bins, and overflow indicators.
+
+The full register tables are documented in [`docs/preload.md`](docs/preload.md)
+and implemented by [`rtl/axi_lite_regs.sv`](rtl/axi_lite_regs.sv) and
+[`rtl/rx_capture_bd_core.sv`](rtl/rx_capture_bd_core.sv).
+
+## RTL Modules
+
+| Module | Responsibility |
+| --- | --- |
+| `traffic_replay_pkg.sv` | Shared widths, mode IDs, descriptor constants, and helper functions |
+| `traffic_replay_bd_core.v` | Block-design wrapper for one TX replay interface |
+| `trace_replay_core.sv` | Top-level replay state, source selection, scheduler, TX engine, and counters |
+| `axi_lite_regs.sv` | TX control/status register file behind the XDMA user BAR |
+| `ddr_trace_reader.sv` | Deep descriptor/payload prefetch for PRELOAD and LOOP |
+| `ddr_stream_reader.sv` | Bounded DDR stream-ring reader with monotonic pointers |
+| `host_stream_parser.sv` | STREAM record metadata and payload parser |
+| `replay_scheduler.sv` | Gap accumulation, absolute targets, late detection, and synchronized scheduling |
+| `replay_global_timebase.sv` | Shared 64-bit free-running FPGA timebase |
+| `replay_time_sync.sv` | Gray-coded timebase CDC into replay and CMAC domains |
+| `replay_tx_engine.sv` | Scheduled metadata/payload coupling and TX AXI-Stream generation |
+| `axis_sync_fifo.sv` | Deep same-clock payload buffering |
+| `scheduled_axis_async_fifo.sv` | Packet plus target-timestamp CDC into the CMAC TX domain |
+| `axis_to_lbus_512.sv` | AXI-Stream to CMAC LBUS formatting and final SOP scheduling |
+| `lbus_to_axis_512.sv` | CMAC RX LBUS packet reconstruction |
+| `rx_capture_bd_core.sv` | Full-rate RX statistics, interval events, histogram, and sample writer |
+| `traffic_replay_top_stub.sv` | Simulation-friendly wrapper around one replay core |
+
+[`scripts/create_hw_project.tcl`](scripts/create_hw_project.tcl) is the system
+integrator.  It instantiates XDMA, four DDR controllers, two CMACs,
+SmartConnect/clock converters, two replay cores, two RX cores, and the CDC
+adapters, then assigns BAR and DDR address spaces.
+
+## Host Software
+
+`tick-replay` is the supported operator interface:
+
+| Command | Purpose |
+| --- | --- |
+| `prepare` | Convert a classic pcap into FPGA descriptor and payload files |
+| `load` | Load and configure PRELOAD or LOOP replay |
+| `stream` | Run the parallel C++ STREAM ring backend |
+| `status` | Display both TX and RX state and counters |
+| `start`, `stop`, `clear`, `pause`, `resume` | Replay lifecycle control |
+| `sync-start` | Arm selected ports for one shared absolute FPGA tick |
+| `rx` | Control RX capture and read interval events/histograms |
+| `verify` | Run DDR, optical-loopback, or precision checks |
+| `benchmark` | Run host-to-FPGA H2C benchmarks |
+| `validate` | Execute an archived smoke, stress, or long validation profile |
+
+The command wraps reusable tools under [`software/`](software/).  The STREAM
+backend is implemented in C++ with large batched writes, asynchronous SSD
+readers, multiple producer workers, ordered completion, and automatic H2C
+engine discovery.  Producer pointers are published only after all earlier byte
+ranges have completed, preserving ring order even when DMA writes run in
+parallel.
 
 ## Build And Program
 
-The repository is source-oriented.  Vivado projects are generated from Tcl.
+Vivado builds target Linux with Xilinx Vivado `2020.2`.  Generated Vivado state
+is intentionally excluded from Git; the checked-in Tcl recreates the project.
 
-Requirements:
-
-- Linux host.
-- Vivado 2020.2.
-- Xilinx Alveo U200.
-- Xilinx `XDMA` Linux driver.
-- Python 3.
-- `g++` and `make` for C++ host loaders.
-
-Build the default dual-port, four-DDR-bank bitstream.  This profile is intended
-for high-load dual-port replay because each replay/capture path has a local DDR
-bank:
+### Create A Release Bitstream
 
 ```bash
-bash scripts/build_4ddr_dual_port.sh
+export XILINX_VIVADO=/tools/Xilinx/Vivado/2020.2
+export TRAFFIC_REPLAY_PORT_COUNT=2
+export TRAFFIC_REPLAY_DDR_BANKS=4
+export TRAFFIC_REPLAY_H2C_CHANNELS=2
+export TRAFFIC_REPLAY_VIVADO_THREADS=4
+export TRAFFIC_REPLAY_VIVADO_JOBS=1
+
+bash scripts/run_vivado.sh hwbit
 ```
 
-The equivalent explicit command is:
+Useful hardware build parameters:
+
+| Variable | Values | Default |
+| --- | --- | ---: |
+| `TRAFFIC_REPLAY_PORT_COUNT` | `1`, `2` | `2` |
+| `TRAFFIC_REPLAY_DDR_BANKS` | `1`, `2`, `4` | `4` |
+| `TRAFFIC_REPLAY_H2C_CHANNELS` | `1`, `2`, `4` | `2` |
+| `TRAFFIC_REPLAY_PORT0_MULTI_DDR` | `0`, `1` | auto for single-port builds |
+| `TRAFFIC_REPLAY_IMPL_STRATEGY` | Vivado implementation strategy name | `Performance_ExplorePostRoutePhysOpt` |
+| `TRAFFIC_REPLAY_INCREMENTAL_CHECKPOINT` | timing-clean routed DCP | unset |
+
+Do not release or program a build solely because Vivado generated a `.bit`.
+The routed report must have non-negative `WNS` and `WHS`, zero `TNS` and `THS`,
+no route errors, and acceptable DRC results.
+
+### Program The FPGA
 
 ```bash
-TRAFFIC_REPLAY_PORT_COUNT=2 \
-TRAFFIC_REPLAY_DDR_BANKS=4 \
-TRAFFIC_REPLAY_PORT0_MULTI_DDR=0 \
-TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw_4ddr \
-vivado -mode batch -source scripts/build_hw_bitstream.tcl
+bash scripts/run_vivado.sh program \
+  bitstreams/<release>/traffic_replay_bd_wrapper.bit
 ```
 
-Build a single-port, four-DDR-bank bitstream with port 0 replay reads allowed to
-access multiple DDR windows.  This is the target build for maximum FPGA-resident
-trace capacity and multi-bank `STREAM` rings:
+After programming an image that changes the PCIe endpoint configuration,
+perform the platform-appropriate PCIe rescan or reboot, reload the XDMA driver,
+and verify the expected device nodes before accessing the BAR.
+
+## Validation
+
+The release-candidate gate, simulation evidence, and board test matrix are
+recorded in
+[`docs/evaluation_20260710_release_candidate.md`](docs/evaluation_20260710_release_candidate.md).
+
+### Software Regression
 
 ```bash
-bash scripts/build_4ddr_single_port_64g.sh
+python3 -m unittest discover -s software/tests -v
+make -C software clean all
 ```
 
-The equivalent explicit command is:
+### DDR H2C/C2H Readback
 
 ```bash
-TRAFFIC_REPLAY_PORT_COUNT=1 \
-TRAFFIC_REPLAY_DDR_BANKS=4 \
-TRAFFIC_REPLAY_PORT0_MULTI_DDR=1 \
-TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw_1p_4ddr_pingpong \
-vivado -mode batch -source scripts/build_hw_bitstream.tcl
+sudo tick-replay verify ddr --repeat 2
 ```
 
-Build a single-port debug bitstream:
+The release profile checks both the low and high end of every `16 GiB` DDR
+window.
+
+### Optical Payload Loopback
 
 ```bash
-TRAFFIC_REPLAY_PORT_COUNT=1 \
-TRAFFIC_REPLAY_HW_BUILD_ROOT=$PWD/build_hw_oneport \
-vivado -mode batch -source scripts/build_hw_bitstream.tcl
-```
-
-Program a board through Vivado hardware server:
-
-```bash
-vivado -mode batch -source scripts/program_remote.tcl \
-  -tclargs build_hw/vivado_hw/traffic_replay_hw.runs/impl_1/traffic_replay_bd_wrapper.bit
-```
-
-After reprogramming an FPGA that is attached over PCIe, rescan the endpoint and
-check the XDMA character devices:
-
-```bash
-sudo sh -c 'echo 1 > /sys/bus/pci/devices/0000:01:00.0/remove'
-sleep 2
-sudo sh -c 'echo 1 > /sys/bus/pci/rescan'
-lspci -nn -d 10ee:
-ls -l /dev/xdma*
-```
-
-## Validation Commands
-
-Check control plane:
-
-```bash
-sudo python3 software/traffic_replay_cli.py --port 0 clear
-sudo python3 software/traffic_replay_cli.py --port 0 status
-sudo python3 software/traffic_replay_cli.py --port 1 status
-```
-
-Check DDR readback through `H2C` and `C2H`:
-
-```bash
-sudo python3 software/ddr_readback_check.py \
-  --case 0x00000000:4096 \
-  --case 0x00100000:65536 \
-  --case 0x08000000:1048576 \
-  --repeat 2
-```
-
-On a four-bank bitstream, check one window in each DDR bank:
-
-```bash
-sudo python3 software/ddr_readback_check.py \
-  --case 0x0000000000:1048576 \
-  --case 0x0400000000:1048576 \
-  --case 0x0800000000:1048576 \
-  --case 0x0c00000000:1048576 \
-  --repeat 2
-```
-
-Check the high end of each 16GiB DDR bank:
-
-```bash
-sudo python3 software/ddr_readback_check.py \
-  --case 0x03fffff000:4096 \
-  --case 0x07fffff000:4096 \
-  --case 0x0bfffff000:4096 \
-  --case 0x0ffffff000:4096
-```
-
-Run preload throughput cases:
-
-```bash
-sudo python3 software/preload_stress_test.py \
-  --port 0 \
-  --packet-count 100000 \
-  --case 64:3 \
-  --case 256:8 \
-  --case 512:14 \
-  --case 1518:38 \
-  --desc-base 0x04000000 \
-  --data-base 0x14000000 \
-  --require-no-drop
-```
-
-Run simultaneous dual-port preload with the two ports placed in different DDR
-banks:
-
-```bash
-sudo python3 software/dual_port_preload_test.py \
-  --packet-count 100000 \
-  --frame-len 1518 \
-  --gap-ticks 38 \
-  --port0-desc-base 0x0000000000 \
-  --port0-data-base 0x0010000000 \
-  --port1-desc-base 0x0400000000 \
-  --port1-data-base 0x0410000000 \
-  --require-no-drop
-```
-
-Run optical loopback payload verification:
-
-```bash
-sudo python3 software/loopback_rx_verify.py \
-  --tx-port 0 \
-  --rx-port 1 \
-  --desc-base 0x0000000000 \
-  --data-base 0x0010000000 \
-  --rx-ring-base 0x0c10000000 \
-  --rx-ring-size 0x01000000 \
-  --truncate-bytes 64 \
+sudo tick-replay verify loopback \
+  --tx-port 0 --rx-port 1 \
   --packet-count 4096 \
-  --frame-len 256 \
+  --frame-len 128 \
   --gap-ticks 2000
 ```
 
-Run stream ring stress:
+### RX-Side Precision
 
 ```bash
-sudo python3 software/stream_stress_test.py \
-  --port 0 \
-  --frame-sizes 1518 \
-  --packet-count 300000 \
-  --gap-ticks 300 \
-  --ring-base 0x0020000000 \
-  --ring-size 0x20000000 \
-  --prefill-bytes 0x10000000 \
-  --batch-bytes 0x08000000 \
-  --read-bytes 0x08000000 \
-  --queue-depth 4 \
-  --writer-threads 2 \
-  --loader cpp \
-  --host-cache-bytes auto
+sudo tick-replay verify precision \
+  --tx-port 0 --rx-port 1 \
+  --work-dir /var/tmp/tick-precision \
+  --report /var/tmp/tick-precision/report.md
 ```
 
-Run the RX-side replay precision suite:
+### H2C Throughput
 
 ```bash
-sudo python3 software/replay_precision_suite.py \
-  --tx-port 0 \
-  --rx-port 1 \
-  --desc-base 0x0000000000 \
-  --data-base 0x0010000000 \
-  --report reports/replay_precision_suite.md
+sudo tick-replay benchmark h2c \
+  --h2c auto \
+  --bytes 0x100000000 \
+  --chunk-bytes 0x04000000 \
+  --threads 2 \
+  --passes 3
 ```
+
+### Release Profiles
+
+```bash
+sudo tick-replay validate --profile smoke
+sudo tick-replay validate --profile stress
+sudo tick-replay validate --profile long
+```
+
+Each run writes the command lines, outputs, elapsed times, and CSV artifacts to
+a timestamped validation directory.  A release is accepted only after DDR
+readback, control-plane restart, PRELOAD/LOOP/STREAM, small/large/mixed packet
+tests, optical payload verification, precision measurement, and robustness
+tests complete without unexplained drops or stalls.
 
 ## Repository Layout
 
 ```text
-rtl/           Synthesizable RTL
-constraints/   Board and timing constraints
-scripts/       Vivado project, build, and programming Tcl scripts
-software/      Linux host tools and loaders
-sim/           Testbenches
-docs/          Design notes and evaluation reports
-docs/images/   Architecture and result images
-bitstreams/    Selected archived bitstreams with notes
-reports/       Selected validation reports
+constraints/   U200 PCIe, DDR, QSFP, and floorplan constraints
+rtl/           replay, scheduling, CDC, CMAC adapters, and RX measurement RTL
+sim/           self-checking RTL testbenches
+scripts/       Vivado project generation, simulation, implementation, and programming Tcl
+software/      Linux CLI, trace converters, loaders, benchmarks, and validation tools
+docs/          architecture, register, mode, and evaluation notes
+bitstreams/    immutable important bitstreams with reports, checksums, and release notes
 ```
 
-## Known Limitations
+## Limitations
 
-- The hardware generator now defaults to a dual-port, four-DDR-bank design.  The
-  latest four-bank deeper-prefetch bitstream is timing clean and archived as
-  `bitstreams/20260708_040647_4ddr_dual_prefetch_timing_clean`.  Board smoke
-  tests validated all four DDR windows, dual-port PRELOAD throughput, optical
-  TX/RX sample payload correctness in both directions, and RX-side fixed-gap
-  SOP-to-SOP precision.
-- `STREAM` ring mode is functional.  The C++ loader supports batched,
-  order-preserving multi-writer `H2C` submission.  Fully prefetched large-packet
-  STREAM tests reach `95.874Gbps`.  The two-bank ping-pong ring accepts a
-  `32GiB` window and the 2026-07-07 dynamic container-stripe test sustained
-  `45.540Gbps` frame/L2 on a `3.2GB` synthetic stream with no late/underrun.
-  This is still not proof of unlimited `100Gbps` dynamic replay: long traces are
-  limited by `SSD -> host memory -> memory-mapped XDMA H2C -> FPGA DDR` load
-  bandwidth.
-- The RX sample writer is a lightweight debug/correctness path, not a full-rate
-  packet capture DMA.  Low-rate loopback sample checks pass; high-rate sample
-  capture can overflow and should be treated as an expected limitation.
-- RX interval sample readback stores the most recent `4096` intervals.  Full
-  long-trace statistics are available as aggregate counters, not as a complete
-  per-packet timestamp log.
-- End-to-end RX precision includes scheduler behavior, TX buffering, CMAC
-  framing, optical loopback, RX CMAC, and RX measurement quantization.  Mixed
-  packet sizes can therefore show larger local SOP-to-SOP error than fixed-size
-  traces.
-- Dual-port simultaneous near-100G large-packet replay should place the two
-  traces in different DDR banks.  The default four-bank dual-port build maps
-  `port0` and `port1` TX paths to separate DDR controllers to avoid the shared
-  single-bank bottleneck.
-
-## Roadmap
-
-- Repeat the timing-clean four-bank build across multiple implementation seeds
-  and keep archiving the best bitstreams with their validation notes.
-- Move the dynamic loader path beyond memory-mapped `XDMA pwrite()` if sustained
-  100G `STREAM` replay is required: QDMA/XDMA AXI4-Stream H2C, pinned hugepage
-  buffers, kernel-bypass submission, or a custom multi-queue loader.
-- Continue tuning DDR prefetch depth and arbitration after real dual-port
-  high-load measurements.
-- Add an optional egress-side scheduler close to `CMAC` for tighter mixed-size
-  end-to-end SOP timing.
-- Expand RX event logging from recent gap samples to a larger timestamp/event
-  ring.
-- Keep important bitstreams archived with source commit, timing summary,
-  resource summary, and validation notes.
+- The current hardware uses XDMA memory-mapped H2C, not QDMA or an AXI4-Stream
+  host ingress.  Dynamic STREAM throughput therefore depends strongly on host
+  DMA submission, SSD reads, memory copies, and DDR arbitration.
+- The current dual-port release assigns one `16 GiB` replay bank per TX port:
+  port `0` reads `DDR0`, and port `1` reads `DDR1`.  Host XDMA can access all
+  four banks, but port `0` cannot use `DDR1` as a STREAM ping-pong partner in
+  this release profile.
+- A single logical `64 GiB` PRELOAD trace or a high-rate port-0 multi-DDR
+  STREAM ring requires a single-port/multi-DDR build profile and compatible
+  host address layout.
+- Four H2C engines and port-0 multi-DDR reads are supported as experimental
+  build options.  They are not enabled in the archived 2026-07-15 dual-port
+  release candidate because timing closure and dual-port isolation take
+  priority for this profile.
+- CMAC-domain egress scheduling is implemented and validated for controlled
+  replay paths, but dynamic STREAM plus egress scheduling still needs a deeper
+  pre-issue/output buffer before it is treated as a high-throughput release
+  path.
+- Full payload RX capture at 100G is intentionally not the default.  RX keeps
+  counters, interval events, and selected truncated samples so measurement does
+  not consume all PCIe and DDR bandwidth.
+- Timing-clean implementation is seed, strategy, and floorplan sensitive on the
+  three-SLR U200.  Every important bitstream is archived with its exact reports
+  and checksum.
+- Classic pcap is supported.  Pcapng and higher-level trace consistency editing
+  are outside the FPGA replay subsystem.

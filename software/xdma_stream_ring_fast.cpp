@@ -9,6 +9,7 @@
 #include <cerrno>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
@@ -75,6 +76,9 @@ static constexpr off_t REG_STREAM_CTRL = 0x00b8;
 static constexpr off_t REG_STREAM_STATUS = 0x00bc;
 static constexpr off_t REG_STREAM_LEVEL_LO = 0x00c0;
 static constexpr off_t REG_STREAM_LEVEL_HI = 0x00c4;
+static constexpr off_t REG_SCHED_CTRL = 0x00e0;
+static constexpr off_t REG_GLOBAL_TICK_LO = 0x00e4;
+static constexpr off_t REG_GLOBAL_TICK_HI = 0x00e8;
 
 static constexpr uint32_t MODE_STREAM = 1;
 static constexpr uint32_t STREAM_STATUS_ERROR = 1u << 6;
@@ -88,7 +92,7 @@ struct Args {
   fs::path manifest;
   fs::path stripe_manifest;
   fs::path block_list;
-  std::string h2c = "/dev/xdma0_h2c_0";
+  std::string h2c = "auto";
   std::string user = "/dev/xdma0_user";
   int port = 0;
   uint64_t reg_base_override = UINT64_MAX;
@@ -100,6 +104,7 @@ struct Args {
   uint64_t batch_bytes = 64ULL << 20;
   uint64_t read_bytes = 64ULL << 20;
   uint64_t start_time = 0;
+  double start_delay_ms = 0.0;
   uint32_t rate_q16_16 = 0x00010000U;
   uint32_t watermark = 4096;
   uint64_t tick_hz = DEFAULT_TICK_HZ;
@@ -126,6 +131,8 @@ struct Args {
   bool pingpong = false;
   bool force_link_up = false;
   bool force_tx_ready = false;
+  bool sync_enable = false;
+  bool egress_schedule = false;
   bool no_wait = false;
   bool dry_run = false;
 };
@@ -253,6 +260,33 @@ static uint64_t int_auto(const std::string &text) {
   return value;
 }
 
+static std::vector<std::string> split_device_paths(const std::string &text) {
+  std::vector<std::string> paths;
+  if (text == "auto") {
+    for (int channel = 0; channel < 4; ++channel) {
+      std::string path = "/dev/xdma0_h2c_" + std::to_string(channel);
+      if (::access(path.c_str(), W_OK) == 0) {
+        paths.push_back(path);
+      }
+    }
+    if (!paths.empty()) {
+      return paths;
+    }
+    throw std::runtime_error("no writable /dev/xdma0_h2c_* engine was found");
+  }
+  std::stringstream stream(text);
+  std::string item;
+  while (std::getline(stream, item, ',')) {
+    if (!item.empty()) {
+      paths.push_back(item);
+    }
+  }
+  if (paths.empty()) {
+    throw std::runtime_error("at least one H2C device path is required");
+  }
+  return paths;
+}
+
 static uint64_t read_mem_available_bytes() {
   std::ifstream file("/proc/meminfo");
   std::string key;
@@ -285,7 +319,7 @@ static void usage(const char *argv0) {
       << "       " << argv0 << " --stream stream.bin [options]\n"
       << "       " << argv0 << " --stripe-manifest block_manifest.json [options]\n\n"
       << "Options:\n"
-      << "  --h2c PATH                 default /dev/xdma0_h2c_0\n"
+      << "  --h2c auto|PATH[,PATH...]  H2C engine list, default auto\n"
       << "  --user PATH                default /dev/xdma0_user\n"
       << "  --port 0|1                 default 0\n"
       << "  --reg-base ADDR            override AXI-Lite base\n"
@@ -314,6 +348,9 @@ static void usage(const char *argv0) {
       << "  --watermark BYTES          default 4096\n"
       << "  --rate-q16-16 VALUE        default 0x10000\n"
       << "  --start-time TICKS         default 0\n"
+      << "  --start-delay-ms MS        choose an absolute start tick immediately before START\n"
+      << "  --sync-enable              use the shared FPGA timebase\n"
+      << "  --egress-schedule          release packet SOP in the CMAC TX clock domain\n"
       << "  --force-link-up\n"
       << "  --force-tx-ready\n"
       << "  --no-wait\n"
@@ -399,8 +436,15 @@ static Args parse_args(int argc, char **argv) {
       args.rate_q16_16 = static_cast<uint32_t>(int_auto(need_value("--rate-q16-16")));
     } else if (key == "--start-time") {
       args.start_time = int_auto(need_value("--start-time"));
+    } else if (key == "--start-delay-ms") {
+      args.start_delay_ms = std::stod(need_value("--start-delay-ms"));
     } else if (key == "--tick-hz") {
       args.tick_hz = int_auto(need_value("--tick-hz"));
+    } else if (key == "--sync-enable") {
+      args.sync_enable = true;
+    } else if (key == "--egress-schedule") {
+      args.egress_schedule = true;
+      args.sync_enable = true;
     } else if (key == "--force-link-up") {
       args.force_link_up = true;
     } else if (key == "--force-tx-ready") {
@@ -422,6 +466,12 @@ static Args parse_args(int argc, char **argv) {
   }
   if (args.writer_threads == 0) {
     throw std::runtime_error("--writer-threads must be positive");
+  }
+  if (args.start_delay_ms < 0.0) {
+    throw std::runtime_error("--start-delay-ms must not be negative");
+  }
+  if (args.start_time != 0 && args.start_delay_ms != 0.0) {
+    throw std::runtime_error("--start-time and --start-delay-ms are mutually exclusive");
   }
   if (!args.stripe_manifest.empty() || !args.block_list.empty()) {
     if (!args.reader_threads_set && args.reader_threads == 0) {
@@ -844,6 +894,8 @@ static void configure(int user_fd, uint64_t base, const Args &args) {
   write64(user_fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, 0);
   write64(user_fd, base + REG_STREAM_RING_LO, base + REG_STREAM_RING_HI, args.ring_size);
   write32(user_fd, base + REG_STREAM_CTRL, stream_ctrl_value(args, false));
+  write32(user_fd, base + REG_SCHED_CTRL,
+          (args.sync_enable ? 0x1u : 0u) | (args.egress_schedule ? 0x2u : 0u));
 
   uint32_t debug = read32(user_fd, base + REG_DEBUG_CTRL);
   if (args.force_link_up) {
@@ -855,7 +907,13 @@ static void configure(int user_fd, uint64_t base, const Args &args) {
   write32(user_fd, base + REG_DEBUG_CTRL, debug);
 }
 
-static void start_replay(int user_fd, uint64_t base) {
+static void start_replay(int user_fd, uint64_t base, const Args &args) {
+  if (args.start_delay_ms > 0.0) {
+    uint64_t now = read64(user_fd, base + REG_GLOBAL_TICK_LO, base + REG_GLOBAL_TICK_HI);
+    uint64_t delay_ticks = static_cast<uint64_t>(
+        std::llround(args.start_delay_ms * static_cast<double>(args.tick_hz) / 1000.0));
+    write64(user_fd, base + REG_START_LO, base + REG_START_HI, now + delay_ticks);
+  }
   write32(user_fd, base + REG_CONTROL, 0x1);
 }
 
@@ -1383,15 +1441,17 @@ int main(int argc, char **argv) {
       return 0;
     }
 
+    const std::vector<std::string> h2c_paths = split_device_paths(args.h2c);
     std::vector<int> h2c_fds;
     h2c_fds.reserve(args.writer_threads);
     for (size_t idx = 0; idx < args.writer_threads; ++idx) {
-      int fd = ::open(args.h2c.c_str(), O_WRONLY);
+      const std::string &path = h2c_paths[idx % h2c_paths.size()];
+      int fd = ::open(path.c_str(), O_WRONLY);
       if (fd < 0) {
         for (int old_fd : h2c_fds) {
           ::close(old_fd);
         }
-        throw std::runtime_error("cannot open H2C device: " + args.h2c);
+        throw std::runtime_error("cannot open H2C device: " + path);
       }
       h2c_fds.push_back(fd);
     }
@@ -1433,11 +1493,12 @@ int main(int argc, char **argv) {
         configure(user_fd, base, args);
 
         for (size_t idx = 0; idx < args.reader_threads; ++idx) {
-          workers.emplace_back([&]() {
+          workers.emplace_back([&, idx]() {
             try {
-              int h2c_fd = ::open(args.h2c.c_str(), O_WRONLY);
+              const std::string &path = h2c_paths[idx % h2c_paths.size()];
+              int h2c_fd = ::open(path.c_str(), O_WRONLY);
               if (h2c_fd < 0) {
-                throw std::runtime_error("cannot open H2C device: " + args.h2c);
+                throw std::runtime_error("cannot open H2C device: " + path);
               }
               DmaBuffer buffer;
               buffer.resize(static_cast<size_t>(io_chunk));
@@ -1508,13 +1569,13 @@ int main(int argc, char **argv) {
               packet_count += block.packets;
               write64(user_fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, write_count);
               if (!started && write_count >= prefill) {
-                start_replay(user_fd, base);
+                start_replay(user_fd, base, args);
                 started = true;
               }
               ++next_commit;
             }
           } else if (!started && write_count != 0) {
-            start_replay(user_fd, base);
+            start_replay(user_fd, base, args);
             started = true;
           }
         }
@@ -1535,7 +1596,7 @@ int main(int argc, char **argv) {
         write64(user_fd, base + REG_PKT_LO, base + REG_PKT_HI, packet_count);
         write32(user_fd, base + REG_STREAM_CTRL, stream_ctrl_value(args, true));
         if (!started) {
-          start_replay(user_fd, base);
+          start_replay(user_fd, base, args);
           started = true;
         }
 
@@ -1656,7 +1717,7 @@ int main(int argc, char **argv) {
           packet_count += job.packets;
           write64(user_fd, base + REG_STREAM_WR_LO, base + REG_STREAM_WR_HI, write_count);
           if (!started && write_count >= prefill) {
-            start_replay(user_fd, base);
+            start_replay(user_fd, base, args);
             started = true;
           }
           write_jobs.pop_front();
@@ -1714,7 +1775,7 @@ int main(int argc, char **argv) {
           }
 
           if (!started && write_count != 0) {
-            start_replay(user_fd, base);
+            start_replay(user_fd, base, args);
             started = true;
           } else {
             std::this_thread::sleep_for(std::chrono::duration<double>(args.poll_interval));
@@ -1740,7 +1801,7 @@ int main(int argc, char **argv) {
       write64(user_fd, base + REG_PKT_LO, base + REG_PKT_HI, packet_count);
       write32(user_fd, base + REG_STREAM_CTRL, stream_ctrl_value(args, true));
       if (!started) {
-        start_replay(user_fd, base);
+        start_replay(user_fd, base, args);
         started = true;
       }
 

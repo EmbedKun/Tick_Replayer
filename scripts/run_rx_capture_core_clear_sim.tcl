@@ -23,3 +23,16 @@ update_compile_order -fileset sim_1
 
 launch_simulation
 close_sim
+set sim_log [file join $build_dir traffic_replay_rx_capture_core_clear.sim sim_1 behav xsim simulate.log]
+if {![file exists $sim_log]} {
+  puts "ERROR: RX capture simulation log was not generated"
+  exit 1
+}
+set fh [open $sim_log r]
+set sim_text [read $fh]
+close $fh
+if {[string first "PASS: RX full-rate measurement" $sim_text] < 0 ||
+    [string first "PASS: rx_capture_core clear" $sim_text] < 0} {
+  puts "ERROR: RX capture simulation did not reach all PASS markers"
+  exit 1
+}

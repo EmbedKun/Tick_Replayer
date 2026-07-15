@@ -20,9 +20,15 @@ Environment:
   TRAFFIC_REPLAY_HW_BUILD_ROOT   Optional build root, defaults to <repo>/build
   TRAFFIC_REPLAY_PORT_COUNT      Optional hardware port count: 1 or 2, defaults to 2
   TRAFFIC_REPLAY_DDR_BANKS       Optional DDR bank count: 1, 2, or 4, defaults to 4
+  TRAFFIC_REPLAY_H2C_CHANNELS    Optional XDMA H2C channel count: 1, 2, or 4, defaults to 2
   TRAFFIC_REPLAY_PORT0_MULTI_DDR Optional port 0 multi-DDR read path, defaults to 1 for single-port multi-bank builds
   TRAFFIC_REPLAY_VIVADO_JOBS     Optional Vivado run job count
   TRAFFIC_REPLAY_IMPL_STRATEGY   Optional implementation strategy
+  TRAFFIC_REPLAY_IMPL_TO_STEP    Optional rerun_impl stop point: place_design,
+                                 phys_opt_design, route_design, or write_bitstream
+  TRAFFIC_REPLAY_IMPL_RESUME     Set to 1 to continue rerun_impl from its current checkpoint
+  TRAFFIC_REPLAY_INCREMENTAL_CHECKPOINT Optional timing-clean routed checkpoint for incremental implementation
+  TRAFFIC_REPLAY_SYNTH_ONLY      Set to 1 with hwbit_existing to stop after synthesis and reports
 EOF
 }
 

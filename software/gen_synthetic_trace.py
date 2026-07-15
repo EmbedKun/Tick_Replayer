@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import struct
+from fractions import Fraction
 from pathlib import Path
 
 
@@ -28,6 +29,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--packet-count", type=int_auto, default=100_000)
     parser.add_argument("--frame-len", type=int_auto, default=64)
     parser.add_argument("--gap-ticks", type=int_auto, default=0)
+    parser.add_argument("--wire-rate-gbps", type=str)
+    parser.add_argument("--wire-overhead-bytes", type=int_auto, default=24)
     parser.add_argument("--tick-hz", type=int_auto, default=DEFAULT_TICK_HZ)
     parser.add_argument("--seed", type=int_auto, default=0x5A)
     return parser.parse_args()
@@ -43,6 +46,14 @@ def main() -> None:
         raise SystemExit("--packet-count must be positive")
     if args.frame_len <= 0 or args.frame_len > 0xFFFF:
         raise SystemExit("--frame-len must be in the range 1..65535")
+    if args.wire_overhead_bytes < 0:
+        raise SystemExit("--wire-overhead-bytes must be non-negative")
+
+    wire_rate_bps = None
+    if args.wire_rate_gbps is not None:
+        wire_rate_bps = Fraction(args.wire_rate_gbps) * 1_000_000_000
+        if wire_rate_bps <= 0:
+            raise SystemExit("--wire-rate-gbps must be positive")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     desc_path = args.out_dir / "desc.bin"
@@ -51,10 +62,22 @@ def main() -> None:
 
     data_offset_words = 0
     total_frame_bytes = 0
+    previous_target_tick = 0
+    gap_min = None
+    gap_max = None
 
     with desc_path.open("wb") as desc_fh, data_path.open("wb") as data_fh:
         for pkt_idx in range(args.packet_count):
-            desc = struct.pack("<QIHH", args.gap_ticks, data_offset_words, args.frame_len, 0)
+            if wire_rate_bps is None:
+                gap_ticks = args.gap_ticks
+            else:
+                wire_bits = (args.frame_len + args.wire_overhead_bytes) * 8
+                target_numerator = pkt_idx * wire_bits * args.tick_hz * wire_rate_bps.denominator
+                target_denominator = wire_rate_bps.numerator
+                target_tick = (target_numerator + target_denominator // 2) // target_denominator
+                gap_ticks = target_tick - previous_target_tick
+                previous_target_tick = target_tick
+            desc = struct.pack("<QIHH", gap_ticks, data_offset_words, args.frame_len, 0)
             desc_fh.write(desc)
             desc_fh.write(bytes(DESC_BYTES - len(desc)))
 
@@ -65,6 +88,8 @@ def main() -> None:
 
             data_offset_words += padded_len // DATA_BEAT_BYTES
             total_frame_bytes += args.frame_len
+            gap_min = gap_ticks if gap_min is None else min(gap_min, gap_ticks)
+            gap_max = gap_ticks if gap_max is None else max(gap_max, gap_ticks)
 
     manifest = {
         "generator": "gen_synthetic_trace.py",
@@ -75,6 +100,11 @@ def main() -> None:
         "tick_hz": args.tick_hz,
         "packet_count": args.packet_count,
         "gap_ticks": args.gap_ticks,
+        "wire_rate_gbps": args.wire_rate_gbps,
+        "wire_overhead_bytes": args.wire_overhead_bytes,
+        "gap_ticks_min": gap_min,
+        "gap_ticks_max": gap_max,
+        "timestamp_quantization": "cumulative_nearest_tick" if wire_rate_bps is not None else "fixed_gap",
         "frame_len": args.frame_len,
         "data_bytes_aligned": data_offset_words * DATA_BEAT_BYTES,
         "total_frame_bytes": total_frame_bytes,

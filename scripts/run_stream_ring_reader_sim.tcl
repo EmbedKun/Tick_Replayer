@@ -25,4 +25,19 @@ update_compile_order -fileset sources_1
 update_compile_order -fileset sim_1
 
 launch_simulation
-quit
+close_sim
+
+set sim_log [file join $build_dir traffic_replay_stream_ring_reader.sim sim_1 behav xsim simulate.log]
+if {![file exists $sim_log]} {
+  puts "ERROR: stream ring reader simulation log was not generated"
+  exit 1
+}
+set fh [open $sim_log r]
+set sim_text [read $fh]
+close $fh
+if {[string first "PASS: ddr_stream_reader ring-mode robustness simulation completed" $sim_text] < 0 ||
+    [string first "Fatal:" $sim_text] >= 0} {
+  puts "ERROR: stream ring reader simulation did not reach a clean PASS marker"
+  exit 1
+}
+exit 0

@@ -127,6 +127,24 @@ set ddr_ui_clocks [get_clocks -regexp -quiet {(^|.*/)mmcm_clkout0($|.*)}]
 set cmac_user_clocks [get_clocks -regexp -quiet {.*txoutclk.*}]
 set_clock_groups -asynchronous -group $ddr_ui_clocks -group $cmac_user_clocks
 
+# The shared replay timebase crosses between independent DDR UI clocks as a
+# registered Gray bus.  Constrain only the source Gray registers to each first
+# synchronizer stage; all second-stage and decode paths remain normally timed.
+set replay_time_gray_src [get_cells -hier -quiet -regexp {.*replay_timebase.*/time_gray_reg\[[0-9]+\]}]
+set replay_time_gray_sync1 [get_cells -hier -quiet -regexp {.*global_time_sync_i/time_gray_sync1_reg\[[0-9]+\]}]
+set_max_delay 3.332 -datapath_only -from $replay_time_gray_src -to $replay_time_gray_sync1
+# Bus skew is meaningful only among bits sampled by the same destination
+# clock.  Keep each synchronizer bus in a separate constraint so independent
+# DDR and CMAC domains are never compared against one another.
+set replay_time_gray_sync1_core0 [get_cells -hier -quiet -regexp {.*replay_core_0.*/global_time_sync_i/time_gray_sync1_reg\[[0-9]+\]}]
+set replay_time_gray_sync1_core1 [get_cells -hier -quiet -regexp {.*replay_core_1.*/global_time_sync_i/time_gray_sync1_reg\[[0-9]+\]}]
+set replay_time_gray_sync1_lbus0 [get_cells -hier -quiet -regexp {.*tx_lbus_0.*/global_time_sync_i/time_gray_sync1_reg\[[0-9]+\]}]
+set replay_time_gray_sync1_lbus1 [get_cells -hier -quiet -regexp {.*tx_lbus_1.*/global_time_sync_i/time_gray_sync1_reg\[[0-9]+\]}]
+set_bus_skew 3.332 -from $replay_time_gray_src -to $replay_time_gray_sync1_core0
+set_bus_skew 3.332 -from $replay_time_gray_src -to $replay_time_gray_sync1_core1
+set_bus_skew 3.332 -from $replay_time_gray_src -to $replay_time_gray_sync1_lbus0
+set_bus_skew 3.332 -from $replay_time_gray_src -to $replay_time_gray_sync1_lbus1
+
 # QSFP0 module and reference-clock sideband. The BD ties these to constants:
 # resetl=1, lpmode=0, refclk_reset=0, fs=2'b10 for 161.1328125 MHz.
 set_property LOC BE16 [get_ports -quiet qsfp0_modsell]

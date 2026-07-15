@@ -57,6 +57,8 @@ module tb_dual_trace_replay_core_perf;
   logic [PORTS-1:0]        tx_tready;
   logic [PORTS-1:0]        tx_tlast;
   logic [PORTS-1:0]        tx_tuser;
+  logic [63:0]             global_time_binary;
+  logic [63:0]             global_time_gray;
 
   int unsigned case_pkt_len;
   longint unsigned case_pkt_count;
@@ -177,6 +179,7 @@ module tb_dual_trace_replay_core_perf;
       .clk(clk),
       .rstn(rstn),
       .link_up(1'b1),
+      .global_time_gray(global_time_gray),
       .s_axil_awaddr(axil_awaddr[P]),
       .s_axil_awvalid(axil_awvalid[P]),
       .s_axil_awready(axil_awready[P]),
@@ -372,10 +375,14 @@ module tb_dual_trace_replay_core_perf;
   always_ff @(posedge clk) begin
     if (!rstn) begin
       cycle_count <= '0;
+      global_time_binary <= '0;
     end else begin
       cycle_count <= cycle_count + 1;
+      global_time_binary <= global_time_binary + 64'd1;
     end
   end
+
+  assign global_time_gray = global_time_binary ^ (global_time_binary >> 1);
 
   task automatic axil_write_both(input [15:0] addr, input [31:0] data);
     begin
@@ -414,6 +421,29 @@ module tb_dual_trace_replay_core_perf;
     end
   endtask
 
+  task automatic axil_write_one(
+    input int unsigned port,
+    input [15:0] addr,
+    input [31:0] data
+  );
+    begin
+      @(posedge clk);
+      axil_awaddr[port]  <= addr;
+      axil_awvalid[port] <= 1'b1;
+      axil_wdata[port]   <= data;
+      axil_wstrb[port]   <= 4'hf;
+      axil_wvalid[port]  <= 1'b1;
+      axil_bready[port]  <= 1'b1;
+      wait (axil_awready[port] && axil_wready[port]);
+      @(posedge clk);
+      axil_awvalid[port] <= 1'b0;
+      axil_wvalid[port]  <= 1'b0;
+      wait (axil_bvalid[port]);
+      @(posedge clk);
+      axil_bready[port] <= 1'b0;
+    end
+  endtask
+
   task automatic reset_case;
     begin
       rstn = 1'b0;
@@ -448,6 +478,65 @@ module tb_dual_trace_replay_core_perf;
       axil_write_both(16'h0040, 32'd0);
       axil_write_both(16'h0044, 32'd0);
       axil_write_both(16'h0000, 32'd1);
+    end
+  endtask
+
+  task automatic run_synchronized_start_case;
+    longint unsigned target_tick;
+    begin
+      case_name = "dual_absolute_sync_staggered_arm";
+      case_pkt_count = 256;
+      case_pkt_len = 128;
+      case_gap_ticks = 200;
+      case_latency_cycles = 64;
+      case_ar_stall_period = 0;
+      case_beats_per_pkt = beats_from_bytes(16'(case_pkt_len));
+      expect_over_100g = 1'b0;
+      expect_wire_over_100g = 1'b0;
+      check_underrun = 1'b1;
+      warmup_pkts = 16;
+
+      reset_case();
+      axil_write_both(16'h0004, 32'd0);
+      axil_write_both(16'h0010, DESC_BASE[31:0]);
+      axil_write_both(16'h0014, DESC_BASE[63:32]);
+      axil_write_both(16'h0018, DATA_BASE[31:0]);
+      axil_write_both(16'h001c, DATA_BASE[63:32]);
+      axil_write_both(16'h0028, case_pkt_count[31:0]);
+      axil_write_both(16'h002c, case_pkt_count[63:32]);
+      axil_write_both(16'h00e0, 32'd1);
+
+      target_tick = global_time_binary + 64'd20000;
+      axil_write_both(16'h0040, target_tick[31:0]);
+      axil_write_both(16'h0044, target_tick[63:32]);
+
+      axil_write_one(0, 16'h0000, 32'd1);
+      repeat (777) @(posedge clk);
+      axil_write_one(1, 16'h0000, 32'd1);
+
+      for (longint unsigned timeout = 0; timeout < 100000; timeout++) begin
+        @(posedge clk);
+        if ((tx_pkt_count[0] == case_pkt_count) &&
+            (tx_pkt_count[1] == case_pkt_count)) begin
+          break;
+        end
+      end
+
+      if ((tx_pkt_count[0] != case_pkt_count) ||
+          (tx_pkt_count[1] != case_pkt_count)) begin
+        $fatal(1, "synchronized start packet count mismatch p0=%0d p1=%0d",
+               tx_pkt_count[0], tx_pkt_count[1]);
+      end
+      if (first_tx_cycle[0] != first_tx_cycle[1]) begin
+        $fatal(1, "synchronized start skew p0_cycle=%0d p1_cycle=%0d target=%0d",
+               first_tx_cycle[0], first_tx_cycle[1], target_tick);
+      end
+      if (first_tx_cycle[0] + 64'd4 < target_tick) begin
+        $fatal(1, "synchronized start released too early first=%0d target=%0d",
+               first_tx_cycle[0], target_tick);
+      end
+      $display("PASS: staggered host ARM commands produced synchronized first TX cycle=%0d target=%0d",
+               first_tx_cycle[0], target_tick);
     end
   endtask
 
@@ -562,6 +651,7 @@ module tb_dual_trace_replay_core_perf;
   initial begin
     run_case("dual_1518B_latency64", 4096, 1518, 0, 64, 0, 1'b1, 1'b1, 1'b1);
     run_case("dual_64B_gap2_wire100", 32768, 64, 2, 64, 0, 1'b0, 1'b1, 1'b1);
+    run_synchronized_start_case();
 
     $display("PASS: dual trace_replay_core concurrent preload correctness and throughput simulation completed");
     $finish;

@@ -15,13 +15,14 @@
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 #include <unistd.h>
 
 struct Args {
-  std::string h2c = "/dev/xdma0_h2c_0";
+  std::string h2c = "auto";
   uint64_t addr = 0x80000000ULL;
   uint64_t bytes = 1ULL << 30;
   uint64_t chunk_bytes = 64ULL << 20;
@@ -38,11 +39,38 @@ static uint64_t int_auto(const std::string &text) {
   return value;
 }
 
+static std::vector<std::string> split_device_paths(const std::string &text) {
+  std::vector<std::string> paths;
+  if (text == "auto") {
+    for (int channel = 0; channel < 4; ++channel) {
+      std::string path = "/dev/xdma0_h2c_" + std::to_string(channel);
+      if (::access(path.c_str(), W_OK) == 0) {
+        paths.push_back(path);
+      }
+    }
+    if (!paths.empty()) {
+      return paths;
+    }
+    throw std::runtime_error("no writable /dev/xdma0_h2c_* engine was found");
+  }
+  std::stringstream stream(text);
+  std::string item;
+  while (std::getline(stream, item, ',')) {
+    if (!item.empty()) {
+      paths.push_back(item);
+    }
+  }
+  if (paths.empty()) {
+    throw std::runtime_error("at least one H2C device path is required");
+  }
+  return paths;
+}
+
 static void usage(const char *argv0) {
   std::cerr
       << "Usage: " << argv0 << " [options]\n\n"
       << "Options:\n"
-      << "  --h2c PATH             default /dev/xdma0_h2c_0\n"
+      << "  --h2c auto|PATH[,PATH...] H2C engine list, default auto\n"
       << "  --addr ADDR            FPGA DDR byte address, default 0x80000000\n"
       << "  --bytes BYTES          bytes per pass, default 1GiB\n"
       << "  --chunk-bytes BYTES    pwrite chunk size, default 64MiB\n"
@@ -109,6 +137,7 @@ static void fill_pattern(uint8_t *ptr, size_t len, int thread_id) {
 int main(int argc, char **argv) {
   try {
     Args args = parse_args(argc, argv);
+    const std::vector<std::string> h2c_paths = split_device_paths(args.h2c);
     uint64_t total_bytes = args.bytes * static_cast<uint64_t>(args.passes);
     uint64_t thread_span = (args.bytes + static_cast<uint64_t>(args.threads) - 1) /
                            static_cast<uint64_t>(args.threads);
@@ -123,9 +152,10 @@ int main(int argc, char **argv) {
     for (int tid = 0; tid < args.threads; ++tid) {
       workers.emplace_back([&, tid]() {
         try {
-          int fd = ::open(args.h2c.c_str(), O_WRONLY);
+          const std::string &path = h2c_paths[static_cast<size_t>(tid) % h2c_paths.size()];
+          int fd = ::open(path.c_str(), O_WRONLY);
           if (fd < 0) {
-            throw std::runtime_error("cannot open H2C device: " + args.h2c);
+            throw std::runtime_error("cannot open H2C device: " + path);
           }
 
           void *raw = nullptr;

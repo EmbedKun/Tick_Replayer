@@ -74,8 +74,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--user", default="/dev/xdma0_user")
     parser.add_argument("--port", type=int, choices=[0, 1], default=0)
     parser.add_argument("--reg-base", type=int_auto)
-    parser.add_argument("--desc-base", type=int_auto, default=0x0000_0000)
-    parser.add_argument("--data-base", type=int_auto, default=0x1000_0000)
+    parser.add_argument("--desc-base", type=int_auto)
+    parser.add_argument("--data-base", type=int_auto)
     parser.add_argument("--work-dir", type=Path, default=Path("/tmp/traffic_replay_preload_stress"))
     parser.add_argument("--case", action="append", type=parse_case, dest="cases", help="frame_len:gap_ticks")
     parser.add_argument("--packet-count", type=int_auto, default=100_000)
@@ -89,7 +89,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument("--chunk-bytes", type=int_auto, default=4 * 1024 * 1024)
     parser.add_argument("--csv", type=Path)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.desc_base is None:
+        args.desc_base = 0x0000_0000 if args.port == 0 else 0x4_0000_0000
+    if args.data_base is None:
+        args.data_base = 0x1000_0000 if args.port == 0 else 0x4_1000_0000
+    return args
 
 
 def align_up(value: int, alignment: int) -> int:

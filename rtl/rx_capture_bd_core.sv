@@ -184,6 +184,19 @@ module rx_capture_core #(
   localparam logic [AXIL_ADDR_W-1:0] REG_GAP_SAMPLE_LO    = 16'h009c;
   localparam logic [AXIL_ADDR_W-1:0] REG_GAP_SAMPLE_HI    = 16'h00a0;
   localparam logic [AXIL_ADDR_W-1:0] REG_GAP_SAMPLE_WRITE_INDEX = 16'h00a4;
+  localparam logic [AXIL_ADDR_W-1:0] REG_EVENT_INDEX    = 16'h00a8;
+  localparam logic [AXIL_ADDR_W-1:0] REG_EVENT_COUNT_LO = 16'h00ac;
+  localparam logic [AXIL_ADDR_W-1:0] REG_EVENT_COUNT_HI = 16'h00b0;
+  localparam logic [AXIL_ADDR_W-1:0] REG_EVENT_DATA_LO  = 16'h00b4;
+  localparam logic [AXIL_ADDR_W-1:0] REG_EVENT_DATA_HI  = 16'h00b8;
+  localparam logic [AXIL_ADDR_W-1:0] REG_EVENT_WRITE_INDEX = 16'h00bc;
+  localparam logic [AXIL_ADDR_W-1:0] REG_EVENT_DROP_LO  = 16'h00c0;
+  localparam logic [AXIL_ADDR_W-1:0] REG_EVENT_DROP_HI  = 16'h00c4;
+  localparam logic [AXIL_ADDR_W-1:0] REG_EVENT_CAPACITY = 16'h00c8;
+  localparam logic [AXIL_ADDR_W-1:0] REG_HIST_INDEX     = 16'h00cc;
+  localparam logic [AXIL_ADDR_W-1:0] REG_HIST_COUNT_LO  = 16'h00d0;
+  localparam logic [AXIL_ADDR_W-1:0] REG_HIST_COUNT_HI  = 16'h00d4;
+  localparam logic [AXIL_ADDR_W-1:0] REG_RX_CAPABILITIES = 16'h00d8;
   localparam int RX_CLEAR_CYCLES = 128;
   localparam int RX_CLEAR_CNT_W = $clog2(RX_CLEAR_CYCLES + 1);
   localparam logic [RX_CLEAR_CNT_W-1:0] RX_CLEAR_LEVEL = RX_CLEAR_CYCLES;
@@ -191,8 +204,18 @@ module rx_capture_core #(
   localparam int GAP_SAMPLE_DEPTH = 1 << GAP_SAMPLE_DEPTH_LOG2;
   localparam logic [31:0] GAP_SAMPLE_DEPTH_U32 = GAP_SAMPLE_DEPTH;
   localparam int RX_FIFO_USER_W = 67;
+  localparam int EVENT_WORD_LANES = 8;
+  localparam int EVENT_WORD_LANE_W = 3;
+  localparam int EVENT_RING_WORD_LOG2 = 16;
+  localparam int EVENT_RING_WORDS = 1 << EVENT_RING_WORD_LOG2;
+  localparam int EVENT_RING_SAMPLES = EVENT_RING_WORDS * EVENT_WORD_LANES;
+  localparam int EVENT_RING_INDEX_W = EVENT_RING_WORD_LOG2 + EVENT_WORD_LANE_W;
+  localparam logic [31:0] EVENT_RING_SAMPLES_U32 = EVENT_RING_SAMPLES;
+  localparam int GAP_HIST_BINS = 16;
 
   logic [AXIL_ADDR_W-1:0] awaddr_q;
+  logic [AXIL_ADDR_W-1:0] araddr_q;
+  logic ar_pending_q;
   logic aw_hold;
   logic w_hold;
   logic [31:0] wdata_q;
@@ -253,15 +276,58 @@ module rx_capture_core #(
   logic [63:0] rx_tick_rx_q;
   logic [63:0] rx_prev_start_tick_rx_q;
   logic        rx_have_prev_start_rx_q;
+  logic        rx_gap_measure_valid_q;
+  logic [63:0] rx_gap_measure_q;
+  logic        rx_hist_update_valid_q;
+  logic [3:0]  rx_hist_update_bin_q;
   logic [63:0] stat_gap_count_rx_q;
   logic [63:0] stat_gap_sum_rx_q;
   logic [63:0] stat_gap_min_rx_q;
   logic [63:0] stat_gap_max_rx_q;
   logic [63:0] stat_gap_last_rx_q;
+  logic [63:0] stat_rx_pkts_rx_q;
+  logic [63:0] stat_rx_bytes_rx_q;
+  logic [31:0] stat_rx_bytes_lo_rx_q;
+  logic [31:0] stat_rx_bytes_hi_rx_q;
+  logic [63:0] stat_rx_errs_rx_q;
+  logic [63:0] stat_rx_pkts_sync_q;
+  logic [63:0] stat_rx_bytes_sync_q;
+  logic [63:0] stat_rx_errs_sync_q;
+  logic [63:0] stat_rx_pkts_meta_q;
+  logic [63:0] stat_rx_bytes_meta_q;
+  logic [63:0] stat_rx_errs_meta_q;
+  logic [63:0] gap_hist_rx_q [0:GAP_HIST_BINS-1];
+  logic [63:0] gap_hist_meta_q [0:GAP_HIST_BINS-1];
+  logic [63:0] gap_hist_sync_q [0:GAP_HIST_BINS-1];
+  logic [3:0] gap_hist_rd_index_q;
+
+  logic [511:0] rx_event_pack_q;
+  logic [EVENT_WORD_LANE_W-1:0] rx_event_lane_q;
+  logic [511:0] rx_event_word_q;
+  logic rx_event_word_valid_q;
+  wire rx_event_word_ready;
+  logic [63:0] rx_event_drop_rx_q;
+  logic [63:0] rx_event_drop_meta_q;
+  logic [63:0] rx_event_drop_sync_q;
+  wire [511:0] event_fifo_tdata;
+  wire event_fifo_tvalid;
+  wire event_fifo_tready;
+  wire [63:0] event_fifo_unused_keep;
+  wire event_fifo_unused_last;
+  wire event_fifo_unused_user;
+  logic [EVENT_RING_WORD_LOG2-1:0] event_ring_wr_word_q;
+  logic [63:0] event_ring_count_q;
+  logic [EVENT_RING_INDEX_W-1:0] event_rd_index_q;
+  wire [511:0] event_rd_word;
+  logic [EVENT_RING_WORD_LOG2-1:0] event_rd_word_addr;
+  logic [63:0] event_rd_sample_q;
+  wire event_mem_sbiterr;
+  wire event_mem_dbiterr;
   logic [GAP_SAMPLE_DEPTH_LOG2-1:0] gap_sample_wr_ptr_q;
   logic [GAP_SAMPLE_DEPTH_LOG2-1:0] gap_sample_rd_index_q;
   logic [31:0] gap_sample_count_q;
-  logic [63:0] gap_sample_mem [0:GAP_SAMPLE_DEPTH-1];
+  (* ram_style = "block" *) logic [63:0] gap_sample_mem [0:GAP_SAMPLE_DEPTH-1];
+  logic [63:0] gap_sample_rd_q;
   (* ASYNC_REG = "TRUE" *) logic [63:0] rx_tick_meta_q;
   (* ASYNC_REG = "TRUE" *) logic [63:0] rx_tick_sync_q;
   (* ASYNC_REG = "TRUE" *) logic [63:0] stat_gap_count_meta_q;
@@ -281,7 +347,7 @@ module rx_capture_core #(
 
   assign s_axil_bresp   = 2'b00;
   assign s_axil_rresp   = 2'b00;
-  assign s_axil_arready = !s_axil_rvalid;
+  assign s_axil_arready = !ar_pending_q && !s_axil_rvalid;
   assign do_write       = aw_hold && w_hold && !s_axil_bvalid;
 
   assign m_axi_awid    = {AXI_ID_W_P{1'b0}};
@@ -351,6 +417,19 @@ module rx_capture_core #(
     end
   endfunction
 
+  function automatic logic [3:0] gap_hist_bin(input logic [63:0] gap);
+    logic [3:0] result;
+    begin
+      result = 4'd0;
+      for (int i = 1; i < GAP_HIST_BINS; i++) begin
+        if (gap >= (64'd1 << i)) begin
+          result = i[3:0];
+        end
+      end
+      gap_hist_bin = result;
+    end
+  endfunction
+
   function automatic logic [AXIS_KEEP_W_P-1:0] limit_keep(
     input logic [AXIS_KEEP_W_P-1:0] keep,
     input logic [31:0] byte_limit
@@ -400,10 +479,78 @@ module rx_capture_core #(
     .m_axis_tuser(fifo_tuser_vec)
   );
 
+  axis_async_fifo #(
+    .DATA_W(512),
+    .KEEP_W(64),
+    .USER_W(1),
+    .DEPTH_LOG2(6)
+  ) rx_event_fifo_i (
+    .s_clk(rx_clk),
+    .s_resetn(rx_resetn),
+    .m_clk(clk),
+    .m_resetn(resetn),
+    .clear(rx_fifo_clear),
+    .s_axis_tdata(rx_event_word_q),
+    .s_axis_tkeep(64'hffff_ffff_ffff_ffff),
+    .s_axis_tvalid(rx_event_word_valid_q),
+    .s_axis_tready(rx_event_word_ready),
+    .s_axis_tlast(1'b1),
+    .s_axis_tuser(1'b0),
+    .m_axis_tdata(event_fifo_tdata),
+    .m_axis_tkeep(event_fifo_unused_keep),
+    .m_axis_tvalid(event_fifo_tvalid),
+    .m_axis_tready(event_fifo_tready),
+    .m_axis_tlast(event_fifo_unused_last),
+    .m_axis_tuser(event_fifo_unused_user)
+  );
+
+  assign event_fifo_tready = 1'b1;
+
+  xpm_memory_sdpram #(
+    .MEMORY_SIZE(EVENT_RING_WORDS * 512),
+    .MEMORY_PRIMITIVE("ultra"),
+    .CLOCKING_MODE("common_clock"),
+    .ECC_MODE("no_ecc"),
+    .MEMORY_INIT_FILE("none"),
+    .USE_MEM_INIT(0),
+    .WAKEUP_TIME("disable_sleep"),
+    .AUTO_SLEEP_TIME(0),
+    .MESSAGE_CONTROL(0),
+    .MEMORY_OPTIMIZATION("true"),
+    .CASCADE_HEIGHT(4),
+    .WRITE_DATA_WIDTH_A(512),
+    .BYTE_WRITE_WIDTH_A(512),
+    .ADDR_WIDTH_A(EVENT_RING_WORD_LOG2),
+    .READ_DATA_WIDTH_B(512),
+    .ADDR_WIDTH_B(EVENT_RING_WORD_LOG2),
+    .READ_RESET_VALUE_B("0"),
+    .READ_LATENCY_B(5),
+    .WRITE_MODE_B("read_first"),
+    .RST_MODE_B("SYNC")
+  ) event_ring_mem_i (
+    .sleep(1'b0),
+    .clka(clk),
+    .ena(event_fifo_tvalid && event_fifo_tready),
+    .wea(1'b1),
+    .addra(event_ring_wr_word_q),
+    .dina(event_fifo_tdata),
+    .injectsbiterra(1'b0),
+    .injectdbiterra(1'b0),
+    .clkb(clk),
+    .rstb(!resetn || rx_fifo_clear),
+    .enb(1'b1),
+    .regceb(1'b1),
+    .addrb(event_rd_word_addr),
+    .doutb(event_rd_word),
+    .sbiterrb(event_mem_sbiterr),
+    .dbiterrb(event_mem_dbiterr)
+  );
+
   assign fifo_tuser  = fifo_tuser_vec[0];
   assign fifo_tstart = fifo_tuser_vec[1];
   assign fifo_tgap   = fifo_tuser_vec[65:2];
   assign fifo_tgap_valid = fifo_tuser_vec[66];
+  assign stat_rx_bytes_rx_q = {stat_rx_bytes_hi_rx_q, stat_rx_bytes_lo_rx_q};
 
   always_ff @(posedge rx_clk or negedge rx_resetn) begin
     if (!rx_resetn) begin
@@ -415,11 +562,27 @@ module rx_capture_core #(
       rx_tick_rx_q <= 64'd0;
       rx_prev_start_tick_rx_q <= 64'd0;
       rx_have_prev_start_rx_q <= 1'b0;
+      rx_gap_measure_valid_q <= 1'b0;
+      rx_gap_measure_q <= 64'd0;
+      rx_hist_update_valid_q <= 1'b0;
+      rx_hist_update_bin_q <= 4'd0;
       stat_gap_count_rx_q <= 64'd0;
       stat_gap_sum_rx_q <= 64'd0;
       stat_gap_min_rx_q <= 64'd0;
       stat_gap_max_rx_q <= 64'd0;
       stat_gap_last_rx_q <= 64'd0;
+      stat_rx_pkts_rx_q <= 64'd0;
+      stat_rx_bytes_lo_rx_q <= 32'd0;
+      stat_rx_bytes_hi_rx_q <= 32'd0;
+      stat_rx_errs_rx_q <= 64'd0;
+      rx_event_pack_q <= '0;
+      rx_event_lane_q <= '0;
+      rx_event_word_q <= '0;
+      rx_event_word_valid_q <= 1'b0;
+      rx_event_drop_rx_q <= 64'd0;
+      for (int hist = 0; hist < GAP_HIST_BINS; hist++) begin
+        gap_hist_rx_q[hist] <= 64'd0;
+      end
     end else begin
       cfg_enable_rx_meta <= cfg_enable;
       cfg_enable_rx_sync <= cfg_enable_rx_meta;
@@ -430,27 +593,87 @@ module rx_capture_core #(
         rx_tick_rx_q <= 64'd0;
         rx_prev_start_tick_rx_q <= 64'd0;
         rx_have_prev_start_rx_q <= 1'b0;
+        rx_gap_measure_valid_q <= 1'b0;
+        rx_gap_measure_q <= 64'd0;
+        rx_hist_update_valid_q <= 1'b0;
+        rx_hist_update_bin_q <= 4'd0;
         stat_gap_count_rx_q <= 64'd0;
         stat_gap_sum_rx_q <= 64'd0;
         stat_gap_min_rx_q <= 64'd0;
         stat_gap_max_rx_q <= 64'd0;
         stat_gap_last_rx_q <= 64'd0;
+        stat_rx_pkts_rx_q <= 64'd0;
+        stat_rx_bytes_lo_rx_q <= 32'd0;
+        stat_rx_bytes_hi_rx_q <= 32'd0;
+        stat_rx_errs_rx_q <= 64'd0;
+        rx_event_pack_q <= '0;
+        rx_event_lane_q <= '0;
+        rx_event_word_q <= '0;
+        rx_event_word_valid_q <= 1'b0;
+        rx_event_drop_rx_q <= 64'd0;
+        for (int hist = 0; hist < GAP_HIST_BINS; hist++) begin
+          gap_hist_rx_q[hist] <= 64'd0;
+        end
       end else if (s_rx_axis_tvalid && !fifo_s_ready) begin
         rx_overflow_seen <= 1'b1;
       end
       if (cfg_enable_rx_sync && !rx_clear_rx_sync) begin
+        rx_gap_measure_valid_q <= 1'b0;
+        rx_hist_update_valid_q <= rx_gap_measure_valid_q;
+        if (rx_event_word_valid_q && rx_event_word_ready) begin
+          rx_event_word_valid_q <= 1'b0;
+        end
         rx_tick_rx_q <= rx_tick_rx_q + 64'd1;
+        if (s_rx_axis_tvalid) begin
+          automatic logic [32:0] rx_bytes_low_sum;
+          rx_bytes_low_sum = {1'b0, stat_rx_bytes_lo_rx_q} +
+                             {{26{1'b0}}, popcount_keep(s_rx_axis_tkeep)};
+          stat_rx_bytes_lo_rx_q <= rx_bytes_low_sum[31:0];
+          if (rx_bytes_low_sum[32]) begin
+            stat_rx_bytes_hi_rx_q <= stat_rx_bytes_hi_rx_q + 32'd1;
+          end
+          if (s_rx_axis_tlast) begin
+            stat_rx_pkts_rx_q <= stat_rx_pkts_rx_q + 64'd1;
+            if (s_rx_axis_tuser) begin
+              stat_rx_errs_rx_q <= stat_rx_errs_rx_q + 64'd1;
+            end
+          end
+        end
+        if (rx_hist_update_valid_q) begin
+          gap_hist_rx_q[rx_hist_update_bin_q] <=
+            gap_hist_rx_q[rx_hist_update_bin_q] + 64'd1;
+        end
+        if (rx_gap_measure_valid_q) begin
+            automatic logic [511:0] completed_event_word;
+            rx_hist_update_bin_q <= gap_hist_bin(rx_gap_measure_q);
+            stat_gap_count_rx_q <= stat_gap_count_rx_q + 64'd1;
+            stat_gap_sum_rx_q   <= stat_gap_sum_rx_q + rx_gap_measure_q;
+            stat_gap_last_rx_q  <= rx_gap_measure_q;
+            completed_event_word = rx_event_pack_q;
+            completed_event_word[rx_event_lane_q*64 +: 64] = rx_gap_measure_q;
+            if (rx_event_lane_q == EVENT_WORD_LANES-1) begin
+              rx_event_lane_q <= '0;
+              if (!rx_event_word_valid_q || rx_event_word_ready) begin
+                rx_event_word_q <= completed_event_word;
+                rx_event_word_valid_q <= 1'b1;
+              end else begin
+                rx_event_drop_rx_q <= rx_event_drop_rx_q + EVENT_WORD_LANES;
+              end
+            end else begin
+              rx_event_pack_q[rx_event_lane_q*64 +: 64] <= rx_gap_measure_q;
+              rx_event_lane_q <= rx_event_lane_q + 1'b1;
+            end
+            if ((stat_gap_count_rx_q == 64'd0) || (rx_gap_measure_q < stat_gap_min_rx_q)) begin
+              stat_gap_min_rx_q <= rx_gap_measure_q;
+            end
+            if ((stat_gap_count_rx_q == 64'd0) || (rx_gap_measure_q > stat_gap_max_rx_q)) begin
+              stat_gap_max_rx_q <= rx_gap_measure_q;
+            end
+        end
         if (rx_start_event) begin
           if (rx_have_prev_start_rx_q) begin
-            stat_gap_count_rx_q <= stat_gap_count_rx_q + 64'd1;
-            stat_gap_sum_rx_q   <= stat_gap_sum_rx_q + rx_gap_candidate;
-            stat_gap_last_rx_q  <= rx_gap_candidate;
-            if ((stat_gap_count_rx_q == 64'd0) || (rx_gap_candidate < stat_gap_min_rx_q)) begin
-              stat_gap_min_rx_q <= rx_gap_candidate;
-            end
-            if ((stat_gap_count_rx_q == 64'd0) || (rx_gap_candidate > stat_gap_max_rx_q)) begin
-              stat_gap_max_rx_q <= rx_gap_candidate;
-            end
+            rx_gap_measure_q <= rx_gap_candidate;
+            rx_gap_measure_valid_q <= 1'b1;
           end
           rx_prev_start_tick_rx_q <= rx_tick_rx_q;
           rx_have_prev_start_rx_q <= 1'b1;
@@ -475,6 +698,18 @@ module rx_capture_core #(
       stat_gap_max_sync_q <= 64'd0;
       stat_gap_last_meta_q <= 64'd0;
       stat_gap_last_sync_q <= 64'd0;
+      stat_rx_pkts_meta_q <= 64'd0;
+      stat_rx_pkts_sync_q <= 64'd0;
+      stat_rx_bytes_meta_q <= 64'd0;
+      stat_rx_bytes_sync_q <= 64'd0;
+      stat_rx_errs_meta_q <= 64'd0;
+      stat_rx_errs_sync_q <= 64'd0;
+      rx_event_drop_meta_q <= 64'd0;
+      rx_event_drop_sync_q <= 64'd0;
+      for (int hist = 0; hist < GAP_HIST_BINS; hist++) begin
+        gap_hist_meta_q[hist] <= 64'd0;
+        gap_hist_sync_q[hist] <= 64'd0;
+      end
     end else begin
       rx_overflow_meta <= rx_overflow_seen;
       rx_overflow_sync <= rx_overflow_meta;
@@ -490,6 +725,45 @@ module rx_capture_core #(
       stat_gap_max_sync_q <= stat_gap_max_meta_q;
       stat_gap_last_meta_q <= stat_gap_last_rx_q;
       stat_gap_last_sync_q <= stat_gap_last_meta_q;
+      stat_rx_pkts_meta_q <= stat_rx_pkts_rx_q;
+      stat_rx_pkts_sync_q <= stat_rx_pkts_meta_q;
+      stat_rx_bytes_meta_q <= stat_rx_bytes_rx_q;
+      stat_rx_bytes_sync_q <= stat_rx_bytes_meta_q;
+      stat_rx_errs_meta_q <= stat_rx_errs_rx_q;
+      stat_rx_errs_sync_q <= stat_rx_errs_meta_q;
+      rx_event_drop_meta_q <= rx_event_drop_rx_q;
+      rx_event_drop_sync_q <= rx_event_drop_meta_q;
+      for (int hist = 0; hist < GAP_HIST_BINS; hist++) begin
+        gap_hist_meta_q[hist] <= gap_hist_rx_q[hist];
+        gap_hist_sync_q[hist] <= gap_hist_meta_q[hist];
+      end
+    end
+  end
+
+  always_ff @(posedge clk) begin
+    if (!resetn) begin
+      gap_sample_rd_q <= 64'd0;
+    end else begin
+      gap_sample_rd_q <= gap_sample_mem[gap_sample_rd_index_q];
+    end
+  end
+
+  always_comb begin
+    event_rd_word_addr = event_rd_index_q[EVENT_WORD_LANE_W +: EVENT_RING_WORD_LOG2];
+  end
+
+  always_ff @(posedge clk) begin
+    if (!resetn || rx_fifo_clear) begin
+      event_ring_wr_word_q <= '0;
+      event_ring_count_q <= 64'd0;
+      event_rd_sample_q <= 64'd0;
+    end else begin
+      event_rd_sample_q <=
+        event_rd_word[event_rd_index_q[EVENT_WORD_LANE_W-1:0]*64 +: 64];
+      if (event_fifo_tvalid && event_fifo_tready) begin
+        event_ring_wr_word_q <= event_ring_wr_word_q + 1'b1;
+        event_ring_count_q <= event_ring_count_q + EVENT_WORD_LANES;
+      end
     end
   end
 
@@ -522,6 +796,8 @@ module rx_capture_core #(
       s_axil_rvalid      <= 1'b0;
       s_axil_rdata       <= 32'd0;
       awaddr_q           <= '0;
+      araddr_q           <= '0;
+      ar_pending_q       <= 1'b0;
       aw_hold            <= 1'b0;
       w_hold             <= 1'b0;
       stats_clear_req_q  <= 1'b0;
@@ -547,6 +823,8 @@ module rx_capture_core #(
       gap_sample_wr_ptr_q <= '0;
       gap_sample_rd_index_q <= '0;
       gap_sample_count_q <= 32'd0;
+      event_rd_index_q <= '0;
+      gap_hist_rd_index_q <= '0;
       writer_state_q     <= 2'd0;
       aw_done_q          <= 1'b0;
       w_done_q           <= 1'b0;
@@ -579,6 +857,8 @@ module rx_capture_core #(
         stat_rx_bytes_inc_valid_q <= 1'b0;
         gap_sample_wr_ptr_q <= '0;
         gap_sample_count_q  <= 32'd0;
+        event_rd_index_q    <= '0;
+        gap_hist_rd_index_q <= '0;
         writer_state_q      <= 2'd0;
         aw_done_q           <= 1'b0;
         w_done_q            <= 1'b0;
@@ -630,6 +910,16 @@ module rx_capture_core #(
           REG_TRUNC_BYTES:  cfg_trunc_bytes      <= apply_wstrb(cfg_trunc_bytes, wdata_q, wstrb_q);
           REG_WRITE_PTR:    write_ptr_q          <= apply_wstrb(write_ptr_q, wdata_q, wstrb_q);
           REG_GAP_SAMPLE_INDEX: gap_sample_rd_index_q <= apply_index_wstrb(gap_sample_rd_index_q, wdata_q, wstrb_q);
+          REG_EVENT_INDEX: begin
+            if (|wstrb_q) begin
+              event_rd_index_q <= wdata_q[EVENT_RING_INDEX_W-1:0];
+            end
+          end
+          REG_HIST_INDEX: begin
+            if (wstrb_q[0]) begin
+              gap_hist_rd_index_q <= wdata_q[3:0];
+            end
+          end
           default: begin
           end
         endcase
@@ -641,8 +931,14 @@ module rx_capture_core #(
       end
 
       if (s_axil_arready && s_axil_arvalid) begin
+        ar_pending_q <= 1'b1;
+        araddr_q <= s_axil_araddr;
+      end
+
+      if (ar_pending_q) begin
+        ar_pending_q <= 1'b0;
         s_axil_rvalid <= 1'b1;
-        unique case (s_axil_araddr)
+        unique case (araddr_q)
           REG_CONTROL:      s_axil_rdata <= {29'd0, cfg_capture_enable, 1'b0, cfg_enable};
           REG_STATUS:       s_axil_rdata <= {24'd0, writer_state_q, rx_overflow_sync, link_up, fifo_tvalid, fifo_s_ready, m_axi_bvalid, m_axi_wvalid, m_axi_awvalid};
           REG_RING_BASE_LO: s_axil_rdata <= cfg_ring_base[31:0];
@@ -650,12 +946,12 @@ module rx_capture_core #(
           REG_RING_SIZE:    s_axil_rdata <= cfg_ring_size;
           REG_TRUNC_BYTES:  s_axil_rdata <= cfg_trunc_bytes;
           REG_WRITE_PTR:    s_axil_rdata <= write_ptr_q;
-          REG_RX_PKTS_LO:   s_axil_rdata <= stat_rx_pkts_q[31:0];
-          REG_RX_PKTS_HI:   s_axil_rdata <= stat_rx_pkts_q[63:32];
-          REG_RX_BYTES_LO:  s_axil_rdata <= stat_rx_bytes_q[31:0];
-          REG_RX_BYTES_HI:  s_axil_rdata <= stat_rx_bytes_q[63:32];
-          REG_RX_ERRS_LO:   s_axil_rdata <= stat_rx_errs_q[31:0];
-          REG_RX_ERRS_HI:   s_axil_rdata <= stat_rx_errs_q[63:32];
+          REG_RX_PKTS_LO:   s_axil_rdata <= stat_rx_pkts_sync_q[31:0];
+          REG_RX_PKTS_HI:   s_axil_rdata <= stat_rx_pkts_sync_q[63:32];
+          REG_RX_BYTES_LO:  s_axil_rdata <= stat_rx_bytes_sync_q[31:0];
+          REG_RX_BYTES_HI:  s_axil_rdata <= stat_rx_bytes_sync_q[63:32];
+          REG_RX_ERRS_LO:   s_axil_rdata <= stat_rx_errs_sync_q[31:0];
+          REG_RX_ERRS_HI:   s_axil_rdata <= stat_rx_errs_sync_q[63:32];
           REG_CAP_BYTES_LO: s_axil_rdata <= stat_cap_bytes_q[31:0];
           REG_CAP_BYTES_HI: s_axil_rdata <= stat_cap_bytes_q[63:32];
           REG_AXI_WR_LO:    s_axil_rdata <= stat_axi_writes_q[31:0];
@@ -677,9 +973,22 @@ module rx_capture_core #(
           REG_RX_TICK_HI:   s_axil_rdata <= rx_tick_sync_q[63:32];
           REG_GAP_SAMPLE_INDEX: s_axil_rdata <= {{(32-GAP_SAMPLE_DEPTH_LOG2){1'b0}}, gap_sample_rd_index_q};
           REG_GAP_SAMPLE_COUNT: s_axil_rdata <= gap_sample_count_q;
-          REG_GAP_SAMPLE_LO:    s_axil_rdata <= gap_sample_mem[gap_sample_rd_index_q][31:0];
-          REG_GAP_SAMPLE_HI:    s_axil_rdata <= gap_sample_mem[gap_sample_rd_index_q][63:32];
+          REG_GAP_SAMPLE_LO:    s_axil_rdata <= gap_sample_rd_q[31:0];
+          REG_GAP_SAMPLE_HI:    s_axil_rdata <= gap_sample_rd_q[63:32];
           REG_GAP_SAMPLE_WRITE_INDEX: s_axil_rdata <= {{(32-GAP_SAMPLE_DEPTH_LOG2){1'b0}}, gap_sample_wr_ptr_q};
+          REG_EVENT_INDEX:       s_axil_rdata <= {{(32-EVENT_RING_INDEX_W){1'b0}}, event_rd_index_q};
+          REG_EVENT_COUNT_LO:    s_axil_rdata <= event_ring_count_q[31:0];
+          REG_EVENT_COUNT_HI:    s_axil_rdata <= event_ring_count_q[63:32];
+          REG_EVENT_DATA_LO:     s_axil_rdata <= event_rd_sample_q[31:0];
+          REG_EVENT_DATA_HI:     s_axil_rdata <= event_rd_sample_q[63:32];
+          REG_EVENT_WRITE_INDEX: s_axil_rdata <= {{(32-EVENT_RING_INDEX_W){1'b0}}, event_ring_wr_word_q, 3'd0};
+          REG_EVENT_DROP_LO:     s_axil_rdata <= rx_event_drop_sync_q[31:0];
+          REG_EVENT_DROP_HI:     s_axil_rdata <= rx_event_drop_sync_q[63:32];
+          REG_EVENT_CAPACITY:    s_axil_rdata <= EVENT_RING_SAMPLES_U32;
+          REG_HIST_INDEX:        s_axil_rdata <= {28'd0, gap_hist_rd_index_q};
+          REG_HIST_COUNT_LO:     s_axil_rdata <= gap_hist_sync_q[gap_hist_rd_index_q][31:0];
+          REG_HIST_COUNT_HI:     s_axil_rdata <= gap_hist_sync_q[gap_hist_rd_index_q][63:32];
+          REG_RX_CAPABILITIES:   s_axil_rdata <= 32'h0000_0007;
           default:          s_axil_rdata <= 32'h0;
         endcase
       end else if (s_axil_rvalid && s_axil_rready) begin

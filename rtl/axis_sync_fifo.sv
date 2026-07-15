@@ -5,7 +5,8 @@ module axis_sync_fifo #(
   parameter int KEEP_W = DATA_W / 8,
   parameter int DEPTH  = 1024,
   parameter int RAM_READ_LATENCY_P = 2,
-  parameter int OUT_DEPTH_P = 4
+  parameter int OUT_DEPTH_P = 4,
+  parameter int RAM_CASCADE_HEIGHT_P = 0
 ) (
   input  logic                         clk,
   input  logic                         rstn,
@@ -49,14 +50,22 @@ module axis_sync_fifo #(
   logic [OUT_PTR_W-1:0] out_rd_ptr;
   logic [OUT_COUNT_W-1:0] out_count;
   logic [PAYLOAD_W-1:0] out_mem [0:OUT_DEPTH-1];
+  logic [PAYLOAD_W-1:0] in_payload_reg;
+  logic                 in_valid_reg;
+  logic [PAYLOAD_W-1:0] ram_dout_stage;
+  logic                 ram_return_valid_stage;
   logic [PAYLOAD_W-1:0] out_payload_reg;
   logic                 out_valid_reg;
   logic                 s_axis_tready_q;
   logic [PAYLOAD_W-1:0] ram_dout;
+  logic                 clear_q;
+  logic                 clear_i;
 
   logic [OUT_COUNT_W-1:0] outstanding_count;
   logic [OUT_COUNT_W-1:0] buffered_count;
   logic [COUNT_W-1:0] total_level;
+  logic input_accept;
+  logic ram_accept;
   logic wr_fire;
   logic rd_issue;
   logic ram_return_valid;
@@ -78,13 +87,18 @@ module axis_sync_fifo #(
       outstanding_count = outstanding_count + {{(OUT_COUNT_W-1){1'b0}}, rd_valid_pipe[pipe_idx]};
     end
   end
-  assign buffered_count = outstanding_count + out_count;
+  assign buffered_count = outstanding_count + out_count +
+                          {{(OUT_COUNT_W-1){1'b0}}, ram_return_valid_stage};
   assign total_level = ram_count +
                        {{(COUNT_W-OUT_COUNT_W){1'b0}}, buffered_count} +
-                       {{(COUNT_W-1){1'b0}}, out_valid_reg};
+                       {{(COUNT_W-1){1'b0}}, out_valid_reg} +
+                       {{(COUNT_W-1){1'b0}}, in_valid_reg};
 
-  assign s_axis_tready = s_axis_tready_q;
-  assign wr_fire = s_axis_tvalid && s_axis_tready;
+  assign clear_i = clear_q;
+  assign ram_accept = rstn && !clear_i && s_axis_tready_q;
+  assign s_axis_tready = rstn && !clear_i && (!in_valid_reg || ram_accept);
+  assign input_accept = s_axis_tvalid && s_axis_tready;
+  assign wr_fire = in_valid_reg && ram_accept;
   assign rd_issue = (ram_count != '0) && (buffered_count < OUT_DEPTH_LEVEL);
   assign ram_return_valid = rd_valid_pipe[RAM_READ_LATENCY-1];
 
@@ -101,7 +115,7 @@ module axis_sync_fifo #(
     .ADDR_WIDTH_B(ADDR_W),
     .AUTO_SLEEP_TIME(0),
     .BYTE_WRITE_WIDTH_A(PAYLOAD_W),
-    .CASCADE_HEIGHT(0),
+    .CASCADE_HEIGHT(RAM_CASCADE_HEIGHT_P),
     .CLOCKING_MODE("common_clock"),
     .ECC_MODE("no_ecc"),
     .MEMORY_INIT_FILE("none"),
@@ -129,7 +143,7 @@ module axis_sync_fifo #(
     .ena(1'b1),
     .wea(wr_fire),
     .addra(wr_ptr),
-    .dina({s_axis_tlast, s_axis_tkeep, s_axis_tdata}),
+    .dina(in_payload_reg),
     .injectsbiterra(1'b0),
     .injectdbiterra(1'b0),
     .clkb(clk),
@@ -148,18 +162,29 @@ module axis_sync_fifo #(
       rd_ptr <= '0;
       ram_count <= '0;
       rd_valid_pipe <= '0;
+      in_payload_reg <= '0;
+      in_valid_reg <= 1'b0;
+      ram_dout_stage <= '0;
+      ram_return_valid_stage <= 1'b0;
       out_wr_ptr <= '0;
       out_rd_ptr <= '0;
       out_count <= '0;
       out_payload_reg <= '0;
       out_valid_reg <= 1'b0;
       s_axis_tready_q <= 1'b0;
+      clear_q <= 1'b1;
     end else begin
-      if (clear) begin
+      clear_q <= clear;
+
+      if (clear_i) begin
         wr_ptr <= '0;
         rd_ptr <= '0;
         ram_count <= '0;
         rd_valid_pipe <= '0;
+        in_payload_reg <= '0;
+        in_valid_reg <= 1'b0;
+        ram_dout_stage <= '0;
+        ram_return_valid_stage <= 1'b0;
         out_wr_ptr <= '0;
         out_rd_ptr <= '0;
         out_count <= '0;
@@ -169,6 +194,13 @@ module axis_sync_fifo #(
       end else begin
         rd_valid_pipe <= {rd_valid_pipe[RAM_READ_LATENCY-2:0], rd_issue};
         s_axis_tready_q <= (total_level <= READY_LEVEL);
+
+        if (input_accept) begin
+          in_payload_reg <= {s_axis_tlast, s_axis_tkeep, s_axis_tdata};
+          in_valid_reg <= 1'b1;
+        end else if (wr_fire) begin
+          in_valid_reg <= 1'b0;
+        end
 
         if (wr_fire) begin
           wr_ptr <= inc_ptr(wr_ptr);
@@ -192,11 +224,18 @@ module axis_sync_fifo #(
         end
 
         if (ram_return_valid) begin
-          out_mem[out_wr_ptr] <= ram_dout;
+          ram_dout_stage <= ram_dout;
+          ram_return_valid_stage <= 1'b1;
+        end else if (ram_return_valid_stage) begin
+          ram_return_valid_stage <= 1'b0;
+        end
+
+        if (ram_return_valid_stage) begin
+          out_mem[out_wr_ptr] <= ram_dout_stage;
           out_wr_ptr <= out_wr_ptr + {{(OUT_PTR_W-1){1'b0}}, 1'b1};
         end
 
-        unique case ({ram_return_valid, out_pop})
+        unique case ({ram_return_valid_stage, out_pop})
           2'b10: out_count <= out_count + {{(OUT_COUNT_W-1){1'b0}}, 1'b1};
           2'b01: out_count <= out_count - {{(OUT_COUNT_W-1){1'b0}}, 1'b1};
           default: out_count <= out_count;

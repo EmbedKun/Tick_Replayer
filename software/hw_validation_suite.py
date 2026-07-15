@@ -73,10 +73,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile", choices=sorted(PROFILES), default="smoke")
     parser.add_argument("--work-dir", type=Path, default=Path("/home/user/traffic_replay_validation"))
     parser.add_argument("--python", default=sys.executable or "python3")
+    parser.add_argument("--h2c", default="/dev/xdma0_h2c_0")
+    parser.add_argument("--c2h", default="/dev/xdma0_c2h_0")
+    parser.add_argument("--user", default="/dev/xdma0_user")
     parser.add_argument("--port", type=int, choices=[0, 1], default=0)
     parser.add_argument("--rx-port", type=int, choices=[0, 1], default=1)
-    parser.add_argument("--ring-base", type=int_auto, default=0x2000_0000)
-    parser.add_argument("--rx-ring-base", type=int_auto, default=0x3000_0000)
+    parser.add_argument("--ring-base", type=int_auto)
+    parser.add_argument("--rx-ring-base", type=int_auto)
     parser.add_argument("--rx-ring-size", type=int_auto, default=0x0100_0000)
     parser.add_argument("--watermark", type=int_auto, default=4096)
     parser.add_argument("--ring-loader", choices=["cpp", "python"], default="cpp")
@@ -86,7 +89,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-rx", action="store_true")
     parser.add_argument("--force-link-up", action="store_true")
     parser.add_argument("--force-tx-ready", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.ring_base is None:
+        args.ring_base = 0x2000_0000 if args.port == 0 else 0x4_2000_0000
+    if args.rx_ring_base is None:
+        args.rx_ring_base = 0x8_1000_0000 if args.rx_port == 0 else 0xC_1000_0000
+    return args
 
 
 def shell_line(cmd: list[str]) -> str:
@@ -142,7 +150,10 @@ def main() -> None:
     print(f"validation_dir    : {run_dir}")
     print(f"profile           : {args.profile}")
 
-    cli = [args.python, script("traffic_replay_cli.py")]
+    tx_desc_base = 0x0000_0000 if args.port == 0 else 0x4_0000_0000
+    tx_data_base = 0x1000_0000 if args.port == 0 else 0x4_1000_0000
+
+    cli = [args.python, script("traffic_replay_cli.py"), "--user", args.user]
     run_step("tx status before", cli + ["--port", str(args.port), "status"], log_path)
     run_step("rx status before", cli + ["--port", str(args.rx_port), "rx-status"], log_path)
 
@@ -152,15 +163,25 @@ def main() -> None:
             [
                 args.python,
                 script("ddr_readback_check.py"),
+                "--h2c",
+                args.h2c,
+                "--c2h",
+                args.c2h,
                 "--repeat",
                 str(cfg["ddr_repeat"]),
-                "--case",
-                "0x00000000:0x1000",
-                "--case",
-                "0x00100000:0x10000",
-                "--case",
-                "0x10000000:0x100000",
-            ],
+            ]
+            + repeated_case_args(
+                [
+                    "0x0000000000:0x100000",
+                    "0x03fff00000:0x100000",
+                    "0x0400000000:0x100000",
+                    "0x07fff00000:0x100000",
+                    "0x0800000000:0x100000",
+                    "0x0bfff00000:0x100000",
+                    "0x0c00000000:0x100000",
+                    "0x0ffff00000:0x100000",
+                ]
+            ),
             log_path,
         )
 
@@ -171,8 +192,16 @@ def main() -> None:
             [
                 args.python,
                 script("preload_stress_test.py"),
+                "--h2c",
+                args.h2c,
+                "--user",
+                args.user,
                 "--port",
                 str(args.port),
+                "--desc-base",
+                f"0x{tx_desc_base:x}",
+                "--data-base",
+                f"0x{tx_data_base:x}",
                 "--packet-count",
                 str(cfg["preload_packets"]),
                 "--work-dir",
@@ -192,8 +221,16 @@ def main() -> None:
             [
                 args.python,
                 script("preload_stress_test.py"),
+                "--h2c",
+                args.h2c,
+                "--user",
+                args.user,
                 "--port",
                 str(args.port),
+                "--desc-base",
+                f"0x{tx_desc_base:x}",
+                "--data-base",
+                f"0x{tx_data_base:x}",
                 "--packet-count",
                 str(cfg["preload_packets"]),
                 "--work-dir",
@@ -253,6 +290,10 @@ def main() -> None:
             [
                 args.python,
                 script("stream_stress_test.py"),
+                "--h2c",
+                args.h2c,
+                "--user",
+                args.user,
                 "--port",
                 str(args.port),
                 "--frame-sizes",
@@ -286,6 +327,10 @@ def main() -> None:
             [
                 args.python,
                 script("xdma_stream_ring.py"),
+                "--h2c",
+                args.h2c,
+                "--user",
+                args.user,
                 "--port",
                 str(args.port),
                 "--manifest",
@@ -341,6 +386,10 @@ def main() -> None:
                 "dynamic ddr ring stream replay cpp",
                 [
                     str(fast_loader),
+                    "--h2c",
+                    "auto" if args.h2c == "/dev/xdma0_h2c_0" else args.h2c,
+                    "--user",
+                    args.user,
                     "--port",
                     str(args.port),
                     "--manifest",
@@ -373,6 +422,10 @@ def main() -> None:
                 [
                     args.python,
                     script("xdma_stream_ring.py"),
+                    "--h2c",
+                    args.h2c,
+                    "--user",
+                    args.user,
                     "--port",
                     str(args.port),
                     "--manifest",
@@ -418,6 +471,10 @@ def main() -> None:
             [
                 args.python,
                 script("stream_stress_test.py"),
+                "--h2c",
+                args.h2c,
+                "--user",
+                args.user,
                 "--port",
                 str(args.port),
                 "--frame-sizes",

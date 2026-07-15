@@ -12,6 +12,7 @@ module replay_tx_engine (
   output logic                   s_pkt_ready,
   input  logic [15:0]            s_pkt_len,
   input  logic [15:0]            s_pkt_flags,
+  input  logic [63:0]            s_pkt_target,
 
   input  logic [AXIS_DATA_W-1:0] s_axis_tdata,
   input  logic [AXIS_KEEP_W-1:0] s_axis_tkeep,
@@ -25,6 +26,8 @@ module replay_tx_engine (
   input  logic                   m_axis_tready,
   output logic                   m_axis_tlast,
   output logic                   m_axis_tuser,
+  output logic [63:0]            m_axis_target,
+  output logic                   m_axis_target_valid,
 
   output logic                   underrun_pulse,
   output logic [63:0]            tx_pkts,
@@ -33,6 +36,7 @@ module replay_tx_engine (
   logic        active;
   logic [15:0] bytes_left;
   logic [15:0] pkt_len_q;
+  logic [63:0] pkt_target_q;
   logic [15:0] eff_bytes_left;
   logic [15:0] eff_pkt_len;
   logic        eff_valid;
@@ -52,12 +56,15 @@ module replay_tx_engine (
   assign m_axis_tlast  = last_beat;
   assign m_axis_tkeep  = last_beat ? keep_from_len(eff_bytes_left) : {AXIS_KEEP_W{1'b1}};
   assign m_axis_tuser  = 1'b0;
+  assign m_axis_target = active ? pkt_target_q : s_pkt_target;
+  assign m_axis_target_valid = m_axis_tvalid && !active;
 
   always_ff @(posedge clk) begin
     if (!rstn) begin
       active          <= 1'b0;
       bytes_left      <= '0;
       pkt_len_q       <= '0;
+      pkt_target_q    <= '0;
       underrun_pulse  <= 1'b0;
       tx_pkts         <= '0;
       tx_bytes        <= '0;
@@ -68,6 +75,7 @@ module replay_tx_engine (
         active     <= 1'b0;
         bytes_left <= '0;
         pkt_len_q  <= '0;
+        pkt_target_q <= '0;
         tx_pkts    <= '0;
         tx_bytes   <= '0;
       end else begin
@@ -80,12 +88,16 @@ module replay_tx_engine (
             active     <= 1'b0;
             bytes_left <= '0;
             pkt_len_q  <= '0;
+            pkt_target_q <= '0;
             tx_pkts    <= tx_pkts + 64'd1;
             tx_bytes   <= tx_bytes + {48'd0, eff_pkt_len};
           end else begin
             active     <= 1'b1;
             bytes_left <= eff_bytes_left - AXIS_KEEP_BYTES;
             pkt_len_q  <= eff_pkt_len;
+            if (!active) begin
+              pkt_target_q <= s_pkt_target;
+            end
           end
         end
       end

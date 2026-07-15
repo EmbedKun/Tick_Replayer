@@ -34,6 +34,15 @@ module tb_rx_capture_core_clear;
   localparam logic [15:0] REG_GAP_SAMPLE_LO    = 16'h009c;
   localparam logic [15:0] REG_GAP_SAMPLE_HI    = 16'h00a0;
   localparam logic [15:0] REG_GAP_SAMPLE_WRITE_INDEX = 16'h00a4;
+  localparam logic [15:0] REG_EVENT_INDEX       = 16'h00a8;
+  localparam logic [15:0] REG_EVENT_COUNT_LO    = 16'h00ac;
+  localparam logic [15:0] REG_EVENT_COUNT_HI    = 16'h00b0;
+  localparam logic [15:0] REG_EVENT_DATA_LO     = 16'h00b4;
+  localparam logic [15:0] REG_EVENT_DATA_HI     = 16'h00b8;
+  localparam logic [15:0] REG_EVENT_DROP_LO     = 16'h00c0;
+  localparam logic [15:0] REG_EVENT_CAPACITY    = 16'h00c8;
+  localparam logic [15:0] REG_HIST_INDEX        = 16'h00cc;
+  localparam logic [15:0] REG_HIST_COUNT_LO     = 16'h00d0;
 
   logic clk = 1'b0;
   logic rx_clk = 1'b0;
@@ -312,6 +321,27 @@ module tb_rx_capture_core_clear;
     end
   endtask
 
+  task automatic send_fast_64(input int packet_count);
+    begin
+      @(negedge rx_clk);
+      s_rx_axis_tkeep = {AXIS_KEEP_W{1'b1}};
+      s_rx_axis_tstart = 1'b1;
+      s_rx_axis_tlast = 1'b1;
+      s_rx_axis_tuser = 1'b0;
+      s_rx_axis_tvalid = 1'b1;
+      for (int pkt = 0; pkt < packet_count; pkt++) begin
+        s_rx_axis_tdata = make_beat(pkt, 0, 8'h55);
+        @(posedge rx_clk);
+        @(negedge rx_clk);
+      end
+      s_rx_axis_tvalid = 1'b0;
+      s_rx_axis_tstart = 1'b0;
+      s_rx_axis_tlast = 1'b0;
+      s_rx_axis_tkeep = '0;
+      s_rx_axis_tdata = '0;
+    end
+  endtask
+
   task automatic configure_capture;
     begin
       axil_write(REG_RING_BASE_LO, RING_BASE[31:0]);
@@ -480,12 +510,67 @@ module tb_rx_capture_core_clear;
       end
     end
 
+
+    clear_capture();
+    axil_write(REG_CONTROL, 32'h1);
+    repeat (16) @(posedge rx_clk);
+    send_fast_64(100000);
+    repeat (1000) @(posedge clk);
+
+    begin
+      logic [31:0] rx_pkts;
+      logic [31:0] rx_bytes;
+      logic [31:0] gap_count;
+      logic [31:0] event_count_lo;
+      logic [31:0] event_count_hi;
+      logic [31:0] event_drop;
+      logic [31:0] event_capacity;
+      logic [31:0] event_first_lo;
+      logic [31:0] event_first_hi;
+      logic [31:0] event_last_lo;
+      logic [31:0] event_last_hi;
+      logic [31:0] hist0;
+      axil_read(REG_RX_PKTS_LO, rx_pkts);
+      axil_read(REG_RX_BYTES_LO, rx_bytes);
+      axil_read(REG_GAP_COUNT_LO, gap_count);
+      axil_read(REG_EVENT_COUNT_LO, event_count_lo);
+      axil_read(REG_EVENT_COUNT_HI, event_count_hi);
+      axil_read(REG_EVENT_DROP_LO, event_drop);
+      axil_read(REG_EVENT_CAPACITY, event_capacity);
+      axil_write(REG_EVENT_INDEX, 32'd0);
+      repeat (4) @(posedge clk);
+      axil_read(REG_EVENT_DATA_LO, event_first_lo);
+      axil_read(REG_EVENT_DATA_HI, event_first_hi);
+      axil_write(REG_EVENT_INDEX, 32'd99991);
+      repeat (4) @(posedge clk);
+      axil_read(REG_EVENT_DATA_LO, event_last_lo);
+      axil_read(REG_EVENT_DATA_HI, event_last_hi);
+      axil_write(REG_HIST_INDEX, 32'd0);
+      axil_read(REG_HIST_COUNT_LO, hist0);
+
+      if (rx_pkts != 32'd100000 || rx_bytes != 32'd6400000 || gap_count != 32'd99999) begin
+        $fatal(1, "full-rate RX counters mismatch pkts=%0d bytes=%0d gaps=%0d",
+               rx_pkts, rx_bytes, gap_count);
+      end
+      if (event_count_hi != 0 || event_count_lo != 32'd99992 || event_drop != 0 ||
+          event_capacity != 32'd524288) begin
+        $fatal(1, "RX event ring mismatch count=%0d:%0d drop=%0d capacity=%0d",
+               event_count_hi, event_count_lo, event_drop, event_capacity);
+      end
+      if (event_first_hi != 0 || event_last_hi != 0 ||
+          event_first_lo != 1 || event_last_lo != 1 || hist0 != 32'd99999) begin
+        $fatal(1, "RX event data mismatch first=%0d:%0d last=%0d:%0d hist0=%0d",
+               event_first_hi, event_first_lo, event_last_hi, event_last_lo, hist0);
+      end
+      $display("PASS: RX full-rate measurement logged 99992 gaps with zero event drops while counting 100000 packets");
+    end
+
     $display("PASS: rx_capture_core clear resets state and sample ring captures fresh packet starts");
     $finish;
   end
 
   initial begin
-    repeat (20000) @(posedge clk);
+    repeat (400000) @(posedge clk);
     $fatal(1, "rx_capture_core clear simulation watchdog timeout");
   end
 

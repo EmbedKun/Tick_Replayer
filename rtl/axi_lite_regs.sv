@@ -47,6 +47,8 @@ module axi_lite_regs #(
   output logic              cfg_force_link_up,
   output logic              cfg_force_tx_ready,
   output logic              cfg_auto_tx_drop,
+  output logic              cfg_sync_enable,
+  output logic              cfg_egress_schedule,
 
   input  logic              stat_running,
   input  logic              stat_done,
@@ -69,7 +71,9 @@ module axi_lite_regs #(
   input  logic [63:0]       stat_debug_ticks,
   input  logic [63:0]       stat_stream_read_count,
   input  logic [63:0]       stat_stream_level,
-  input  logic [31:0]       stat_stream_status
+  input  logic [31:0]       stat_stream_status,
+  input  logic [63:0]       stat_global_ticks,
+  input  logic              stat_sync_armed
 );
   localparam logic [ADDR_W-1:0] REG_CONTROL      = 16'h0000;
   localparam logic [ADDR_W-1:0] REG_MODE         = 16'h0004;
@@ -123,6 +127,10 @@ module axi_lite_regs #(
   localparam logic [ADDR_W-1:0] REG_DROP_BEATS_HI= 16'h00d4;
   localparam logic [ADDR_W-1:0] REG_STALL_EVT_LO = 16'h00d8;
   localparam logic [ADDR_W-1:0] REG_STALL_EVT_HI = 16'h00dc;
+  localparam logic [ADDR_W-1:0] REG_SCHED_CTRL   = 16'h00e0;
+  localparam logic [ADDR_W-1:0] REG_GLOBAL_TICK_LO = 16'h00e4;
+  localparam logic [ADDR_W-1:0] REG_GLOBAL_TICK_HI = 16'h00e8;
+  localparam logic [ADDR_W-1:0] REG_SCHED_STATUS = 16'h00ec;
 
   logic [ADDR_W-1:0] awaddr_q;
   logic [ADDR_W-1:0] araddr_q;
@@ -188,6 +196,8 @@ module axi_lite_regs #(
       cfg_force_link_up  <= 1'b0;
       cfg_force_tx_ready <= 1'b0;
       cfg_auto_tx_drop   <= 1'b1;
+      cfg_sync_enable    <= 1'b0;
+      cfg_egress_schedule <= 1'b0;
     end else begin
       start_pulse <= 1'b0;
       stop_pulse  <= 1'b0;
@@ -266,6 +276,12 @@ module axi_lite_regs #(
               cfg_auto_tx_drop <= wdata_q[2];
             end
           end
+          REG_SCHED_CTRL: begin
+            if (wstrb_q[0]) begin
+              cfg_sync_enable <= wdata_q[0];
+              cfg_egress_schedule <= wdata_q[1];
+            end
+          end
           default: begin
           end
         endcase
@@ -332,6 +348,10 @@ module axi_lite_regs #(
           REG_DROP_BEATS_HI:s_axil_rdata <= stat_drop_beats[63:32];
           REG_STALL_EVT_LO:s_axil_rdata <= stat_stall_events[31:0];
           REG_STALL_EVT_HI:s_axil_rdata <= stat_stall_events[63:32];
+          REG_SCHED_CTRL: s_axil_rdata <= {30'd0, cfg_egress_schedule, cfg_sync_enable};
+          REG_GLOBAL_TICK_LO: s_axil_rdata <= stat_global_ticks[31:0];
+          REG_GLOBAL_TICK_HI: s_axil_rdata <= stat_global_ticks[63:32];
+          REG_SCHED_STATUS: s_axil_rdata <= {29'd0, cfg_egress_schedule, stat_sync_armed, cfg_sync_enable};
           default:         s_axil_rdata <= 32'h0;
         endcase
       end else if (s_axil_rvalid && s_axil_rready) begin

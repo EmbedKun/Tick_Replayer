@@ -13,4 +13,19 @@ set_property xsim.simulate.runtime {all} [get_filesets sim_1]
 update_compile_order -fileset sim_1
 
 launch_simulation
-quit
+close_sim
+
+set sim_log [file join $repo_dir build vivado traffic_replay.sim sim_1 behav xsim simulate.log]
+if {![file exists $sim_log]} {
+  puts "ERROR: dual-core performance simulation log was not generated"
+  exit 1
+}
+set fh [open $sim_log r]
+set sim_text [read $fh]
+close $fh
+if {[string first "PASS: staggered host ARM commands produced synchronized first TX" $sim_text] < 0 ||
+    [string first "PASS: dual trace_replay_core concurrent preload correctness and throughput" $sim_text] < 0 ||
+    [string first "Fatal:" $sim_text] >= 0} {
+  puts "ERROR: dual-core performance simulation did not reach all clean PASS markers"
+  exit 1
+}

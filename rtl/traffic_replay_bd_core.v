@@ -14,6 +14,7 @@ module traffic_replay_bd_core #(
   (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
   input  wire                       resetn,
   input  wire                       link_up,
+  input  wire [63:0]                global_time_gray,
 
   (* X_INTERFACE_INFO = "xilinx.com:interface:aximm:1.0 S_AXIL AWADDR" *)
   input  wire [AXIL_ADDR_W-1:0]     s_axil_awaddr,
@@ -140,6 +141,9 @@ module traffic_replay_bd_core #(
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 M_TX_AXIS TUSER" *)
   (* X_INTERFACE_PARAMETER = "TDATA_NUM_BYTES 64, TUSER_WIDTH 1, HAS_TKEEP 1, HAS_TLAST 1, HAS_TREADY 1" *)
   output wire                       m_tx_axis_tuser,
+  output wire [63:0]                m_tx_axis_target,
+  output wire                       m_tx_axis_target_valid,
+  output wire                       egress_schedule_enable,
   output wire                       tx_path_clear
 );
   wire unused_host_axis_tready;
@@ -172,6 +176,7 @@ module traffic_replay_bd_core #(
     .clk(clk),
     .rstn(resetn),
     .link_up(link_up),
+    .global_time_gray(global_time_gray),
     .s_axil_awaddr(s_axil_awaddr),
     .s_axil_awvalid(s_axil_awvalid),
     .s_axil_awready(s_axil_awready),
@@ -213,6 +218,9 @@ module traffic_replay_bd_core #(
     .m_tx_axis_tready(m_tx_axis_tready),
     .m_tx_axis_tlast(m_tx_axis_tlast),
     .m_tx_axis_tuser(m_tx_axis_tuser),
+    .m_tx_axis_target(m_tx_axis_target),
+    .m_tx_axis_target_valid(m_tx_axis_target_valid),
+    .egress_schedule_enable(egress_schedule_enable),
     .tx_path_clear(tx_path_clear)
   );
 endmodule

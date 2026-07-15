@@ -15,6 +15,8 @@ module axis_to_lbus_512_bd #(
   (* X_INTERFACE_PARAMETER = "POLARITY ACTIVE_LOW" *)
   input  wire                  resetn,
   input  wire                  clear,
+  input  wire [63:0]           global_time_gray,
+  input  wire                  egress_schedule_enable,
 
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_AXIS TDATA" *)
   input  wire [DATA_W-1:0]     s_axis_tdata,
@@ -29,6 +31,8 @@ module axis_to_lbus_512_bd #(
   (* X_INTERFACE_INFO = "xilinx.com:interface:axis:1.0 S_AXIS TUSER" *)
   (* X_INTERFACE_PARAMETER = "TDATA_NUM_BYTES 64, TUSER_WIDTH 1, HAS_TKEEP 1, HAS_TLAST 1, HAS_TREADY 1" *)
   input  wire                  s_axis_tuser,
+  input  wire [63:0]           s_axis_target,
+  input  wire                  s_axis_target_valid,
 
   output wire [SEG_DATA_W-1:0] tx_datain0,
   output wire [SEG_DATA_W-1:0] tx_datain1,
@@ -69,12 +73,16 @@ module axis_to_lbus_512_bd #(
     .clk(clk),
     .resetn(resetn),
     .clear(clear),
+    .global_time_gray(global_time_gray),
+    .egress_schedule_enable(egress_schedule_enable),
     .s_axis_tdata(s_axis_tdata),
     .s_axis_tkeep(s_axis_tkeep),
     .s_axis_tvalid(s_axis_tvalid),
     .s_axis_tready(s_axis_tready),
     .s_axis_tlast(s_axis_tlast),
     .s_axis_tuser(s_axis_tuser),
+    .s_axis_target(s_axis_target),
+    .s_axis_target_valid(s_axis_target_valid),
     .tx_datain0(tx_datain0),
     .tx_datain1(tx_datain1),
     .tx_datain2(tx_datain2),

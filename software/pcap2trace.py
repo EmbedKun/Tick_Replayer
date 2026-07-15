@@ -75,6 +75,7 @@ def main() -> None:
     pkt_count = 0
     data_offset_words = 0
     prev_ts_ns = None
+    prev_target_tick = 0
     first_ts_ns = None
     total_wire_bytes = 0
     max_frame_len = 0
@@ -99,9 +100,13 @@ def main() -> None:
             if first_ts_ns is None:
                 first_ts_ns = ts_ns
             if prev_ts_ns is None:
-                gap_ns = 0
+                gap_ticks = 0
             else:
-                gap_ns = max(0, ts_ns - prev_ts_ns)
+                relative_ns = max(0, ts_ns - first_ts_ns)
+                target_tick = round(relative_ns * args.tick_hz / 1_000_000_000)
+                target_tick = max(prev_target_tick, target_tick)
+                gap_ticks = target_tick - prev_target_tick
+                prev_target_tick = target_tick
             prev_ts_ns = ts_ns
 
             frame = payload if args.keep_fcs else payload[:orig_len]
@@ -112,7 +117,6 @@ def main() -> None:
             if frame_len > 0xffff:
                 raise ValueError(f"frame too large for descriptor: {frame_len} bytes")
 
-            gap_ticks = round(gap_ns * args.tick_hz / 1_000_000_000)
             desc = struct.pack("<QIHH", gap_ticks, data_offset_words, frame_len, 0)
             desc_fh.write(desc)
             desc_fh.write(bytes(DESC_BYTES - len(desc)))
@@ -138,6 +142,7 @@ def main() -> None:
         "total_frame_bytes": total_wire_bytes,
         "max_frame_len": max_frame_len,
         "first_timestamp_ns": first_ts_ns,
+        "timestamp_quantization": "cumulative_nearest_tick",
         "pcap_info": pcap_info,
     }
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")

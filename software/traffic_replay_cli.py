@@ -60,6 +60,10 @@ REG_DROP_BEATS_LO = 0x00D0
 REG_DROP_BEATS_HI = 0x00D4
 REG_STALL_EVT_LO = 0x00D8
 REG_STALL_EVT_HI = 0x00DC
+REG_SCHED_CTRL = 0x00E0
+REG_GLOBAL_TICK_LO = 0x00E4
+REG_GLOBAL_TICK_HI = 0x00E8
+REG_SCHED_STATUS = 0x00EC
 
 TX_PORT_BASE = {0: 0x00000, 1: 0x10000}
 RX_PORT_BASE = {0: 0x20000, 1: 0x30000}
@@ -101,6 +105,19 @@ RX_REG_GAP_SAMPLE_COUNT = 0x0098
 RX_REG_GAP_SAMPLE_LO = 0x009C
 RX_REG_GAP_SAMPLE_HI = 0x00A0
 RX_REG_GAP_SAMPLE_WRITE_INDEX = 0x00A4
+RX_REG_EVENT_INDEX = 0x00A8
+RX_REG_EVENT_COUNT_LO = 0x00AC
+RX_REG_EVENT_COUNT_HI = 0x00B0
+RX_REG_EVENT_DATA_LO = 0x00B4
+RX_REG_EVENT_DATA_HI = 0x00B8
+RX_REG_EVENT_WRITE_INDEX = 0x00BC
+RX_REG_EVENT_DROP_LO = 0x00C0
+RX_REG_EVENT_DROP_HI = 0x00C4
+RX_REG_EVENT_CAPACITY = 0x00C8
+RX_REG_HIST_INDEX = 0x00CC
+RX_REG_HIST_COUNT_LO = 0x00D0
+RX_REG_HIST_COUNT_HI = 0x00D4
+RX_REG_CAPABILITIES = 0x00D8
 
 
 REG_NAMES = [
@@ -156,6 +173,10 @@ REG_NAMES = [
     ("DROP_BEATS_HI", REG_DROP_BEATS_HI),
     ("STALL_EVT_LO", REG_STALL_EVT_LO),
     ("STALL_EVT_HI", REG_STALL_EVT_HI),
+    ("SCHED_CTRL", REG_SCHED_CTRL),
+    ("GLOBAL_TICK_LO", REG_GLOBAL_TICK_LO),
+    ("GLOBAL_TICK_HI", REG_GLOBAL_TICK_HI),
+    ("SCHED_STATUS", REG_SCHED_STATUS),
 ]
 
 RX_REG_NAMES = [
@@ -196,6 +217,19 @@ RX_REG_NAMES = [
     ("GAP_SAMPLE_LO", RX_REG_GAP_SAMPLE_LO),
     ("GAP_SAMPLE_HI", RX_REG_GAP_SAMPLE_HI),
     ("GAP_SAMPLE_WRITE_INDEX", RX_REG_GAP_SAMPLE_WRITE_INDEX),
+    ("EVENT_INDEX", RX_REG_EVENT_INDEX),
+    ("EVENT_COUNT_LO", RX_REG_EVENT_COUNT_LO),
+    ("EVENT_COUNT_HI", RX_REG_EVENT_COUNT_HI),
+    ("EVENT_DATA_LO", RX_REG_EVENT_DATA_LO),
+    ("EVENT_DATA_HI", RX_REG_EVENT_DATA_HI),
+    ("EVENT_WRITE_INDEX", RX_REG_EVENT_WRITE_INDEX),
+    ("EVENT_DROP_LO", RX_REG_EVENT_DROP_LO),
+    ("EVENT_DROP_HI", RX_REG_EVENT_DROP_HI),
+    ("EVENT_CAPACITY", RX_REG_EVENT_CAPACITY),
+    ("HIST_INDEX", RX_REG_HIST_INDEX),
+    ("HIST_COUNT_LO", RX_REG_HIST_COUNT_LO),
+    ("HIST_COUNT_HI", RX_REG_HIST_COUNT_HI),
+    ("CAPABILITIES", RX_REG_CAPABILITIES),
 ]
 
 
@@ -213,6 +247,22 @@ def write32(fd: int, offset: int, value: int) -> None:
 
 def read64(fd: int, lo: int, hi: int) -> int:
     return read32(fd, lo) | (read32(fd, hi) << 32)
+
+
+def read64_stable(fd: int, lo: int, hi: int) -> int:
+    while True:
+        hi_before = read32(fd, hi)
+        low = read32(fd, lo)
+        hi_after = read32(fd, hi)
+        if hi_before == hi_after:
+            return low | (hi_after << 32)
+
+
+def parse_ports(value: str) -> list[int]:
+    ports = sorted({int(item, 0) for item in value.split(",") if item.strip()})
+    if not ports or any(port not in TX_PORT_BASE for port in ports):
+        raise argparse.ArgumentTypeError("ports must be a comma-separated subset of 0,1")
+    return ports
 
 
 def bool_word(value: bool) -> str:
@@ -235,6 +285,12 @@ def print_status(fd: int, base: int) -> None:
     print(f"force_link_up     : {bool_word(bool(debug & 0x1))}")
     print(f"force_tx_ready    : {bool_word(bool(debug & 0x2))}")
     print(f"auto_tx_drop      : {bool_word(bool(debug & 0x4))}")
+    sched_ctrl = read32(fd, base + REG_SCHED_CTRL)
+    sched_status = read32(fd, base + REG_SCHED_STATUS)
+    print(f"sync_enable       : {bool_word(bool(sched_ctrl & 0x1))}")
+    print(f"egress_schedule   : {bool_word(bool(sched_ctrl & 0x2))}")
+    print(f"sync_armed        : {bool_word(bool(sched_status & 0x2))}")
+    print(f"global_tick       : {read64_stable(fd, base + REG_GLOBAL_TICK_LO, base + REG_GLOBAL_TICK_HI)}")
     print(f"fifo_level        : {read32(fd, base + REG_FIFO_LEVEL)}")
     print(f"tx_packets        : {read64(fd, base + REG_TX_PKTS_LO, base + REG_TX_PKTS_HI)}")
     print(f"tx_bytes          : {read64(fd, base + REG_TX_BYTES_LO, base + REG_TX_BYTES_HI)}")
@@ -298,6 +354,10 @@ def print_rx_status(fd: int, base: int) -> None:
     print(f"rx_gap_avg        : {(gap_sum / gap_count) if gap_count else 0:.6f}")
     print(f"rx_gap_samples    : {read32(fd, base + RX_REG_GAP_SAMPLE_COUNT)}")
     print(f"rx_gap_sample_wr  : {read32(fd, base + RX_REG_GAP_SAMPLE_WRITE_INDEX)}")
+    print(f"rx_event_count    : {read64(fd, base + RX_REG_EVENT_COUNT_LO, base + RX_REG_EVENT_COUNT_HI)}")
+    print(f"rx_event_drops    : {read64(fd, base + RX_REG_EVENT_DROP_LO, base + RX_REG_EVENT_DROP_HI)}")
+    print(f"rx_event_capacity : {read32(fd, base + RX_REG_EVENT_CAPACITY)}")
+    print(f"rx_capabilities   : 0x{read32(fd, base + RX_REG_CAPABILITIES):08x}")
     print(f"rx_tick           : {read64(fd, base + RX_REG_TICK_LO, base + RX_REG_TICK_HI)}")
 
 
@@ -324,6 +384,15 @@ def parse_args() -> argparse.Namespace:
     rx_gap_sample = sub.add_parser("rx-gap-sample")
     rx_gap_sample.add_argument("index", type=int_auto)
 
+    rx_event = sub.add_parser("rx-event")
+    rx_event.add_argument("index", type=int_auto)
+
+    rx_events = sub.add_parser("rx-events")
+    rx_events.add_argument("--limit", type=int_auto, default=64)
+
+    rx_hist = sub.add_parser("rx-histogram")
+    rx_hist.add_argument("index", nargs="?", type=int_auto)
+
     rx_capture = sub.add_parser("rx-capture")
     rx_capture.add_argument("state", choices=["on", "off"])
 
@@ -340,6 +409,17 @@ def parse_args() -> argparse.Namespace:
 
     auto_drop = sub.add_parser("auto-drop")
     auto_drop.add_argument("state", choices=["on", "off"])
+
+    sync_enable = sub.add_parser("sync-enable")
+    sync_enable.add_argument("state", choices=["on", "off"])
+
+    egress_schedule = sub.add_parser("egress-schedule")
+    egress_schedule.add_argument("state", choices=["on", "off"])
+
+    sync_start = sub.add_parser("sync-start")
+    sync_start.add_argument("--ports", type=parse_ports, default=parse_ports("0,1"))
+    sync_start.add_argument("--delay-ms", type=float, default=100.0)
+    sync_start.add_argument("--tick-hz", type=int_auto, default=300_000_000)
 
     read_reg = sub.add_parser("read-reg")
     read_reg.add_argument("offset", type=int_auto)
@@ -385,6 +465,49 @@ def main() -> None:
           value = read32(fd, tx_base + REG_DEBUG_CTRL)
           value = (value | 0x4) if args.state == "on" else (value & ~0x4)
           write32(fd, tx_base + REG_DEBUG_CTRL, value)
+      elif args.cmd == "sync-enable":
+          value = read32(fd, tx_base + REG_SCHED_CTRL)
+          value = (value | 0x1) if args.state == "on" else (value & ~0x1)
+          write32(fd, tx_base + REG_SCHED_CTRL, value)
+          if read32(fd, tx_base + REG_SCHED_CTRL) != value:
+              raise RuntimeError("bitstream does not expose the synchronized scheduler registers")
+      elif args.cmd == "egress-schedule":
+          value = read32(fd, tx_base + REG_SCHED_CTRL)
+          value = (value | 0x3) if args.state == "on" else (value & ~0x2)
+          write32(fd, tx_base + REG_SCHED_CTRL, value)
+          if read32(fd, tx_base + REG_SCHED_CTRL) != value:
+              raise RuntimeError("bitstream does not expose the egress scheduler registers")
+      elif args.cmd == "sync-start":
+          if args.delay_ms <= 0:
+              raise ValueError("--delay-ms must be positive")
+          reference_base = TX_PORT_BASE[args.ports[0]]
+          now = read64_stable(
+              fd,
+              reference_base + REG_GLOBAL_TICK_LO,
+              reference_base + REG_GLOBAL_TICK_HI,
+          )
+          delay_ticks = max(1, round(args.delay_ms * args.tick_hz / 1000.0))
+          target = now + delay_ticks
+          for port in args.ports:
+              base = TX_PORT_BASE[port]
+              write32(fd, base + REG_START_LO, target)
+              write32(fd, base + REG_START_HI, target >> 32)
+              sched_ctrl = read32(fd, base + REG_SCHED_CTRL) | 0x1
+              write32(fd, base + REG_SCHED_CTRL, sched_ctrl)
+              if read32(fd, base + REG_SCHED_CTRL) != sched_ctrl:
+                  raise RuntimeError(f"port {port} does not support synchronized scheduling")
+          arm_ticks = []
+          for port in args.ports:
+              base = TX_PORT_BASE[port]
+              write32(fd, base + REG_CONTROL, 0x1)
+              arm_ticks.append(
+                  read64_stable(fd, base + REG_GLOBAL_TICK_LO, base + REG_GLOBAL_TICK_HI)
+              )
+          print(
+              f"armed ports={','.join(str(port) for port in args.ports)} "
+              f"target_tick={target} delay_ticks={delay_ticks} "
+              f"arm_ticks={','.join(str(tick) for tick in arm_ticks)}"
+          )
       elif args.cmd == "rx-status":
           print_rx_status(fd, rx_base)
       elif args.cmd == "rx-regs":
@@ -404,6 +527,44 @@ def main() -> None:
           write32(fd, rx_base + RX_REG_GAP_SAMPLE_INDEX, args.index)
           value = read64(fd, rx_base + RX_REG_GAP_SAMPLE_LO, rx_base + RX_REG_GAP_SAMPLE_HI)
           print(f"rx_gap_sample[{args.index}] : {value}")
+      elif args.cmd == "rx-event":
+          capacity = read32(fd, rx_base + RX_REG_EVENT_CAPACITY)
+          event_count = read64(fd, rx_base + RX_REG_EVENT_COUNT_LO, rx_base + RX_REG_EVENT_COUNT_HI)
+          available = min(
+              event_count,
+              capacity,
+          )
+          if args.index < 0 or args.index >= available:
+              raise IndexError(f"RX event index {args.index} outside available range 0..{available - 1}")
+          oldest = read32(fd, rx_base + RX_REG_EVENT_WRITE_INDEX) if event_count >= capacity else 0
+          physical_index = (oldest + args.index) % capacity
+          write32(fd, rx_base + RX_REG_EVENT_INDEX, physical_index)
+          value = read64(fd, rx_base + RX_REG_EVENT_DATA_LO, rx_base + RX_REG_EVENT_DATA_HI)
+          print(f"rx_event[{args.index}] : {value}")
+      elif args.cmd == "rx-events":
+          if args.limit <= 0:
+              raise ValueError("--limit must be positive")
+          capacity = read32(fd, rx_base + RX_REG_EVENT_CAPACITY)
+          event_count = read64(fd, rx_base + RX_REG_EVENT_COUNT_LO, rx_base + RX_REG_EVENT_COUNT_HI)
+          available = min(
+              event_count,
+              capacity,
+          )
+          oldest = read32(fd, rx_base + RX_REG_EVENT_WRITE_INDEX) if event_count >= capacity else 0
+          start = max(0, available - args.limit)
+          for index in range(start, available):
+              physical_index = (oldest + index) % capacity
+              write32(fd, rx_base + RX_REG_EVENT_INDEX, physical_index)
+              value = read64(fd, rx_base + RX_REG_EVENT_DATA_LO, rx_base + RX_REG_EVENT_DATA_HI)
+              print(f"{index},{value}")
+      elif args.cmd == "rx-histogram":
+          indices = [args.index] if args.index is not None else range(16)
+          for index in indices:
+              if index < 0 or index >= 16:
+                  raise IndexError("RX histogram index must be in the range 0..15")
+              write32(fd, rx_base + RX_REG_HIST_INDEX, index)
+              value = read64(fd, rx_base + RX_REG_HIST_COUNT_LO, rx_base + RX_REG_HIST_COUNT_HI)
+              print(f"bin={index} gap_ticks=[{1 << index},{(1 << (index + 1)) - 1}] count={value}")
       elif args.cmd == "rx-capture":
           value = read32(fd, rx_base + RX_REG_CONTROL)
           value = (value | 0x4) if args.state == "on" else (value & ~0x4)

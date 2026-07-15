@@ -18,6 +18,7 @@ module trace_replay_core #(
   input  logic                     clk,
   input  logic                     rstn,
   input  logic                     link_up,
+  input  logic [63:0]              global_time_gray,
 
   input  logic [AXIL_ADDR_W-1:0]   s_axil_awaddr,
   input  logic                     s_axil_awvalid,
@@ -63,6 +64,9 @@ module trace_replay_core #(
   input  logic                     m_tx_axis_tready,
   output logic                     m_tx_axis_tlast,
   output logic                     m_tx_axis_tuser,
+  output logic [63:0]              m_tx_axis_target,
+  output logic                     m_tx_axis_target_valid,
+  output logic                     egress_schedule_enable,
   output logic                     tx_path_clear
 );
   logic        start_pulse;
@@ -86,6 +90,9 @@ module trace_replay_core #(
   logic        cfg_force_link_up;
   logic        cfg_force_tx_ready;
   logic        cfg_auto_tx_drop;
+  logic        cfg_sync_enable;
+  logic        cfg_egress_schedule;
+  logic        egress_schedule_active;
 
   logic        replay_running;
   logic        ddr_busy;
@@ -101,6 +108,8 @@ module trace_replay_core #(
   logic [63:0] drop_beats;
   logic [63:0] stall_events;
   logic [63:0] now_ticks;
+  logic [63:0] global_time_ticks;
+  logic        sync_armed;
 
   logic        ddr_meta_valid;
   logic        ddr_meta_ready;
@@ -210,6 +219,7 @@ module trace_replay_core #(
   logic        pkt_ready;
   logic [15:0] pkt_len;
   logic [15:0] pkt_flags;
+  logic [63:0] pkt_target;
   logic        core_clear;
   logic        core_enable;
   logic        replay_gate_enable;
@@ -231,6 +241,17 @@ module trace_replay_core #(
   logic [3:0]  active_reader_state;
   logic [31:0] debug_status;
   logic [31:0] debug_axi;
+  logic [31:0] stat_fifo_level_q;
+  logic [31:0] debug_status_q;
+  logic [31:0] debug_axi_q;
+  logic [63:0] debug_araddr_q;
+  logic [31:0] debug_rdata_low_q;
+  logic [63:0] debug_ticks_q;
+  logic [63:0] stream_ddr_read_count_q;
+  logic [63:0] stream_ddr_level_q;
+  logic [31:0] stream_ddr_status_q;
+  logic [63:0] global_time_ticks_q;
+  logic        sync_armed_q;
   logic [TX_PATH_CLEAR_CNT_W-1:0] tx_path_clear_count;
 
   assign sel_stream_mode_comb = (cfg_mode == MODE_STREAM);
@@ -262,6 +283,18 @@ module trace_replay_core #(
                                            ((cfg_pkt_count == 64'd0) ||
                                             (tx_pkts >= cfg_pkt_count)))) : 1'b0);
   assign tx_path_clear = (tx_path_clear_count != '0);
+  assign egress_schedule_active = cfg_egress_schedule && cfg_sync_enable;
+  assign egress_schedule_enable = egress_schedule_active;
+  assign sync_armed = cfg_sync_enable && replay_running &&
+                      (tx_pkts == 64'd0) &&
+                      (cfg_start_time > global_time_ticks);
+
+  replay_time_sync global_time_sync_i (
+    .clk(clk),
+    .rstn(rstn),
+    .time_gray_async(global_time_gray),
+    .time_ticks(global_time_ticks)
+  );
 
   assign m_axi_arid     = stream_ddr_mode ? stream_m_axi_arid     : ddr_m_axi_arid;
   assign m_axi_araddr   = stream_ddr_mode ? stream_m_axi_araddr   : ddr_m_axi_araddr;
@@ -390,13 +423,15 @@ module trace_replay_core #(
     .cfg_force_link_up(cfg_force_link_up),
     .cfg_force_tx_ready(cfg_force_tx_ready),
     .cfg_auto_tx_drop(cfg_auto_tx_drop),
+    .cfg_sync_enable(cfg_sync_enable),
+    .cfg_egress_schedule(cfg_egress_schedule),
     .stat_running(replay_running),
     .stat_done(replay_done),
     .stat_late(|late_pkts),
     .stat_underrun(|underrun_pkts),
     .stat_link_up(link_up),
     .stat_effective_link_up(effective_link_up),
-    .stat_fifo_level({{(32-STREAM_FIFO_COUNT_W){1'b0}}, stream_fifo_level}),
+    .stat_fifo_level(stat_fifo_level_q),
     .stat_tx_pkts(tx_pkts),
     .stat_tx_bytes(tx_bytes),
     .stat_late_pkts(late_pkts),
@@ -404,14 +439,16 @@ module trace_replay_core #(
     .stat_drop_pkts(drop_pkts),
     .stat_drop_beats(drop_beats),
     .stat_stall_events(stall_events),
-    .stat_debug_status(debug_status),
-    .stat_debug_axi(debug_axi),
-    .stat_debug_araddr(m_axi_araddr[63:0]),
-    .stat_debug_rdata_low(m_axi_rdata[31:0]),
-    .stat_debug_ticks(now_ticks),
-    .stat_stream_read_count(stream_ddr_read_count),
-    .stat_stream_level(stream_ddr_level),
-    .stat_stream_status(stream_ddr_status)
+    .stat_debug_status(debug_status_q),
+    .stat_debug_axi(debug_axi_q),
+    .stat_debug_araddr(debug_araddr_q),
+    .stat_debug_rdata_low(debug_rdata_low_q),
+    .stat_debug_ticks(debug_ticks_q),
+    .stat_stream_read_count(stream_ddr_read_count_q),
+    .stat_stream_level(stream_ddr_level_q),
+    .stat_stream_status(stream_ddr_status_q),
+    .stat_global_ticks(global_time_ticks_q),
+    .stat_sync_armed(sync_armed_q)
   );
 
   ddr_trace_reader #(
@@ -518,7 +555,8 @@ module trace_replay_core #(
     .KEEP_W(AXIS_KEEP_W),
     .DEPTH(STREAM_FIFO_DEPTH),
     .RAM_READ_LATENCY_P(3),
-    .OUT_DEPTH_P(8)
+    .OUT_DEPTH_P(8),
+    .RAM_CASCADE_HEIGHT_P(1)
   ) stream_prefetch_fifo_i (
     .clk(clk),
     .rstn(rstn),
@@ -566,6 +604,9 @@ module trace_replay_core #(
     .clear(core_clear),
     .cfg_start_time(cfg_start_time),
     .cfg_rate_q16_16(cfg_rate_q16_16),
+    .cfg_sync_enable(cfg_sync_enable),
+    .cfg_egress_schedule(egress_schedule_active),
+    .global_ticks(global_time_ticks),
     .s_meta_valid(src_meta_valid),
     .s_meta_ready(src_meta_ready),
     .s_meta_gap_ticks(src_meta_gap),
@@ -575,6 +616,7 @@ module trace_replay_core #(
     .m_pkt_ready(pkt_ready),
     .m_pkt_len(pkt_len),
     .m_pkt_flags(pkt_flags),
+    .m_pkt_target(pkt_target),
     .now_ticks(now_ticks),
     .late_pulse(scheduler_late)
   );
@@ -588,6 +630,7 @@ module trace_replay_core #(
     .s_pkt_ready(pkt_ready),
     .s_pkt_len(pkt_len),
     .s_pkt_flags(pkt_flags),
+    .s_pkt_target(pkt_target),
     .s_axis_tdata(src_axis_tdata),
     .s_axis_tkeep(src_axis_tkeep),
     .s_axis_tvalid(src_axis_tvalid),
@@ -599,6 +642,8 @@ module trace_replay_core #(
     .m_axis_tready(tx_ready_effective),
     .m_axis_tlast(m_tx_axis_tlast),
     .m_axis_tuser(m_tx_axis_tuser),
+    .m_axis_target(m_tx_axis_target),
+    .m_axis_target_valid(m_tx_axis_target_valid),
     .underrun_pulse(tx_underrun),
     .tx_pkts(tx_pkts),
     .tx_bytes(tx_bytes)
@@ -621,10 +666,32 @@ module trace_replay_core #(
       preload_warmup_count <= '0;
       preload_warmup_done <= 1'b0;
       tx_path_clear_count <= '0;
+      stat_fifo_level_q <= '0;
+      debug_status_q <= '0;
+      debug_axi_q <= '0;
+      debug_araddr_q <= '0;
+      debug_rdata_low_q <= '0;
+      debug_ticks_q <= '0;
+      stream_ddr_read_count_q <= '0;
+      stream_ddr_level_q <= '0;
+      stream_ddr_status_q <= '0;
+      global_time_ticks_q <= '0;
+      sync_armed_q <= 1'b0;
     end else begin
       sel_stream_mode <= sel_stream_mode_comb;
       sel_ddr_mode <= sel_ddr_mode_comb;
       stream_ddr_mode <= stream_ddr_mode_comb;
+      stat_fifo_level_q <= {{(32-STREAM_FIFO_COUNT_W){1'b0}}, stream_fifo_level};
+      debug_status_q <= debug_status;
+      debug_axi_q <= debug_axi;
+      debug_araddr_q <= m_axi_araddr[63:0];
+      debug_rdata_low_q <= m_axi_rdata[31:0];
+      debug_ticks_q <= now_ticks;
+      stream_ddr_read_count_q <= stream_ddr_read_count;
+      stream_ddr_level_q <= stream_ddr_level;
+      stream_ddr_status_q <= stream_ddr_status;
+      global_time_ticks_q <= global_time_ticks;
+      sync_armed_q <= sync_armed;
 
       if (clear_pulse) begin
         late_pkts     <= '0;

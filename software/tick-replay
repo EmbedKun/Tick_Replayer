@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ -f "$SCRIPT_DIR/tick_replay.py" ]; then
+  TOOL_DIR=$SCRIPT_DIR
+else
+  TOOL_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/../lib/tick-replayer" && pwd)
+fi
+exec python3 "$TOOL_DIR/tick_replay.py" "$@"

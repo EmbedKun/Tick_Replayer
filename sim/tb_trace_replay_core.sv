@@ -65,6 +65,7 @@ module tb_trace_replay_core;
     .clk(clk),
     .rstn(rstn),
     .link_up(1'b1),
+    .global_time_gray(64'd0),
     .s_axil_awaddr(axil_awaddr),
     .s_axil_awvalid(axil_awvalid),
     .s_axil_awready(axil_awready),

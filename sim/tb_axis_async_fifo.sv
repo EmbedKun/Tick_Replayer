@@ -119,7 +119,8 @@ module tb_axis_async_fifo;
           $fatal(1, "received too many beats");
         end
         if (m_axis_tdata !== exp_data[recv_idx]) begin
-          $fatal(1, "data mismatch idx=%0d", recv_idx);
+          $fatal(1, "data mismatch idx=%0d got_lo=0x%016x exp_lo=0x%016x",
+                 recv_idx, m_axis_tdata[63:0], exp_data[recv_idx][63:0]);
         end
         if (m_axis_tkeep !== exp_keep[recv_idx]) begin
           $fatal(1, "keep mismatch idx=%0d got=0x%016x exp=0x%016x",

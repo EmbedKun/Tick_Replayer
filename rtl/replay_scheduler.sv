@@ -10,6 +10,9 @@ module replay_scheduler #(
   input  logic        clear,
   input  logic [63:0] cfg_start_time,
   input  logic [31:0] cfg_rate_q16_16,
+  input  logic        cfg_sync_enable,
+  input  logic        cfg_egress_schedule,
+  input  logic [63:0] global_ticks,
 
   input  logic        s_meta_valid,
   output logic        s_meta_ready,
@@ -21,6 +24,7 @@ module replay_scheduler #(
   input  logic        m_pkt_ready,
   output logic [15:0] m_pkt_len,
   output logic [15:0] m_pkt_flags,
+  output logic [63:0] m_pkt_target,
 
   output logic [63:0] now_ticks,
   output logic        late_pulse
@@ -51,6 +55,7 @@ module replay_scheduler #(
   logic        head_late_q;
   logic [15:0] out_len;
   logic [15:0] out_flags;
+  logic [63:0] out_target;
   logic        out_valid;
   logic        out_late;
   logic        first_pkt;
@@ -69,6 +74,8 @@ module replay_scheduler #(
   logic [15:0] meta_stage_flags;
   logic [CNT_W:0] total_count;
   logic        enable_q;
+  logic [63:0] relative_ticks;
+  logic [63:0] schedule_now;
 
   function automatic logic [PTR_W-1:0] inc_ptr(input logic [PTR_W-1:0] ptr);
     begin
@@ -78,10 +85,14 @@ module replay_scheduler #(
 
   assign push_target =
     first_pkt ?
-      ((cfg_start_time == 64'd0) ? s_meta_gap_ticks : cfg_start_time) :
+      ((cfg_start_time == 64'd0) ?
+        ((cfg_sync_enable ? (global_ticks + 64'd1) : 64'd0) + s_meta_gap_ticks) :
+        cfg_start_time) :
       (target_accum + s_meta_gap_ticks);
 
-  assign schedule_tick_cmp  = now_ticks + 64'd2;
+  assign schedule_now      = cfg_sync_enable ? global_ticks : relative_ticks;
+  assign now_ticks         = schedule_now;
+  assign schedule_tick_cmp = schedule_now + (cfg_sync_enable ? 64'd3 : 64'd2);
   assign total_count = {1'b0, mem_count} +
                        {{CNT_W{1'b0}}, meta_stage_valid} +
                        {{CNT_W{1'b0}}, prefetch_valid} +
@@ -91,10 +102,12 @@ module replay_scheduler #(
   assign m_pkt_valid  = enable_q && out_valid;
   assign m_pkt_len    = out_len;
   assign m_pkt_flags  = out_flags;
+  assign m_pkt_target = out_target;
   assign meta_fire    = s_meta_valid && s_meta_ready;
   assign pkt_fire     = m_pkt_valid && m_pkt_ready;
   assign out_can_load = !out_valid || pkt_fire;
-  assign load_fire    = enable_q && out_can_load && head_valid && head_due_q;
+  assign load_fire    = enable_q && out_can_load && head_valid &&
+                        (cfg_egress_schedule || head_due_q);
   assign head_need_refill = !head_valid || load_fire;
   assign prefetch_to_head = head_need_refill && prefetch_valid;
   assign prefetch_free_after_head = !prefetch_valid || prefetch_to_head;
@@ -105,7 +118,7 @@ module replay_scheduler #(
 
   always_ff @(posedge clk) begin
     if (!rstn) begin
-      now_ticks    <= '0;
+      relative_ticks <= '0;
       wr_ptr       <= '0;
       rd_ptr       <= '0;
       mem_count    <= '0;
@@ -126,6 +139,7 @@ module replay_scheduler #(
       head_late_q  <= 1'b0;
       out_len      <= '0;
       out_flags    <= '0;
+      out_target   <= '0;
       out_valid    <= 1'b0;
       out_late     <= 1'b0;
       first_pkt    <= 1'b1;
@@ -135,7 +149,7 @@ module replay_scheduler #(
       late_pulse <= 1'b0;
 
       if (clear || start) begin
-        now_ticks    <= '0;
+        relative_ticks <= '0;
         wr_ptr       <= '0;
         rd_ptr       <= '0;
         mem_count    <= '0;
@@ -156,6 +170,7 @@ module replay_scheduler #(
         head_late_q  <= 1'b0;
         out_len      <= '0;
         out_flags    <= '0;
+        out_target   <= '0;
         out_valid    <= 1'b0;
         out_late     <= 1'b0;
         first_pkt    <= 1'b1;
@@ -164,7 +179,7 @@ module replay_scheduler #(
         enable_q <= enable;
 
         if (enable_q) begin
-          now_ticks <= now_ticks + 64'd1;
+          relative_ticks <= relative_ticks + 64'd1;
         end
 
         if (meta_to_mem) begin
@@ -199,7 +214,8 @@ module replay_scheduler #(
         if (load_fire) begin
           out_len   <= head_len;
           out_flags <= head_flags;
-          out_late  <= head_late_q;
+          out_target <= head_target;
+          out_late  <= cfg_egress_schedule ? 1'b0 : head_late_q;
         end
 
         if (prefetch_to_head) begin

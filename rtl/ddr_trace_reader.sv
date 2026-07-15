@@ -86,8 +86,8 @@ module ddr_trace_reader #(
   localparam logic [DESC_CNT_W-1:0]        DESC_REFILL_LEVEL            = DESC_REFILL_LEVEL_P;
   localparam logic [DESC_CNT_W-1:0]        DESC_SERVICE_LEVEL           = DESC_SERVICE_LEVEL_P;
   localparam logic [DESC_CNT_W-1:0]        DESC_SCAN_START_LEVEL_U      = DESC_SCAN_START_LEVEL;
-  localparam logic [META_CNT_W-1:0]        META_FIFO_DEPTH_LEVEL        = META_FIFO_DEPTH;
-  localparam logic [PLAN_CNT_W-1:0]        PLAN_FIFO_DEPTH_LEVEL        = PLAN_FIFO_DEPTH;
+  localparam logic [META_CNT_W:0]          META_SPACE_GUARD_LEVEL       = META_FIFO_DEPTH - 1;
+  localparam logic [PLAN_CNT_W:0]          PLAN_SPACE_GUARD_LEVEL       = PLAN_FIFO_DEPTH - 1;
   localparam logic [PAYLOAD_CMD_CNT_W-1:0] PAYLOAD_CMD_DEPTH_LEVEL      = PAYLOAD_CMD_DEPTH;
   localparam logic [AXI_CMD_CNT_W-1:0]     AXI_CMD_DEPTH_LEVEL          = AXI_CMD_DEPTH;
   localparam logic [PAYLOAD_CNT_W-1:0]     PAYLOAD_FIFO_DEPTH_LEVEL     = PAYLOAD_FIFO_DEPTH;
@@ -103,7 +103,8 @@ module ddr_trace_reader #(
 
   typedef enum logic [1:0] {
     SC_IDLE,
-    SC_RUN
+    SC_RUN,
+    SC_EMIT
   } scan_state_t;
 
   function automatic logic [15:0] beats_from_len(input logic [15:0] byte_count);
@@ -112,17 +113,19 @@ module ddr_trace_reader #(
     end
   endfunction
 
-  function automatic logic [8:0] cap_burst(input logic [63:0] remaining, input int unsigned free_slots);
-    int unsigned n;
+  function automatic logic [8:0] cap_burst(
+    input logic [63:0] remaining,
+    input logic [DESC_CNT_W-1:0] free_slots
+  );
+    logic [8:0] free_capped;
     begin
-      n = free_slots;
-      if (n > MAX_AXI_BURST_BEATS) begin
-        n = MAX_AXI_BURST_BEATS;
+      free_capped = (free_slots >= DESC_CNT_W'(MAX_AXI_BURST_BEATS)) ?
+                    9'd256 : free_slots[8:0];
+      if ((remaining[63:9] == '0) && (remaining[8:0] < free_capped)) begin
+        cap_burst = remaining[8:0];
+      end else begin
+        cap_burst = free_capped;
       end
-      if (remaining < n) begin
-        n = remaining[8:0];
-      end
-      cap_burst = n[8:0];
     end
   endfunction
 
@@ -136,6 +139,12 @@ module ddr_trace_reader #(
   logic desc_fetch_done;
   logic desc_loop_gap_next;
   logic infinite_loop;
+  logic loop_mode_q;
+  logic [63:0] cfg_desc_base_q;
+  logic [63:0] cfg_data_base_q;
+  logic [63:0] cfg_pkt_count_q;
+  logic [63:0] cfg_loop_count_q;
+  logic [63:0] cfg_loop_gap_ticks_q;
 
   logic [63:0] desc_issue_index;
   logic [63:0] desc_issue_remaining;
@@ -147,6 +156,8 @@ module ddr_trace_reader #(
   logic [DESC_CNT_W:0] desc_total_occupied;
   logic desc_refill_ready;
   logic desc_refill_ready_q;
+  logic [8:0] desc_issue_remaining_low_q;
+  logic desc_issue_remaining_fits_q;
   logic desc_plan_valid;
   logic [63:0] desc_plan_addr;
   logic [8:0]  desc_plan_beats;
@@ -190,6 +201,7 @@ module ddr_trace_reader #(
   logic [PLAN_PTR_W-1:0] plan_wr_ptr;
   logic [PLAN_PTR_W-1:0] plan_rd_ptr;
   logic [PLAN_CNT_W-1:0] plan_count;
+  logic plan_available_q;
   logic [63:0] plan_gap_mem [PLAN_FIFO_DEPTH];
   logic [15:0] plan_len_mem [PLAN_FIFO_DEPTH];
   logic [15:0] plan_flags_mem [PLAN_FIFO_DEPTH];
@@ -229,8 +241,8 @@ module ddr_trace_reader #(
   logic [15:0] scan_total_beats;
   logic [8:0]  scan_total_count;
   logic [DESC_CNT_W-1:0] scan_total_count_desc;
-  logic [META_CNT_W:0] scan_meta_need_next;
-  logic [PLAN_CNT_W:0] plan_count_next;
+  logic meta_space_ready_q;
+  logic plan_space_ready_q;
   logic [RESERVE_CNT_W-1:0] payload_buffered_beats;
   logic [RESERVE_CNT_W-1:0] payload_buffered_beats_q;
   logic [RESERVE_CNT_W-1:0] payload_buffered_shadow_next;
@@ -241,6 +253,7 @@ module ddr_trace_reader #(
   logic scan_accept;
   logic scan_wait_for_more_desc;
   logic scan_forced_finish;
+  logic scan_emit_request;
   logic scan_command_push;
   logic [8:0] scan_command_beats;
   logic [63:0] scan_command_addr;
@@ -288,7 +301,6 @@ module ddr_trace_reader #(
   logic        ar_desc_done_q;
   logic        ar_desc_loop_again_q;
   logic        desc_issue_end;
-  logic        desc_issue_end_q;
   logic        desc_issue_loop_more;
   logic        desc_issue_loop_more_q;
   logic        ar_fire;
@@ -301,6 +313,8 @@ module ddr_trace_reader #(
   logic       rsp_active;
   logic [8:0] rsp_beats_left;
   logic       rsp_valid;
+  logic       desc_rsp_ready;
+  logic       payload_rsp_ready;
   logic       rsp_last_beat;
   logic       rsp_cmd_pop;
   logic       desc_r_fire;
@@ -330,7 +344,7 @@ module ddr_trace_reader #(
   logic        axi_cmd_push;
   logic        replay_complete;
 
-  assign infinite_loop = loop_mode && (cfg_loop_count == 64'd0);
+  assign infinite_loop = loop_mode_q && (cfg_loop_count_q == 64'd0);
   assign desc_total_occupied = {1'b0, desc_count} + desc_reserved;
   assign desc_free = (desc_total_occupied >= {1'b0, DESC_FIFO_DEPTH_LEVEL}) ?
                      '0 : DESC_CNT_W'({1'b0, DESC_FIFO_DEPTH_LEVEL} - desc_total_occupied);
@@ -355,8 +369,6 @@ module ddr_trace_reader #(
   assign scan_total_beats = scan_beats + desc_head_beats;
   assign scan_total_count = {1'b0, scan_count} + 9'd1;
   assign scan_total_count_desc = DESC_CNT_W'(scan_total_count);
-  assign scan_meta_need_next = meta_total_occupied + {{META_CNT_W{1'b0}}, 1'b1};
-  assign plan_count_next = {1'b0, plan_count} + {{PLAN_CNT_W{1'b0}}, 1'b1};
   assign payload_need_next = {1'b0, payload_buffered_beats_q} + {1'b0, desc_head_beats};
 
   assign scan_has_descriptor =
@@ -372,8 +384,8 @@ module ddr_trace_reader #(
      (desc_fetch_done && (desc_reserved == '0)));
 
   assign scan_space_ok =
-    (plan_count_next <= {1'b0, PLAN_FIFO_DEPTH_LEVEL}) &&
-    (scan_meta_need_next <= {1'b0, META_FIFO_DEPTH_LEVEL}) &&
+    plan_space_ready_q &&
+    meta_space_ready_q &&
     (payload_need_next <= {1'b0, PAYLOAD_FIFO_DEPTH_LEVEL});
 
   assign scan_accept =
@@ -397,21 +409,23 @@ module ddr_trace_reader #(
     !desc_head_valid &&
     !desc_fetch_done;
 
-  assign scan_command_push =
-    (payload_cmd_count != PAYLOAD_CMD_DEPTH_LEVEL) &&
+  assign scan_emit_request =
     (scan_state == SC_RUN) &&
     ((scan_forced_finish && (scan_total_count != 9'd0)) ||
      (!scan_accept && (scan_count != 8'd0) && !scan_wait_for_more_desc));
 
-  assign scan_command_beats = scan_accept ? scan_total_beats[8:0] : {1'b0, scan_beats};
-  assign scan_command_addr =
-    (scan_accept && (scan_count == 8'd0)) ?
-      (cfg_data_base + ({32'd0, desc_head_word} << DESC_WORD_SHIFT)) :
-      scan_run_addr;
+  assign scan_command_push =
+    (payload_cmd_count != PAYLOAD_CMD_DEPTH_LEVEL) &&
+    (scan_state == SC_EMIT) &&
+    (scan_count != 8'd0);
+
+  assign scan_command_beats = scan_beats[8:0];
+  assign scan_command_addr  = scan_run_addr;
 
   assign desc_refill_ready =
     (desc_free >= DESC_REFILL_LEVEL) ||
-    (desc_issue_remaining <= {55'd0, desc_free});
+    ((desc_issue_remaining[63:DESC_CNT_W] == '0) &&
+     (desc_issue_remaining[DESC_CNT_W-1:0] <= desc_free));
   assign desc_burst_beats = cap_burst(desc_issue_remaining, desc_free);
 
   assign payload_issue_req =
@@ -438,10 +452,12 @@ module ddr_trace_reader #(
      ((desc_count <= DESC_SERVICE_LEVEL) && (payload_buffered_beats_q >= PAYLOAD_DESC_SERVICE_LEVEL)) ||
      (payload_cmd_count == '0));
 
-  assign desc_issue_end = desc_issue_remaining <= {55'd0, desc_burst_beats};
+  assign desc_issue_end =
+    desc_issue_remaining_fits_q &&
+    (desc_issue_remaining_low_q <= desc_burst_beats_q);
   assign desc_issue_loop_more =
     loop_mode &&
-    (infinite_loop || (desc_issue_loops_done + 64'd1 < cfg_loop_count));
+    (infinite_loop || (desc_issue_loops_done + 64'd1 < cfg_loop_count_q));
 
   always_comb begin
     ar_sel_kind          = CMD_NONE;
@@ -493,16 +509,18 @@ module ddr_trace_reader #(
   assign eff_bytes_left = cur_plan_valid ? cur_bytes_left : plan_len_mem[plan_rd_ptr];
   assign eff_beats_left = cur_plan_valid ? cur_beats_left : plan_beats_mem[plan_rd_ptr];
 
-  assign m_axi_rready =
+  assign desc_rsp_ready =
     rsp_valid &&
-    ((rsp_kind == CMD_DESC) ?
-      (desc_count != DESC_FIFO_DEPTH_LEVEL) :
-      ((rsp_kind == CMD_PAYLOAD) &&
-       payload_stage_ready &&
-       (cur_plan_valid || (plan_count != '0))));
-
-  assign desc_r_fire    = m_axi_rvalid && m_axi_rready && (rsp_kind == CMD_DESC);
-  assign payload_r_fire = m_axi_rvalid && m_axi_rready && (rsp_kind == CMD_PAYLOAD);
+    (rsp_kind == CMD_DESC) &&
+    (desc_count != DESC_FIFO_DEPTH_LEVEL);
+  assign payload_rsp_ready =
+    rsp_valid &&
+    (rsp_kind == CMD_PAYLOAD) &&
+    payload_stage_ready &&
+    (cur_plan_valid || plan_available_q);
+  assign m_axi_rready   = desc_rsp_ready || payload_rsp_ready;
+  assign desc_r_fire    = m_axi_rvalid && desc_rsp_ready;
+  assign payload_r_fire = m_axi_rvalid && payload_rsp_ready;
   assign rsp_cmd_pop    = m_axi_rvalid && m_axi_rready && rsp_last_beat;
 
   assign payload_stage_ready = !payload_stage_valid || payload_fifo_s_tready;
@@ -520,7 +538,8 @@ module ddr_trace_reader #(
     .KEEP_W(AXIS_KEEP_W),
     .DEPTH(PAYLOAD_FIFO_DEPTH),
     .RAM_READ_LATENCY_P(3),
-    .OUT_DEPTH_P(8)
+    .OUT_DEPTH_P(8),
+    .RAM_CASCADE_HEIGHT_P(1)
   ) payload_fifo_i (
     .clk(clk),
     .rstn(rstn),
@@ -553,13 +572,13 @@ module ddr_trace_reader #(
   assign m_meta_len       = meta_stage_len;
   assign m_meta_flags     = meta_stage_flags;
 
-  assign payload_fifo_m_tready = running && (!out_axis_tvalid || m_axis_tready);
+  assign payload_fifo_m_tready = !out_axis_tvalid || m_axis_tready;
   assign out_axis_load = payload_fifo_m_tvalid && payload_fifo_m_tready;
-  assign out_axis_fire = m_axis_tvalid && m_axis_tready;
+  assign out_axis_fire = out_axis_tvalid && m_axis_tready;
 
   assign m_axis_tdata  = out_axis_tdata;
   assign m_axis_tkeep  = out_axis_tkeep;
-  assign m_axis_tvalid = running && out_axis_tvalid;
+  assign m_axis_tvalid = out_axis_tvalid;
   assign m_axis_tlast  = out_axis_tlast;
 
   assign replay_complete =
@@ -590,6 +609,12 @@ module ddr_trace_reader #(
       running               <= 1'b0;
       done                  <= 1'b0;
       error                 <= 1'b0;
+      loop_mode_q           <= 1'b0;
+      cfg_desc_base_q       <= '0;
+      cfg_data_base_q       <= '0;
+      cfg_pkt_count_q       <= '0;
+      cfg_loop_count_q      <= '0;
+      cfg_loop_gap_ticks_q  <= '0;
       out_axis_tdata        <= '0;
       out_axis_tkeep        <= '0;
       out_axis_tvalid       <= 1'b0;
@@ -601,7 +626,8 @@ module ddr_trace_reader #(
       desc_issue_loops_done <= '0;
       desc_burst_beats_q    <= '0;
       desc_refill_ready_q   <= 1'b0;
-      desc_issue_end_q      <= 1'b0;
+      desc_issue_remaining_low_q <= '0;
+      desc_issue_remaining_fits_q <= 1'b0;
       desc_issue_loop_more_q <= 1'b0;
       desc_plan_metrics_valid <= 1'b0;
       desc_plan_valid       <= 1'b0;
@@ -629,9 +655,12 @@ module ddr_trace_reader #(
       meta_stage_gap        <= '0;
       meta_stage_len        <= '0;
       meta_stage_flags      <= '0;
+      meta_space_ready_q    <= 1'b0;
       plan_wr_ptr           <= '0;
       plan_rd_ptr           <= '0;
       plan_count            <= '0;
+      plan_available_q      <= 1'b0;
+      plan_space_ready_q    <= 1'b0;
       payload_cmd_wr_ptr    <= '0;
       payload_cmd_rd_ptr    <= '0;
       payload_cmd_count     <= '0;
@@ -678,6 +707,12 @@ module ddr_trace_reader #(
         running               <= 1'b0;
         done                  <= 1'b0;
         error                 <= 1'b0;
+        loop_mode_q           <= 1'b0;
+        cfg_desc_base_q       <= '0;
+        cfg_data_base_q       <= '0;
+        cfg_pkt_count_q       <= '0;
+        cfg_loop_count_q      <= '0;
+        cfg_loop_gap_ticks_q  <= '0;
         out_axis_tdata        <= '0;
         out_axis_tkeep        <= '0;
         out_axis_tvalid       <= 1'b0;
@@ -689,7 +724,8 @@ module ddr_trace_reader #(
         desc_issue_loops_done <= '0;
         desc_burst_beats_q    <= '0;
         desc_refill_ready_q   <= 1'b0;
-        desc_issue_end_q      <= 1'b0;
+        desc_issue_remaining_low_q <= '0;
+        desc_issue_remaining_fits_q <= 1'b0;
         desc_issue_loop_more_q <= 1'b0;
         desc_plan_metrics_valid <= 1'b0;
         desc_plan_valid       <= 1'b0;
@@ -711,9 +747,12 @@ module ddr_trace_reader #(
         meta_stage_gap        <= '0;
         meta_stage_len        <= '0;
         meta_stage_flags      <= '0;
+        meta_space_ready_q    <= 1'b0;
         plan_wr_ptr           <= '0;
         plan_rd_ptr           <= '0;
         plan_count            <= '0;
+        plan_available_q      <= 1'b0;
+        plan_space_ready_q    <= 1'b0;
         payload_cmd_wr_ptr    <= '0;
         payload_cmd_rd_ptr    <= '0;
         payload_cmd_count     <= '0;
@@ -760,6 +799,12 @@ module ddr_trace_reader #(
           running               <= 1'b1;
           done                  <= 1'b0;
           error                 <= 1'b0;
+          loop_mode_q           <= loop_mode;
+          cfg_desc_base_q       <= cfg_desc_base;
+          cfg_data_base_q       <= cfg_data_base;
+          cfg_pkt_count_q       <= cfg_pkt_count;
+          cfg_loop_count_q      <= cfg_loop_count;
+          cfg_loop_gap_ticks_q  <= cfg_loop_gap_ticks;
           out_axis_tdata        <= '0;
           out_axis_tkeep        <= '0;
           out_axis_tvalid       <= 1'b0;
@@ -771,7 +816,8 @@ module ddr_trace_reader #(
           desc_issue_loops_done <= '0;
           desc_burst_beats_q    <= '0;
           desc_refill_ready_q   <= 1'b0;
-          desc_issue_end_q      <= 1'b0;
+          desc_issue_remaining_low_q <= '0;
+          desc_issue_remaining_fits_q <= 1'b0;
           desc_issue_loop_more_q <= 1'b0;
           desc_plan_metrics_valid <= 1'b0;
           desc_plan_valid       <= 1'b0;
@@ -793,9 +839,12 @@ module ddr_trace_reader #(
           meta_stage_gap        <= '0;
           meta_stage_len        <= '0;
           meta_stage_flags      <= '0;
+          meta_space_ready_q    <= 1'b1;
           plan_wr_ptr           <= '0;
           plan_rd_ptr           <= '0;
           plan_count            <= '0;
+          plan_available_q      <= 1'b0;
+          plan_space_ready_q    <= 1'b1;
           payload_cmd_wr_ptr    <= '0;
           payload_cmd_rd_ptr    <= '0;
           payload_cmd_count     <= '0;
@@ -842,10 +891,16 @@ module ddr_trace_reader #(
         if (!start) begin
           desc_burst_beats_q     <= desc_burst_beats;
           desc_refill_ready_q    <= desc_refill_ready;
-          desc_issue_end_q       <= desc_issue_end;
+          desc_issue_remaining_low_q <= desc_issue_remaining[8:0];
+          desc_issue_remaining_fits_q <= (desc_issue_remaining[63:9] == '0);
           desc_issue_loop_more_q <= desc_issue_loop_more;
           desc_plan_metrics_valid <= running && !(ar_fire && (ar_kind_q == CMD_DESC));
           payload_buffered_beats_q <= payload_buffered_shadow_next;
+          // One-cycle look-ahead flags keep the scan path shallow.  The
+          // reserved slot absorbs the single stale-ready cycle at full rate.
+          meta_space_ready_q <= (meta_total_occupied < META_SPACE_GUARD_LEVEL);
+          plan_space_ready_q <= ({1'b0, plan_count} < PLAN_SPACE_GUARD_LEVEL);
+          plan_available_q <= (plan_count != '0);
 
           if (out_axis_load) begin
             out_axis_tdata  <= payload_fifo_m_tdata;
@@ -867,12 +922,12 @@ module ddr_trace_reader #(
 
         if (desc_plan_load) begin
           desc_plan_valid      <= 1'b1;
-          desc_plan_addr       <= cfg_desc_base + (desc_issue_index << DESC_WORD_SHIFT);
+          desc_plan_addr       <= cfg_desc_base_q + (desc_issue_index << DESC_WORD_SHIFT);
           desc_plan_beats      <= desc_burst_beats_q;
           desc_plan_index      <= desc_issue_index;
           desc_plan_loop_gap   <= desc_loop_gap_next;
-          desc_plan_done       <= desc_issue_end_q && !desc_issue_loop_more_q;
-          desc_plan_loop_again <= desc_issue_end_q && desc_issue_loop_more_q;
+          desc_plan_done       <= desc_issue_end && !desc_issue_loop_more_q;
+          desc_plan_loop_again <= desc_issue_end && desc_issue_loop_more_q;
         end
 
         if (ar_load) begin
@@ -897,11 +952,11 @@ module ddr_trace_reader #(
             desc_loop_gap_next <= 1'b0;
             if (ar_desc_loop_again_q) begin
               desc_issue_index      <= '0;
-              desc_issue_remaining  <= cfg_pkt_count;
+              desc_issue_remaining  <= cfg_pkt_count_q;
               desc_issue_loops_done <= desc_issue_loops_done + 64'd1;
               desc_loop_gap_next    <= 1'b1;
             end else if (ar_desc_done_q) begin
-              desc_issue_index     <= cfg_pkt_count;
+              desc_issue_index     <= cfg_pkt_count_q;
               desc_issue_remaining <= '0;
               desc_fetch_done      <= 1'b1;
             end else begin
@@ -921,7 +976,7 @@ module ddr_trace_reader #(
         end
 
         if (desc_push) begin
-          desc_gap_mem[desc_wr_ptr]   <= desc_loop_gap_for_beat ? cfg_loop_gap_ticks : m_axi_rdata[63:0];
+          desc_gap_mem[desc_wr_ptr]   <= desc_loop_gap_for_beat ? cfg_loop_gap_ticks_q : m_axi_rdata[63:0];
           desc_word_mem[desc_wr_ptr]  <= m_axi_rdata[95:64];
           desc_len_mem[desc_wr_ptr]   <= m_axi_rdata[111:96];
           desc_flags_mem[desc_wr_ptr] <= m_axi_rdata[127:112];
@@ -933,7 +988,7 @@ module ddr_trace_reader #(
           scan_count         <= '0;
           scan_beats         <= '0;
           scan_expected_word <= desc_word_mem[desc_rd_ptr];
-          scan_run_addr      <= cfg_data_base + ({32'd0, desc_word_mem[desc_rd_ptr]} << DESC_WORD_SHIFT);
+          scan_run_addr      <= cfg_data_base_q + ({32'd0, desc_word_mem[desc_rd_ptr]} << DESC_WORD_SHIFT);
           desc_head_valid    <= 1'b1;
           desc_head_gap_q    <= desc_gap_mem[desc_rd_ptr];
           desc_head_word_q   <= desc_word_mem[desc_rd_ptr];
@@ -970,6 +1025,10 @@ module ddr_trace_reader #(
           end else begin
             desc_head_valid <= 1'b0;
           end
+        end
+
+        if (scan_emit_request) begin
+          scan_state <= SC_EMIT;
         end
 
         if (payload_cmd_push) begin

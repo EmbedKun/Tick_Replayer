@@ -1,461 +1,317 @@
-# Preload Mode Architecture and Validation
+# PRELOAD And LOOP Hardware Reference
 
-This note describes the current `PRELOAD` mode in Tick Replayer.  It documents
-the hardware/software contract, the BAR register map, the datapath optimizations
-that were added for high-rate replay, the July 1, 2026 U200 loopback results,
-and the remaining issues that must be fixed before this build can be called a
-clean 100G replay image.
+This document is the hardware/software contract for Tick Replayer `PRELOAD`
+and `LOOP` modes.  It describes the trace format, BAR registers, DDR layout,
+scheduling behavior, datapath implementation, and release validation criteria.
+Historical board measurements remain in the dated files under `docs/`.
 
-## Scope
-
-`PRELOAD` mode assumes that the host has already converted a trace into:
-
-* `desc.bin`: one 64-byte descriptor per packet.
-* `data.bin`: packet payloads, padded and addressed as 64-byte words.
-* `manifest.json`: packet count, byte count, descriptor path, and data path.
-
-The host writes `desc.bin` and `data.bin` into FPGA `DDR4` through
-memory-mapped `XDMA H2C`, programs the `AXI-Lite` BAR registers, and starts the
-FPGA replay core.  During replay, the FPGA reads all descriptors and payloads
-from `DDR4`; the host is no longer in the transmit datapath.
-
-The current U200 test setup connects `QSFP0` and `QSFP1` with a 100G optical
-loopback fiber.  The representative tests below transmit from port 0 and count
-packets on port 1.
-
-## Hardware Datapath
+## Data Path
 
 ```text
-Host trace files
-  -> XDMA H2C memory-mapped writes
-  -> FPGA DDR4 descriptor/data regions
+classic pcap
+  -> tick-replay prepare
+  -> desc.bin + data.bin + manifest.json
+  -> XDMA memory-mapped H2C
+  -> FPGA DDR4
   -> ddr_trace_reader
   -> replay_scheduler
   -> replay_tx_engine
-  -> AXI-Stream async FIFO
-  -> axis_to_lbus_512
-  -> CMAC TX
-  -> QSFP optical loopback
-  -> CMAC RX
-  -> lbus_to_axis_512
-  -> rx_capture_core counters / optional DDR sample ring
+  -> scheduled_axis_async_fifo
+  -> CMAC-domain egress scheduler
+  -> AXI-Stream to LBUS adapter
+  -> 100G CMAC
+  -> QSFP
 ```
 
-The `PRELOAD` source is `ddr_trace_reader`.  It reads descriptors from DDR,
-scans payload locality, coalesces adjacent payload reads, and feeds packet
-metadata plus 512-bit payload beats into the common scheduler/TX engine.
+The host leaves the transmit data path after loading the trace.  During replay,
+the FPGA reads descriptors and payloads from bank-local DDR, accumulates packet
+gaps into target ticks, and sends complete frames to the selected CMAC.
 
-The `STREAM` source and host streaming parser still exist, but they are bypassed
-when `MODE=PRELOAD`.
+`LOOP` uses the same data path and DDR trace.  At end of trace it reloads the
+descriptor/payload reader, waits for the configured loop gap, and starts the
+next iteration.
 
 ## Descriptor Format
 
-Each packet descriptor is exactly 64 bytes and is little-endian:
+Each descriptor is exactly `64 B`, little-endian, and aligned to one 512-bit
+DDR beat.
 
 | Byte offset | Width | Field | Meaning |
 | ---: | ---: | --- | --- |
-| `0x00` | 64 bits | `gap_ticks` | Packet release gap relative to the previous packet.  The host precomputes this value in replay clock ticks. |
-| `0x08` | 32 bits | `word_offset` | Payload offset in 64-byte words from `DATA_BASE`. |
-| `0x0c` | 16 bits | `frame_len` | Ethernet frame length in bytes, excluding preamble and FCS. |
-| `0x0e` | 16 bits | `flags` | Reserved for per-packet control.  Current tests use `0`. |
-| `0x10` | 48 bytes | reserved | Must be written as `0` for forward compatibility. |
+| `0x00` | `64 bits` | `gap_ticks` | Requested gap relative to the previous packet, in replay ticks |
+| `0x08` | `32 bits` | `data_word_offset` | Payload offset from `DATA_BASE`, measured in `64 B` words |
+| `0x0c` | `16 bits` | `frame_len` | Ethernet frame bytes, excluding preamble and FCS |
+| `0x0e` | `16 bits` | `flags` | Reserved per-packet controls |
+| `0x10` | `48 B` | reserved | Written as zero |
 
-The 64-byte descriptor size is intentionally kept even for small packets.  It is
-simple to parse, aligned for DDR bursts, and leaves room for future metadata
-without changing the host/FPGA contract.
+Payloads are concatenated in `data.bin` and padded to `64 B` boundaries.  The
+fixed descriptor size simplifies DDR burst reads and leaves space for future
+metadata without changing the host/FPGA ABI.
 
-## BAR Map
+## BAR Windows
 
-The XDMA user BAR exposes four 64 KiB windows:
+XDMA exposes the application AXI-Lite master through `/dev/xdma0_user`.
 
 | BAR offset | Window |
 | ---: | --- |
-| `0x00000` | `TX0` replay control/status |
-| `0x10000` | `TX1` replay control/status |
-| `0x20000` | `RX0` capture/stat control |
-| `0x30000` | `RX1` capture/stat control |
+| `0x00000` | TX0 replay control and statistics |
+| `0x10000` | TX1 replay control and statistics |
+| `0x20000` | RX0 measurement and capture |
+| `0x30000` | RX1 measurement and capture |
 
-The build also routes a DDR controller control aperture after these windows.
-Software normally accesses only the replay and capture windows.
+All offsets below are relative to the selected TX or RX window.
 
-### TX Replay Registers
-
-Offsets below are relative to each `TX` window.
+## TX Register Map
 
 | Offset | Register | Access | Description |
-| ---: | --- | --- | --- |
-| `0x0000` | `CONTROL` | RW pulse/state | bit 0 `start`, bit 1 `stop`, bit 2 `clear`, bit 3 `pause`. |
-| `0x0004` | `MODE` | RW | `0=PRELOAD`, `1=STREAM`, `2=LOOP`. |
-| `0x0008` | `STATUS` | RO | bit 0 `running`, bit 1 `done`, bit 2 `late`, bit 3 `underrun`, bit 4 raw CMAC link, bit 5 effective TX gate. |
-| `0x0010` | `DESC_BASE_LO` | RW | Descriptor base address low word. |
-| `0x0014` | `DESC_BASE_HI` | RW | Descriptor base address high word. |
-| `0x0018` | `DATA_BASE_LO` | RW | Payload base address low word. |
-| `0x001c` | `DATA_BASE_HI` | RW | Payload base address high word. |
-| `0x0020` | `TRACE_LO` | RW | Trace byte count low word.  Used by stream-buffer mode. |
-| `0x0024` | `TRACE_HI` | RW | Trace byte count high word. |
-| `0x0028` | `PKT_LO` | RW | Packet count low word. |
-| `0x002c` | `PKT_HI` | RW | Packet count high word. |
-| `0x0030` | `LOOP_LO` | RW | Loop count low word. |
-| `0x0034` | `LOOP_HI` | RW | Loop count high word. |
-| `0x0038` | `LOOP_GAP_LO` | RW | Gap between replay loops, low word. |
-| `0x003c` | `LOOP_GAP_HI` | RW | Gap between replay loops, high word. |
-| `0x0040` | `START_LO` | RW | Reserved start-time low word.  Current scheduler uses a replay-relative baseline on `start`. |
-| `0x0044` | `START_HI` | RW | Reserved start-time high word. |
-| `0x0048` | `RATE` | RW | Reserved Q16.16 rate field.  Current preload tests use descriptor gaps directly. |
-| `0x004c` | `WATERMARK` | RW | Stream prefetch watermark. |
-| `0x0050` | `FIFO_LEVEL` | RO | Internal stream FIFO level. |
-| `0x0054` | `DEBUG_CTRL` | RW | bit 0 `force_link_up`, bit 1 `force_tx_ready`, bit 2 `auto_tx_drop`.  `auto_tx_drop` is enabled after reset so a long downstream stall drains as counted best-effort drops instead of hanging the replay core. |
-| `0x0060` | `TX_PKTS_LO` | RO | Transmitted packet count low word. |
-| `0x0064` | `TX_PKTS_HI` | RO | Transmitted packet count high word. |
-| `0x0068` | `TX_BYTES_LO` | RO | Transmitted frame byte count low word. |
-| `0x006c` | `TX_BYTES_HI` | RO | Transmitted frame byte count high word. |
-| `0x0070` | `LATE_LO` | RO | Late packet count low word. |
-| `0x0074` | `LATE_HI` | RO | Late packet count high word. |
-| `0x0078` | `UNDERRUN_LO` | RO | Payload underrun count low word. |
-| `0x007c` | `UNDERRUN_HI` | RO | Payload underrun count high word. |
-| `0x0080` | `DEBUG_STATUS` | RO | Replay source, scheduler, and TX ready status bits. |
-| `0x0084` | `DEBUG_AXI` | RO | AXI read-channel debug bits. |
-| `0x0088` | `DEBUG_AR_LO` | RO | Last/active AXI read address low word. |
-| `0x008c` | `DEBUG_AR_HI` | RO | Last/active AXI read address high word. |
-| `0x0090` | `DEBUG_RDATA` | RO | Low 32 bits of observed AXI read data. |
-| `0x0094` | `DEBUG_TICK_LO` | RO | Replay-relative hardware tick counter low word. |
-| `0x0098` | `DEBUG_TICK_HI` | RO | Replay-relative hardware tick counter high word. |
-| `0x00a0` | `STREAM_WR_LO` | RW | Host-committed stream write count low word. |
-| `0x00a4` | `STREAM_WR_HI` | RW | Host-committed stream write count high word. |
-| `0x00a8` | `STREAM_RD_LO` | RO | FPGA-consumed stream read count low word. |
-| `0x00ac` | `STREAM_RD_HI` | RO | FPGA-consumed stream read count high word. |
-| `0x00b0` | `STREAM_RING_LO` | RW | Stream ring size low word. |
-| `0x00b4` | `STREAM_RING_HI` | RW | Stream ring size high word. |
-| `0x00b8` | `STREAM_CTRL` | RW | bit 0 `stream_eof`. |
-| `0x00bc` | `STREAM_STATUS` | RO | Stream reader status/debug bits. |
-| `0x00c0` | `STREAM_LEVEL_LO` | RO | Stream ring fill level low word. |
-| `0x00c4` | `STREAM_LEVEL_HI` | RO | Stream ring fill level high word. |
-| `0x00c8` | `DROP_PKTS_LO` | RO | Best-effort dropped packet count low word. |
-| `0x00cc` | `DROP_PKTS_HI` | RO | Best-effort dropped packet count high word. |
-| `0x00d0` | `DROP_BEATS_LO` | RO | Best-effort dropped AXIS beat count low word. |
-| `0x00d4` | `DROP_BEATS_HI` | RO | Best-effort dropped AXIS beat count high word. |
-| `0x00d8` | `STALL_EVT_LO` | RO | Long downstream stall event count low word. |
-| `0x00dc` | `STALL_EVT_HI` | RO | Long downstream stall event count high word. |
+| ---: | --- | :---: | --- |
+| `0x0000` | `CONTROL` | RW pulse/state | bit 0 `start`, bit 1 `stop`, bit 2 `clear`, bit 3 `pause` |
+| `0x0004` | `MODE` | RW | `0=PRELOAD`, `1=STREAM`, `2=LOOP` |
+| `0x0008` | `STATUS` | RO | running, done, late, underrun, raw link, and effective TX gate |
+| `0x0010` | `DESC_BASE_LO` | RW | Descriptor base low word |
+| `0x0014` | `DESC_BASE_HI` | RW | Descriptor base high word |
+| `0x0018` | `DATA_BASE_LO` | RW | Payload base low word |
+| `0x001c` | `DATA_BASE_HI` | RW | Payload base high word |
+| `0x0020` | `TRACE_LO` | RW | Trace byte count low word |
+| `0x0024` | `TRACE_HI` | RW | Trace byte count high word |
+| `0x0028` | `PKT_LO` | RW | Packet count low word |
+| `0x002c` | `PKT_HI` | RW | Packet count high word |
+| `0x0030` | `LOOP_LO` | RW | Loop count low word; zero means unbounded where supported |
+| `0x0034` | `LOOP_HI` | RW | Loop count high word |
+| `0x0038` | `LOOP_GAP_LO` | RW | Gap between iterations, low word |
+| `0x003c` | `LOOP_GAP_HI` | RW | Gap between iterations, high word |
+| `0x0040` | `START_LO` | RW | Start target low word |
+| `0x0044` | `START_HI` | RW | Start target high word |
+| `0x0048` | `RATE` | RW | Q16.16 rate field; descriptor ticks are the current timing authority |
+| `0x004c` | `WATERMARK` | RW | STREAM prefetch watermark |
+| `0x0050` | `FIFO_LEVEL` | RO | Internal source FIFO level |
+| `0x0054` | `DEBUG_CTRL` | RW | bit 0 force link, bit 1 force TX ready, bit 2 best-effort auto-drop |
+| `0x0060` | `TX_PKTS_LO` | RO | TX packet count low word |
+| `0x0064` | `TX_PKTS_HI` | RO | TX packet count high word |
+| `0x0068` | `TX_BYTES_LO` | RO | TX frame-byte count low word |
+| `0x006c` | `TX_BYTES_HI` | RO | TX frame-byte count high word |
+| `0x0070` | `LATE_LO` | RO | Late packet count low word |
+| `0x0074` | `LATE_HI` | RO | Late packet count high word |
+| `0x0078` | `UNDERRUN_LO` | RO | Payload underrun count low word |
+| `0x007c` | `UNDERRUN_HI` | RO | Payload underrun count high word |
+| `0x0080` | `DEBUG_STATUS` | RO | Replay-source, scheduler, and TX ready state |
+| `0x0084` | `DEBUG_AXI` | RO | AXI read-channel state |
+| `0x0088` | `DEBUG_AR_LO` | RO | Last/active AXI read address low word |
+| `0x008c` | `DEBUG_AR_HI` | RO | Last/active AXI read address high word |
+| `0x0090` | `DEBUG_RDATA` | RO | Low word of observed AXI read data |
+| `0x0094` | `DEBUG_TICK_LO` | RO | Replay-relative tick low word |
+| `0x0098` | `DEBUG_TICK_HI` | RO | Replay-relative tick high word |
+| `0x00a0` | `STREAM_WR_LO` | RW | Host-committed stream bytes low word |
+| `0x00a4` | `STREAM_WR_HI` | RW | Host-committed stream bytes high word |
+| `0x00a8` | `STREAM_RD_LO` | RO | FPGA-consumed stream bytes low word |
+| `0x00ac` | `STREAM_RD_HI` | RO | FPGA-consumed stream bytes high word |
+| `0x00b0` | `STREAM_RING_LO` | RW | STREAM ring size low word |
+| `0x00b4` | `STREAM_RING_HI` | RW | STREAM ring size high word |
+| `0x00b8` | `STREAM_CTRL` | RW | bit 0 signals STREAM EOF |
+| `0x00bc` | `STREAM_STATUS` | RO | STREAM reader state and error bits |
+| `0x00c0` | `STREAM_LEVEL_LO` | RO | Available committed stream bytes low word |
+| `0x00c4` | `STREAM_LEVEL_HI` | RO | Available committed stream bytes high word |
+| `0x00c8` | `DROP_PKTS_LO` | RO | Best-effort dropped packets low word |
+| `0x00cc` | `DROP_PKTS_HI` | RO | Best-effort dropped packets high word |
+| `0x00d0` | `DROP_BEATS_LO` | RO | Best-effort dropped AXI beats low word |
+| `0x00d4` | `DROP_BEATS_HI` | RO | Best-effort dropped AXI beats high word |
+| `0x00d8` | `STALL_EVT_LO` | RO | Long downstream stall events low word |
+| `0x00dc` | `STALL_EVT_HI` | RO | Long downstream stall events high word |
+| `0x00e0` | `SCHED_CTRL` | RW | bit 0 shared timebase; bit 1 CMAC-domain egress scheduling |
+| `0x00e4` | `GLOBAL_TICK_LO` | RO | Shared free-running FPGA tick low word |
+| `0x00e8` | `GLOBAL_TICK_HI` | RO | Shared free-running FPGA tick high word |
+| `0x00ec` | `SCHED_STATUS` | RO | bit 0 sync enabled, bit 1 future start armed, bit 2 egress enabled |
 
-The current `DEBUG_STATUS` bit assignment is:
+`DEBUG_CTRL[0]` and `[1]` are bring-up overrides.  They must remain clear for
+reported physical throughput and precision tests.  `DEBUG_CTRL[2]` prevents a
+permanent hang when the downstream path remains blocked: the core records the
+drop and stall instead of waiting forever.  A lossless result still requires
+all drop, stall, late, and underrun counters to remain zero.
 
-| Bit | Meaning |
-| ---: | --- |
-| `3:0` | Active reader state. |
-| `4` | `sel_stream_mode`. |
-| `5` | `sel_ddr_mode`. |
-| `6` | `pause`. |
-| `7` | `core_enable`. |
-| `8` | Source busy. |
-| `9` | Source done. |
-| `10` | Source error. |
-| `11` | DDR metadata valid. |
-| `12` | DDR metadata ready. |
-| `13` | DDR payload AXIS valid. |
-| `14` | DDR payload AXIS ready. |
-| `15` | Scheduled packet valid. |
-| `16` | Scheduled packet ready. |
-| `17` | Source AXIS valid. |
-| `18` | Source AXIS ready. |
-| `19` | TX AXIS valid toward the downstream FIFO/CMAC path. |
-| `20` | TX AXIS ready from the downstream FIFO/CMAC path. |
-| `21` | DDR reader start pulse. |
-| `22` | `force_tx_ready` debug override. |
-| `23` | `auto_tx_drop_active`; downstream stalled long enough that the core is draining as counted drops. |
-| `24` | `auto_tx_drop` enable bit. |
-
-In over-rate tests, stalls are diagnosed by this register: the replay core has
-valid TX data, but bit 20 (`m_tx_axis_tready`) stays low.  With
-`auto_tx_drop=1`, a watchdog turns this condition into counted `DROP_*` and
-`STALL_EVT_*` increments so the core can finish the trace.  Throughput and
-correctness tests must still require `drop_packets=0`; the drop path is only a
-robustness guardrail for overload or link-side faults.
-
-### RX Capture Registers
-
-Offsets below are relative to each `RX` window.
+## RX Register Map
 
 | Offset | Register | Access | Description |
-| ---: | --- | --- | --- |
-| `0x0000` | `CONTROL` | RW | bit 0 `enable`, bit 1 stats clear pulse, bit 2 `capture_enable`. |
-| `0x0004` | `STATUS` | RO | Link, FIFO, writer-state, and overflow debug bits. |
-| `0x0010` | `RING_BASE_LO` | RW | DDR sample ring base low word. |
-| `0x0014` | `RING_BASE_HI` | RW | DDR sample ring base high word. |
-| `0x0018` | `RING_SIZE` | RW | DDR sample ring size in bytes. |
-| `0x001c` | `TRUNC_BYTES` | RW | Maximum bytes captured per packet.  Default is `256`. |
-| `0x0020` | `WRITE_PTR` | RW/RO | Current sample-ring write pointer. |
-| `0x0030` | `RX_PKTS_LO` | RO | Received packet count low word. |
-| `0x0034` | `RX_PKTS_HI` | RO | Received packet count high word. |
-| `0x0038` | `RX_BYTES_LO` | RO | Received byte count low word. |
-| `0x003c` | `RX_BYTES_HI` | RO | Received byte count high word. |
-| `0x0040` | `RX_ERRS_LO` | RO | Receive error count low word. |
-| `0x0044` | `RX_ERRS_HI` | RO | Receive error count high word. |
-| `0x0048` | `CAP_BYTES_LO` | RO | Captured sample bytes low word. |
-| `0x004c` | `CAP_BYTES_HI` | RO | Captured sample bytes high word. |
-| `0x0050` | `AXI_WR_LO` | RO | DDR sample-ring AXI write count low word. |
-| `0x0054` | `AXI_WR_HI` | RO | DDR sample-ring AXI write count high word. |
-| `0x0058` | `AXI_ERR_LO` | RO | DDR sample-ring AXI write error count low word. |
-| `0x005c` | `AXI_ERR_HI` | RO | DDR sample-ring AXI write error count high word. |
-| `0x0060` | `DEBUG` | RO | Capture writer debug state. |
+| ---: | --- | :---: | --- |
+| `0x0000` | `CONTROL` | RW | bit 0 enable, bit 1 clear pulse, bit 2 DDR sample capture |
+| `0x0004` | `STATUS` | RO | Link, FIFO, writer state, and overflow status |
+| `0x0010` | `RING_BASE_LO` | RW | DDR sample ring base low word |
+| `0x0014` | `RING_BASE_HI` | RW | DDR sample ring base high word |
+| `0x0018` | `RING_SIZE` | RW | DDR sample ring bytes |
+| `0x001c` | `TRUNC_BYTES` | RW | Maximum captured bytes per packet |
+| `0x0020` | `WRITE_PTR` | RW/RO | Current DDR sample write pointer |
+| `0x0030` | `RX_PKTS_LO` | RO | RX packet count low word |
+| `0x0034` | `RX_PKTS_HI` | RO | RX packet count high word |
+| `0x0038` | `RX_BYTES_LO` | RO | RX byte count low word |
+| `0x003c` | `RX_BYTES_HI` | RO | RX byte count high word |
+| `0x0040` | `RX_ERRS_LO` | RO | RX error count low word |
+| `0x0044` | `RX_ERRS_HI` | RO | RX error count high word |
+| `0x0048` | `CAP_BYTES_LO` | RO | Captured sample bytes low word |
+| `0x004c` | `CAP_BYTES_HI` | RO | Captured sample bytes high word |
+| `0x0050` | `AXI_WR_LO` | RO | DDR sample writes low word |
+| `0x0054` | `AXI_WR_HI` | RO | DDR sample writes high word |
+| `0x0058` | `AXI_ERR_LO` | RO | DDR sample AXI errors low word |
+| `0x005c` | `AXI_ERR_HI` | RO | DDR sample AXI errors high word |
+| `0x0060` | `DEBUG` | RO | Capture writer and FIFO state |
+| `0x0064` | `GAP_COUNT_LO` | RO | Measured SOP intervals low word |
+| `0x0068` | `GAP_COUNT_HI` | RO | Measured SOP intervals high word |
+| `0x006c` | `GAP_SUM_LO` | RO | Sum of interval cycles low word |
+| `0x0070` | `GAP_SUM_HI` | RO | Sum of interval cycles high word |
+| `0x0074` | `GAP_MIN_LO` | RO | Minimum interval low word |
+| `0x0078` | `GAP_MIN_HI` | RO | Minimum interval high word |
+| `0x007c` | `GAP_MAX_LO` | RO | Maximum interval low word |
+| `0x0080` | `GAP_MAX_HI` | RO | Maximum interval high word |
+| `0x0084` | `GAP_LAST_LO` | RO | Latest interval low word |
+| `0x0088` | `GAP_LAST_HI` | RO | Latest interval high word |
+| `0x008c` | `RX_TICK_LO` | RO | RX-domain tick low word |
+| `0x0090` | `RX_TICK_HI` | RO | RX-domain tick high word |
+| `0x0094` | `GAP_SAMPLE_INDEX` | RW | Legacy 4096-entry sample selector |
+| `0x0098` | `GAP_SAMPLE_COUNT` | RO | Legacy retained sample count |
+| `0x009c` | `GAP_SAMPLE_LO` | RO | Selected legacy sample low word |
+| `0x00a0` | `GAP_SAMPLE_HI` | RO | Selected legacy sample high word |
+| `0x00a4` | `GAP_SAMPLE_WRITE_INDEX` | RO | Legacy next-write index |
+| `0x00a8` | `EVENT_INDEX` | RW | High-capacity interval event selector |
+| `0x00ac` | `EVENT_COUNT_LO` | RO | Retained event count low word |
+| `0x00b0` | `EVENT_COUNT_HI` | RO | Retained event count high word |
+| `0x00b4` | `EVENT_DATA_LO` | RO | Selected event low word |
+| `0x00b8` | `EVENT_DATA_HI` | RO | Selected event high word |
+| `0x00bc` | `EVENT_WRITE_INDEX` | RO | Next event write index |
+| `0x00c0` | `EVENT_DROP_LO` | RO | Dropped measurement events low word |
+| `0x00c4` | `EVENT_DROP_HI` | RO | Dropped measurement events high word |
+| `0x00c8` | `EVENT_CAPACITY` | RO | Current capacity, `524288` intervals |
+| `0x00cc` | `HIST_INDEX` | RW | Selects one of 16 logarithmic bins |
+| `0x00d0` | `HIST_COUNT_LO` | RO | Selected bin count low word |
+| `0x00d4` | `HIST_COUNT_HI` | RO | Selected bin count high word |
+| `0x00d8` | `RX_CAPABILITIES` | RO | Aggregate/event/histogram capability bits |
 
-## Host Software Flow
+The legacy sample window remains for compatibility.  The UltraRAM event ring is
+the release measurement path.  It packs eight 64-bit intervals into each
+512-bit word and stores up to `524288` intervals per port.
 
-The preload software stack is intentionally small:
+## Scheduling Semantics
 
-1. `pcap2trace.py` or `gen_synthetic_trace.py` creates `desc.bin`,
-   `data.bin`, and `manifest.json`.
-2. `xdma_load_trace.py` writes descriptors and payloads through
-   `/dev/xdma0_h2c_0`, then programs the selected TX BAR window.
-3. `traffic_replay_cli.py` provides `start`, `stop`, `clear`, `status`,
-   `regs`, `debug-tx-ready`, `auto-drop`, and per-port access.
-4. `ddr_readback_check.py` verifies basic host-to-DDR and DDR-to-host access
-   through `/dev/xdma0_h2c_0` and `/dev/xdma0_c2h_0`.
-5. `preload_stress_test.py` generates synthetic preload traces, loads them into
-   DDR, and records `late`, `underrun`, `drop`, and `stall` counters for both
-   no-drop and over-rate robustness sweeps.
-6. `hw_validation_suite.py` remains the common smoke/stress wrapper and now
-   includes preload scheduled no-drop and preload over-rate robustness phases.
+The host converts pcap timestamps into descriptor gaps before loading the FPGA.
+Conversion uses cumulative absolute rounding so sub-tick rounding does not
+accumulate into long-trace drift.
 
-The host must only use `force_link_up` and `force_tx_ready` for bring-up.  Final
-throughput or precision numbers must be collected with a real CMAC link and
-without forcing downstream readiness.
+The scheduler accumulates gaps into absolute packet targets.  On every `START`
+or `CLEAR`, local replay time and per-trace target state reset.  Long FPGA uptime
+therefore cannot make a newly loaded trace appear late.
 
-## Datapath Optimizations Added
+When `SCHED_CTRL[0]=0`, target ticks use the local replay counter.  When it is
+set, both TX cores observe the same Gray-coded global timebase.  Software writes
+the same future `START` tick to both ports and then arms them independently.
 
-The latest preload work focused on reducing bubbles between DDR, scheduler, and
-CMAC:
+When `SCHED_CTRL[1]=1`, packet data may cross into the CMAC TX domain before it
+is due.  The LBUS adapter holds the first beat until the target tick, then emits
+the complete frame without inserting scheduler bubbles inside the frame.
 
-* `ddr_trace_reader` now keeps descriptor, metadata, plan, payload-command, AXI
-  command, and payload FIFOs.  The payload FIFO depth is `4096` 512-bit beats.
-* Payload read coalescing can group adjacent packet payloads into a larger DDR
-  run.  The current coalescing window is up to `255` packets and up to `256`
-  AXI beats per burst.
-* Descriptor scanning starts before the whole trace is consumed; it uses a
-  descriptor FIFO and reserved payload-space accounting to avoid overflowing the
-  payload FIFO.
-* AXI response classification was moved into explicit command-head registers.
-  This removes ambiguous direct dependence on FIFO memory at the response head
-  and made completion/error accounting more deterministic.
-* `replay_scheduler` now has a one-cycle metadata staging register before the
-  scheduling FIFO.  This breaks the timing path from incoming metadata through
-  target-tick calculation into block RAM writes while keeping one-packet-per-
-  cycle steady-state acceptance.
-* The scheduler resets its replay-relative tick baseline on `start` and `clear`,
-  so long FPGA uptime no longer affects new trace timing.
-* `axis_sync_fifo` and `axis_async_fifo` use XPM block RAM with always-enabled
-  memory ports to shorten count/ready-to-BRAM-enable paths.
-* `axis_to_lbus_512` now uses local synchronized reset in the CMAC transmit
-  clock domain to reduce high-fanout reset timing pressure.
-* The AXI-Stream FIFO in front of each CMAC path is configured as a 1024-beat
-  BRAM FIFO, and the local `axis_to_lbus_512` FIFO is configured to 32 beats.
-  This absorbs short gap-2/gap-3 burst imbalance without immediately
-  backpressuring the scheduler.
-* A TX stall watchdog watches `m_tx_axis_tvalid && !m_tx_axis_tready`.  After a
-  sustained stall it enables a counted best-effort drain path.  This preserves
-  system liveness under over-rate tests; exact replay validation must check that
-  the drop counters remain zero.
+## DDR Prefetch Architecture
 
-The design still does not implement the full future target of many independent
-outstanding DDR reads with separate descriptor and payload AXI channels.  It has
-deeper queues and stronger coalescing, but the next preload performance step is
-to further pipeline `PL_SCAN`/`PL_AR`, allow more read requests to remain in
-flight, and decouple descriptor fetch from payload fetch more aggressively.
+`ddr_trace_reader` separates descriptor and payload activity:
 
-## Timing and Resource Status
+1. Descriptor bursts fill a deep descriptor FIFO.
+2. A scan pipeline validates packet order and creates payload plans.
+3. Adjacent payload ranges are coalesced where legal.
+4. Multiple AXI read commands remain outstanding.
+5. Metadata and payload FIFOs absorb DDR latency and burst variation.
+6. The scheduler sees complete packet metadata only after payload capacity has
+   been reserved.
 
-This experimental dual-port bitstream was built on the remote U200 host with
-Vivado 2020.2.  Bit generation completed, but post-route timing is not clean:
+The two replay ports use different DDR controllers in the default dual-port
+build.  This removes one shared DDR arbitration point from simultaneous replay.
 
-| Metric | Value |
-| --- | ---: |
-| `WNS` | `-0.018 ns` |
-| `TNS` | `-0.228 ns` |
-| Failing setup endpoints | `21` |
-| Hold slack | `0.001 ns` |
+## Capacity
 
-Placed utilization:
-
-| Resource | Used | Available | Utilization |
-| --- | ---: | ---: | ---: |
-| `CLB LUTs` | `135692` | `1182240` | `11.48%` |
-| `CLB Registers` | `143890` | `2364480` | `6.09%` |
-| `Block RAM Tile` | `499.5` | `2160` | `23.13%` |
-| `URAM` | `0` | `960` | `0.00%` |
-| `DSPs` | `3` | `6840` | `0.04%` |
-
-The resource profile shows that the design is spending BRAM to buy buffering
-and timing isolation.  This is intentional for replay accuracy: the host can
-pay the preload cost before replay, while the FPGA must avoid starvation during
-the timed transmit window.
-
-## Validation Summary
-
-Archived evidence:
-
-* Bitstream archive:
-  `bitstreams/20260701_203500_dual_preload_gap38_mixed_timing_violation/`
-* Screenshot-style result summary:
-  `docs/images/preload_20260701_terminal.png`
-
-![Preload validation terminal summary](images/preload_20260701_terminal.png)
-
-### July 2 Robustness RTL Tests
-
-The replay-core performance testbench now includes a forced long `tready` stall
-case with a shortened simulation watchdog.  The core drains a 512-packet trace
-with `tx_pkts=512`, `drop_pkts=112`, `drop_beats=112`, and
-`stall_events=1`.  This verifies that an overload no longer leaves the core
-permanently running with a stuck downstream ready signal.
-
-The same testbench still passes the 1518-byte, 64-byte gap-0, and 64-byte
-gap-2 core-throughput cases with `drop_pkts=0`.  Dual-core preload simulation
-also still passes for two concurrent TX cores.
-
-### 1518-Byte Packet Sweep
-
-`20000` packets, port 0 TX to port 1 RX:
-
-| Gap ticks | Result | TX packets | RX packets | Late | Underrun | TX L2 Gbps | Wire-est. Gbps | RX errors |
-| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `42` | pass | `20000` | `20000` | `0` | `0` | `86.740` | `88.111` | `11334` |
-| `40` | pass | `20000` | `20000` | `0` | `0` | `91.077` | `92.517` | `9429` |
-| `38` | pass | `20000` | `20000` | `0` | `0` | `95.870` | `97.386` | `1255` |
-| `37` | fail | `2103` | `2083` | `0` | `0` | timeout | timeout | `4` |
-
-Interpretation: `gap=38` is the best currently observed large-packet physical
-loopback point.  It is close to the 100G target and the scheduler does not
-report `late` or `underrun`.  `gap=37` requests slightly above the 100G physical
-limit for this packet size and stalls when the downstream TX path backpressures
-the replay core.
-
-### 64-Byte Packet Sweep
-
-`200000` packets, port 0 TX to port 1 RX:
-
-| Gap ticks | Result | TX packets | RX packets | Late | Underrun | TX L2 Gbps | Wire-est. Gbps | RX errors |
-| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `5` | pass | `200000` | `200000` | `0` | `0` | `30.720` | `42.240` | `0` |
-| `4` | pass | `200000` | `200000` | `0` | `0` | `38.400` | `52.800` | `0` |
-| `3` | pass | `200000` | `200000` | `0` | `0` | `51.200` | `70.400` | `0` |
-| `2` | fail | `502` | invalid after stall | `0` | `0` | timeout | timeout | invalid |
-
-Interpretation: the current timestamp scheduler releases at most one packet per
-300 MHz replay tick.  For 64-byte packets, `gap=2` corresponds to about
-`105.6Gbps` wire rate including 20-byte preamble/IFG plus 4-byte FCS estimate,
-so it overdrives the physical path.  The next integer gap is `3`, which is only
-about `70.4Gbps`.  Reaching 100G for minimum-size packets while keeping precise
-timestamps needs an architectural change such as a fractional/NCO scheduler,
-multi-packet-per-tick release, or LBUS packing that can represent the 2/3 tick
-average spacing needed by 148.8 Mpps traffic.
-
-### Mixed Packet Test
-
-`120000` packets with equal counts of `64`, `1518`, `128`, `1024`, `256`, and
-`512` byte frames:
-
-| Metric | Value |
-| --- | ---: |
-| TX packets | `120000` |
-| RX packets | `120000` |
-| TX bytes | `70040000` |
-| Ideal ticks | `1820000` |
-| Measured ticks | `1820011` |
-| Late packets | `0` |
-| Underrun packets | `0` |
-| TX L2 Gbps | `92.360` |
-| Wire-est. Gbps | `96.158` |
-| RX errors | `128` |
-
-Interpretation: the scheduler is behaving well for a mixed packet trace; the
-measured duration differs from the ideal schedule by only `11` ticks.  The data
-path completes packet-count loopback, but the nonzero RX error count means the
-receive adapter/capture side still needs cleanup before this can be treated as a
-full data-integrity pass.
-
-## Major Remaining Preload Issues
-
-* The July 2 robustness RTL has passed simulation and stub synthesis.  A fresh
-  full U200 place/route run is required before this version can be called timing
-  clean.
-* Large-packet and mixed-packet loopback runs preserve packet count, but RX error
-  counters are not zero and RX byte counts can differ from TX bytes.  The likely
-  area is the `CMAC` RX LBUS-to-AXIS adapter or the RX capture interpretation of
-  `mty`, `eop`, and error signals.
-* Over-rate tests are now expected to finish through the best-effort drop path
-  when `auto_tx_drop=1`.  This avoids a hung test, but it is not a valid
-  lossless replay result.  The next RTL cleanup should still add a BAR-controlled
-  soft reset for the whole per-port TX datapath.
-* 64-byte packets cannot reach 100G with the current integer `gap_ticks` and
-  one-packet-per-tick scheduler.  `gap=2` overdrives the link; `gap=3` is stable
-  but only about `70.4Gbps` wire estimate.
-* The DDR reader has deeper queues and burst coalescing, but it is not yet the
-  final multi-outstanding, dual-channel descriptor/payload architecture.
-* `force_tx_ready` is diagnostic only.  It can drain internal replay counters
-  while bypassing real downstream readiness, so it must not be used for physical
-  throughput results.
-
-## RX-Side Replay Precision Checking
-
-The RX capture core now exposes a compact SOP-to-SOP gap sample window in the
-RX clock domain.  It is intended for replay precision checks with a physical
-`QSFP0` to `QSFP1` loopback, or later with a DUT in the path.  Absolute packet
-arrival time includes fixed CMAC and optical latency, so the robust metric is
-delta-based:
+One packet consumes:
 
 ```text
-error_ns[i] =
-  rx_gap_cycles[i] / rx_tick_hz * 1e9
-  - descriptor_gap_ticks[i] / tx_tick_hz * 1e9
+trace_bytes_per_packet = 64 + align64(frame_len)
 ```
 
-The first packet establishes the fixed latency baseline.  Samples start with the
-second received packet and compare against the descriptor gap of that packet.
+The default dual-port build allocates one `16 GiB` TX bank per port.  A
+single-port multi-DDR build can expose a larger logical trace window.  Exact
+capacity depends on frame-size distribution because every packet has one fixed
+descriptor and one aligned payload.
 
-RX precision registers are part of each RX port's BAR window:
+## Host Commands
 
-| Offset | Register | Access | Purpose |
-| ---: | --- | :---: | --- |
-| `0x0094` | `GAP_SAMPLE_INDEX` | RW | Selects the sample-ring entry read by `GAP_SAMPLE_LO/HI`. |
-| `0x0098` | `GAP_SAMPLE_COUNT` | RO | Number of valid samples, saturated at `4096`. |
-| `0x009c` | `GAP_SAMPLE_LO` | RO | Low 32 bits of selected RX SOP-to-SOP gap. |
-| `0x00a0` | `GAP_SAMPLE_HI` | RO | High 32 bits of selected RX SOP-to-SOP gap. |
-| `0x00a4` | `GAP_SAMPLE_WRITE_INDEX` | RO | Next write index; lets software reconstruct the chronological window after wrap. |
-
-`software/rx_trace_interval_check.py` loads a descriptor/data trace in
-`PRELOAD` mode, enables RX statistics, reads the most recent RX gap samples, and
-compares them against the original descriptor gaps.  The hardware sample depth
-is intentionally small (`4096` gaps) so this remains a low-risk debug feature.
-For very long runs, the script checks the most recent sample window.
-
-Example:
+Prepare and replay one trace:
 
 ```bash
-sudo python3 /home/user/traffic_replay_software/rx_trace_interval_check.py \
-  --manifest /home/user/trace_out/manifest.json \
-  --tx-port 0 \
-  --rx-port 1 \
-  --desc-base 0x04000000 \
-  --data-base 0x14000000 \
-  --max-samples 4096 \
-  --max-error-ns 80 \
-  --csv /home/user/rx_trace_interval.csv
+tick-replay prepare /data/input.pcap --out-dir /var/tmp/tick-trace
+
+sudo tick-replay load \
+  --port 0 \
+  --mode preload \
+  --manifest /var/tmp/tick-trace/manifest.json
 ```
 
-The related `tb_rx_capture_core_clear.sv` testbench verifies that the sample
-window records fresh SOP gaps, exposes the write pointer, and resets cleanly
-after `rx-clear`.
+Repeat the same trace:
 
-## Next Work
+```bash
+sudo tick-replay load \
+  --port 0 \
+  --mode loop \
+  --loop-count 1000 \
+  --loop-gap 300000 \
+  --manifest /var/tmp/tick-trace/manifest.json
+```
 
-1. Add a BAR-controlled per-port datapath reset covering `ddr_trace_reader`,
-   scheduler, TX engine, async FIFO, AXIS-to-LBUS adapter, and CMAC-side local
-   state.
-2. Fix and verify the RX LBUS-to-AXIS/capture path until packet count, byte
-   count, and RX error counters are all clean for 64B, 1518B, and mixed traces.
-3. Close timing with positive WNS in the dual-port build, then repeat the same
-   sweep.
-4. For large packets, continue reducing `PL_SCAN` and `PL_AR` bubbles and add
-   more true outstanding DDR reads.
-5. For minimum-size packets, decide whether to keep the current descriptor
-   scheduler and accept the `70.4Gbps` stable point, or add multi-packet/fractional
-   scheduling to target 100G line rate.
+Synchronized dual-port replay:
+
+```bash
+sudo tick-replay load --port 0 --mode preload \
+  --manifest /var/tmp/trace0/manifest.json --arm-only
+sudo tick-replay load --port 1 --mode preload \
+  --manifest /var/tmp/trace1/manifest.json --arm-only
+sudo tick-replay sync-start --ports 0,1 --delay-ms 100 --egress-schedule
+```
+
+## Precision Validation
+
+The RX core measures consecutive receive SOP timestamps.  Host software
+compares the measured interval with the descriptor interval:
+
+```text
+error_ns[i] = measured_rx_gap_ns[i] - requested_descriptor_gap_ns[i]
+```
+
+Run the end-to-end optical-loopback suite:
+
+```bash
+sudo tick-replay verify precision \
+  --tx-port 0 \
+  --rx-port 1 \
+  --work-dir /var/tmp/tick-precision \
+  --report /var/tmp/tick-precision/report.md
+```
+
+The testbench `tb_rx_capture_core_clear.sv` verifies counters, interval events,
+legacy samples, and clear behavior.  The high-rate case drives `100000`
+consecutive 64-byte packets at one SOP per RX cycle and requires zero event
+drops.
+
+## Release Validation
+
+A PRELOAD/LOOP release must pass all of the following:
+
+- Routed timing with non-negative `WNS` and `WHS`, and zero `TNS`/`THS`.
+- H2C write and C2H readback at the low and high end of all enabled DDR banks.
+- Stop, clear, reload, and restart without reprogramming the bitstream.
+- Small, large, and mixed packet replay with correct packet and byte counts.
+- Dual-port simultaneous replay and synchronized first-packet release.
+- Optical payload comparison through the opposite RX port.
+- RX interval-event comparison with the original descriptor sequence.
+- Gap-zero and over-rate robustness without a permanent stall.
+- Long-duration LOOP stress without unexplained drops, late packets, or errors.
+
+Use the unified profiles for repeatable logs:
+
+```bash
+sudo tick-replay validate --profile smoke
+sudo tick-replay validate --profile stress
+sudo tick-replay validate --profile long
+```
+
+Final timing, utilization, checksums, and board results are stored with each
+important bitstream under `bitstreams/`.

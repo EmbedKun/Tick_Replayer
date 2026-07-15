@@ -11,6 +11,7 @@ module traffic_replay_top_stub #(
   input  logic                     clk,
   input  logic                     rstn,
   input  logic                     link_up,
+  input  logic [63:0]              global_time_gray,
 
   input  logic [AXIL_ADDR_W-1:0]   s_axil_awaddr,
   input  logic                     s_axil_awvalid,
@@ -56,6 +57,9 @@ module traffic_replay_top_stub #(
   input  logic                     m_tx_axis_tready,
   output logic                     m_tx_axis_tlast,
   output logic                     m_tx_axis_tuser,
+  output logic [63:0]              m_tx_axis_target,
+  output logic                     m_tx_axis_target_valid,
+  output logic                     egress_schedule_enable,
   output logic                     tx_path_clear
 );
   trace_replay_core #(
@@ -67,6 +71,7 @@ module traffic_replay_top_stub #(
     .clk(clk),
     .rstn(rstn),
     .link_up(link_up),
+    .global_time_gray(global_time_gray),
     .s_axil_awaddr(s_axil_awaddr),
     .s_axil_awvalid(s_axil_awvalid),
     .s_axil_awready(s_axil_awready),
@@ -108,6 +113,9 @@ module traffic_replay_top_stub #(
     .m_tx_axis_tready(m_tx_axis_tready),
     .m_tx_axis_tlast(m_tx_axis_tlast),
     .m_tx_axis_tuser(m_tx_axis_tuser),
+    .m_tx_axis_target(m_tx_axis_target),
+    .m_tx_axis_target_valid(m_tx_axis_target_valid),
+    .egress_schedule_enable(egress_schedule_enable),
     .tx_path_clear(tx_path_clear)
   );
 endmodule

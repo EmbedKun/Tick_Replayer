@@ -76,8 +76,12 @@ module axis_async_fifo #
   (* ASYNC_REG = "TRUE" *) reg clear_rclk_1 = 1'b0;
   (* ASYNC_REG = "TRUE" *) reg clear_rclk_2 = 1'b0;
 
-  reg wr_full = 1'b0;
-  reg wr_ready_reg = 1'b0;
+  reg wr_full = 1'b1;
+  reg [DATA_W-1:0] wr_stage_data = {DATA_W{1'b0}};
+  reg [KEEP_W-1:0] wr_stage_keep = {KEEP_W{1'b0}};
+  reg [USER_W-1:0] wr_stage_user = {USER_W{1'b0}};
+  reg wr_stage_last = 1'b0;
+  reg wr_stage_valid = 1'b0;
   reg [READ_PIPE_LEN-1:0] rd_valid_pipe = {READ_PIPE_LEN{1'b0}};
   reg [OUT_PTR_W-1:0] out_wr_ptr = {OUT_PTR_W{1'b0}};
   reg [OUT_PTR_W-1:0] out_rd_ptr = {OUT_PTR_W{1'b0}};
@@ -88,7 +92,8 @@ module axis_async_fifo #
 
   wire s_clear_active = clear_wclk_2;
   wire m_clear_active = clear_rclk_2;
-  wire wr_fire = s_axis_tvalid && s_axis_tready && !s_clear_active;
+  wire wr_fire = wr_stage_valid && !wr_full && !s_clear_active;
+  wire s_fire = s_axis_tvalid && s_axis_tready;
   wire rd_empty_now = rd_gray == wr_gray_rclk_2;
   wire out_reg_ready = !out_valid_reg || m_axis_tready;
   wire out_pop = (out_count != {OUT_COUNT_W{1'b0}}) && out_reg_ready;
@@ -101,16 +106,20 @@ module axis_async_fifo #
   wire rd_issue = !m_clear_active && !rd_empty_now && (total_buffered < OUT_DEPTH);
 
   wire [PTR_W-1:0] wr_bin_next = wr_bin + {{(PTR_W-1){1'b0}}, wr_fire};
+  wire [PTR_W-1:0] wr_bin_inc = wr_bin + {{(PTR_W-1){1'b0}}, 1'b1};
   wire [PTR_W-1:0] rd_bin_next = rd_bin + {{(PTR_W-1){1'b0}}, rd_issue};
   wire [PTR_W-1:0] wr_gray_next = (wr_bin_next >> 1) ^ wr_bin_next;
+  wire [PTR_W-1:0] wr_gray_inc = (wr_bin_inc >> 1) ^ wr_bin_inc;
   wire [PTR_W-1:0] rd_gray_next = (rd_bin_next >> 1) ^ rd_bin_next;
 
-  wire wr_full_next = wr_gray_next == {
+  wire [PTR_W-1:0] wr_full_compare = {
     ~rd_gray_wclk_2[PTR_W-1:PTR_W-2],
     rd_gray_wclk_2[PTR_W-3:0]
   };
+  wire wr_full_now = wr_gray == wr_full_compare;
+  wire wr_full_after_write = wr_gray_inc == wr_full_compare;
 
-  assign s_axis_tready = wr_ready_reg;
+  assign s_axis_tready = !wr_full && !s_clear_active;
   assign m_axis_tvalid = out_valid_reg;
 
   assign {m_axis_tuser, m_axis_tlast, m_axis_tkeep, m_axis_tdata} = out_payload_reg;
@@ -148,7 +157,7 @@ module axis_async_fifo #
     .ena(1'b1),
     .wea(wr_fire),
     .addra(wr_bin[DEPTH_LOG2-1:0]),
-    .dina({s_axis_tuser, s_axis_tlast, s_axis_tkeep, s_axis_tdata}),
+    .dina({wr_stage_user, wr_stage_last, wr_stage_keep, wr_stage_data}),
     .injectsbiterra(1'b0),
     .injectdbiterra(1'b0),
     .clkb(m_clk),
@@ -169,8 +178,12 @@ module axis_async_fifo #
       rd_gray_wclk_2 <= {PTR_W{1'b0}};
       clear_wclk_1 <= 1'b0;
       clear_wclk_2 <= 1'b0;
-      wr_full <= 1'b0;
-      wr_ready_reg <= 1'b0;
+      wr_full <= 1'b1;
+      wr_stage_data <= {DATA_W{1'b0}};
+      wr_stage_keep <= {KEEP_W{1'b0}};
+      wr_stage_user <= {USER_W{1'b0}};
+      wr_stage_last <= 1'b0;
+      wr_stage_valid <= 1'b0;
     end else begin
       clear_wclk_1 <= clear;
       clear_wclk_2 <= clear_wclk_1;
@@ -180,13 +193,22 @@ module axis_async_fifo #
         wr_gray <= {PTR_W{1'b0}};
         rd_gray_wclk_1 <= {PTR_W{1'b0}};
         rd_gray_wclk_2 <= {PTR_W{1'b0}};
-        wr_full <= 1'b0;
-        wr_ready_reg <= 1'b0;
+        wr_full <= 1'b1;
+        wr_stage_valid <= 1'b0;
       end else begin
       rd_gray_wclk_1 <= rd_gray;
       rd_gray_wclk_2 <= rd_gray_wclk_1;
-      wr_full <= wr_full_next;
-      wr_ready_reg <= !wr_full_next;
+      wr_full <= wr_fire ? wr_full_after_write : wr_full_now;
+
+      if (s_fire) begin
+        wr_stage_data <= s_axis_tdata;
+        wr_stage_keep <= s_axis_tkeep;
+        wr_stage_user <= s_axis_tuser;
+        wr_stage_last <= s_axis_tlast;
+        wr_stage_valid <= 1'b1;
+      end else if (wr_fire) begin
+        wr_stage_valid <= 1'b0;
+      end
 
       if (wr_fire) begin
         wr_bin <= wr_bin_next;

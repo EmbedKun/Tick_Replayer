@@ -16,6 +16,16 @@ module tb_lbus_adapters;
   logic              s_axis_tready;
   logic              s_axis_tlast;
   logic              s_axis_tuser;
+  logic [63:0]       s_axis_target;
+  logic              s_axis_target_valid;
+  logic [63:0]       global_time_binary;
+  logic [63:0]       global_time_gray;
+  logic              egress_schedule_enable;
+  logic              scheduled_phase;
+  logic [63:0]       scheduled_target;
+  logic [63:0]       scheduled_sop_tick;
+  logic [63:0]       scheduled_targets [0:7];
+  integer            scheduled_seen;
 
   logic [SEG_DATA_W-1:0] tx_datain0;
   logic [SEG_DATA_W-1:0] tx_datain1;
@@ -79,12 +89,16 @@ module tb_lbus_adapters;
     .clk(clk),
     .resetn(resetn),
     .clear(clear),
+    .global_time_gray(global_time_gray),
+    .egress_schedule_enable(egress_schedule_enable),
     .s_axis_tdata(s_axis_tdata),
     .s_axis_tkeep(s_axis_tkeep),
     .s_axis_tvalid(s_axis_tvalid),
     .s_axis_tready(s_axis_tready),
     .s_axis_tlast(s_axis_tlast),
     .s_axis_tuser(s_axis_tuser),
+    .s_axis_target(s_axis_target),
+    .s_axis_target_valid(s_axis_target_valid),
     .tx_datain0(tx_datain0),
     .tx_datain1(tx_datain1),
     .tx_datain2(tx_datain2),
@@ -277,11 +291,15 @@ module tb_lbus_adapters;
     if (!resetn) begin
       tx_rdyout <= 1'b0;
       cycle_count <= 0;
+      global_time_binary <= '0;
     end else begin
       cycle_count <= cycle_count + 1;
+      global_time_binary <= global_time_binary + 64'd1;
       tx_rdyout <= force_ready || (!hold_not_ready && ($urandom_range(0, 7) != 0));
     end
   end
+
+  assign global_time_gray = global_time_binary ^ (global_time_binary >> 1);
 
   always_ff @(posedge clk) begin
     if (!resetn) begin
@@ -289,13 +307,17 @@ module tb_lbus_adapters;
       sop_count <= 0;
       eop_count <= 0;
       lbus_in_frame <= 1'b0;
+      scheduled_sop_tick <= '0;
+      scheduled_seen <= 0;
     end else begin
       if (tx_rdyout) begin
         sop_count <= sop_count + tx_sopin0 + tx_sopin1 + tx_sopin2 + tx_sopin3;
         eop_count <= eop_count + tx_eopin0 + tx_eopin1 + tx_eopin2 + tx_eopin3;
 
         if (lbus_in_frame && !any_tx_ena) begin
-          $fatal(1, "LBUS gap inserted inside a frame at cycle %0d", cycle_count);
+          $fatal(1, "LBUS gap inserted inside a frame at cycle %0d ready=%0b src_valid=%0b src_ready=%0b fifo_count=%0d out_valid=%0b frame_active=%0b",
+                 cycle_count, tx_rdyout, s_axis_tvalid, s_axis_tready,
+                 dut_tx.fifo_count_q, dut_tx.out_valid_q, dut_tx.out_frame_active_q);
         end
         if (!lbus_in_frame && any_tx_ena && !any_tx_sop) begin
           $fatal(1, "LBUS frame started without SOP at cycle %0d", cycle_count);
@@ -306,6 +328,15 @@ module tb_lbus_adapters;
         if (any_tx_ena) begin
           if (any_tx_sop) begin
             lbus_in_frame <= 1'b1;
+            if (scheduled_phase) begin
+              scheduled_sop_tick <= global_time_binary;
+              if (global_time_binary < scheduled_targets[scheduled_seen] ||
+                  global_time_binary > (scheduled_targets[scheduled_seen] + 64'd5)) begin
+                $fatal(1, "mixed egress SOP tick out of range packet=%0d target=%0d actual=%0d",
+                       scheduled_seen, scheduled_targets[scheduled_seen], global_time_binary);
+              end
+              scheduled_seen <= scheduled_seen + 1;
+            end
           end
           if (any_tx_eop) begin
             lbus_in_frame <= 1'b0;
@@ -351,6 +382,11 @@ module tb_lbus_adapters;
     s_axis_tvalid = 1'b0;
     s_axis_tlast = 1'b0;
     s_axis_tuser = 1'b0;
+    s_axis_target = '0;
+    s_axis_target_valid = 1'b0;
+    egress_schedule_enable = 1'b0;
+    scheduled_phase = 1'b0;
+    scheduled_target = '0;
 
     repeat (16) @(posedge clk);
     resetn = 1'b1;
@@ -427,11 +463,45 @@ module tb_lbus_adapters;
     force_ready = 1'b1;
     repeat (16) @(posedge clk);
 
+    egress_schedule_enable = 1'b1;
+    scheduled_phase = 1'b1;
+    scheduled_target = global_time_binary + 64'd1000;
+    scheduled_targets[0] = scheduled_target;
+    scheduled_targets[1] = scheduled_targets[0] + 64'd10;
+    scheduled_targets[2] = scheduled_targets[1] + 64'd30;
+    scheduled_targets[3] = scheduled_targets[2] + 64'd10;
+    scheduled_targets[4] = scheduled_targets[3] + 64'd12;
+    scheduled_targets[5] = scheduled_targets[4] + 64'd10;
+    scheduled_targets[6] = scheduled_targets[5] + 64'd140;
+    scheduled_targets[7] = scheduled_targets[6] + 64'd10;
+    for (int i = 0; i < 8; i++) begin
+      s_axis_target = scheduled_targets[i];
+      s_axis_target_valid = 1'b1;
+      case (i)
+        0: send_packet(9010 + i, 64, 1'b0);
+        1: send_packet(9010 + i, 1518, 1'b0);
+        2: send_packet(9010 + i, 128, 1'b0);
+        3: send_packet(9010 + i, 512, 1'b0);
+        4: send_packet(9010 + i, 65, 1'b0);
+        5: send_packet(9010 + i, 9000, 1'b0);
+        6: send_packet(9010 + i, 256, 1'b0);
+        default: send_packet(9010 + i, 124, 1'b0);
+      endcase
+    end
+    s_axis_target_valid = 1'b0;
+    wait (exp_rd == exp_wr);
+    if (scheduled_seen != 8) begin
+      $fatal(1, "mixed egress scheduled packet count mismatch expected=8 got=%0d", scheduled_seen);
+    end
+    scheduled_phase = 1'b0;
+    egress_schedule_enable = 1'b0;
+
     $display("PASS: LBUS adapters preserve AXIS payload, keep, last, and error metadata under backpressure");
     $display("PASS: LBUS RX ignores EOP/ERR sideband bits from disabled segments");
     $display("PASS: LBUS adapter full-rate 64B burst outputs=%0d span_cycles=%0d",
              full_rate_outputs, full_rate_last_cycle - full_rate_first_cycle + 1);
     $display("PASS: LBUS adapter clear flushes stale beats queued while CMAC ready is low");
+    $display("PASS: CMAC-domain egress scheduler released 8 mixed-size packets within 0..5 target ticks");
     $finish;
   end
 endmodule
